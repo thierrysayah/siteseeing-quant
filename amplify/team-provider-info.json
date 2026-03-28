@@ -1,0 +1,26 @@
+{
+  "dev": {
+    "awscloudformation": {
+      "AuthRoleName": "amplify-estimationplatform-dev-20748-authRole",
+      "UnauthRoleArn": "arn:aws:iam::851725386383:role/amplify-estimationplatform-dev-20748-unauthRole",
+      "AuthRoleArn": "arn:aws:iam::851725386383:role/amplify-estimationplatform-dev-20748-authRole",
+      "Region": "eu-west-3",
+      "DeploymentBucketName": "amplify-estimationplatform-dev-20748-deployment",
+      "UnauthRoleName": "amplify-estimationplatform-dev-20748-unauthRole",
+      "StackName": "amplify-estimationplatform-dev-20748",
+      "StackId": "arn:aws:cloudformation:eu-west-3:851725386383:stack/amplify-estimationplatform-dev-20748/bbfd4000-2633-11f1-ae76-06b1c15126d7",
+      "AmplifyAppId": "d28h0kazpkiv4s"
+    },
+    "categories": {
+      "hosting": {
+        "amplifyhosting": {
+          "appId": "d28h0kazpkiv4s",
+          "type": "manual"
+        }
+      },
+      "auth": {
+        "estimationplatformece78c7f": {}
+      }
+    }
+  }
+}

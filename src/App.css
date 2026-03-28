@@ -1,0 +1,215 @@
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background: #08111f;
+  font-family: Arial, sans-serif;
+}
+
+.auth-page {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  min-height: 100vh;
+  background: #08111f;
+}
+
+.auth-left {
+  position: relative;
+  background:
+    linear-gradient(rgba(4, 10, 20, 0.35), rgba(4, 10, 20, 0.68)),
+    url('./estimation_login_image.png') center center / cover no-repeat;
+}
+
+.auth-overlay {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  padding: 48px;
+}
+
+.auth-copy {
+  max-width: 540px;
+  color: white;
+}
+
+.auth-copy h1 {
+  margin: 0 0 14px 0;
+  font-size: 42px;
+  line-height: 1.1;
+  font-weight: 700;
+}
+
+.auth-copy p {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.5;
+  opacity: 0.92;
+}
+
+.auth-right {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: #0b1426;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 420px;
+  background: rgba(10, 18, 32, 0.96);
+  border: 1px solid rgba(70, 120, 220, 0.25);
+  border-radius: 18px;
+  padding: 28px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+/* Blend Amplify auth into your card */
+[data-amplify-authenticator] {
+  width: 100%;
+  background: transparent !important;
+}
+
+[data-amplify-router] {
+  background: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+}
+
+/* Keep auth layout inside the card */
+[data-amplify-authenticator] [data-amplify-container] {
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+[data-amplify-authenticator] form {
+  width: 100%;
+}
+
+[data-amplify-authenticator] [data-amplify-field],
+[data-amplify-authenticator] .amplify-field,
+[data-amplify-authenticator] .amplify-flex {
+  width: 100%;
+  max-width: 100%;
+}
+
+/* Fix input width / alignment */
+[data-amplify-authenticator] input {
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  color: #f4f8ff !important;
+  background: rgba(255, 255, 255, 0.04) !important;
+  border: 1px solid rgba(100, 150, 255, 0.28) !important;
+}
+
+
+/* Heading (Welcome back) */
+[data-amplify-authenticator] h3 {
+  color: #ffffff !important;
+}
+
+/* Subtext (Sign in to continue) */
+[data-amplify-authenticator] p {
+  color: rgba(255, 255, 255, 0.7) !important;
+}
+
+
+/* Brighter placeholder text */
+[data-amplify-authenticator] input::placeholder {
+  color: rgba(235, 243, 255, 0.65) !important;
+}
+
+/* Brighter labels */
+[data-amplify-label] {
+  color: rgba(235, 243, 255, 0.88) !important;
+}
+
+/* Better focus state */
+[data-amplify-authenticator] input:focus {
+  border: 1px solid #2f8cff !important;
+  box-shadow: 0 0 0 2px rgba(47, 140, 255, 0.22) !important;
+  outline: none !important;
+}
+
+/* Password visibility button alignment */
+[data-amplify-field-group__control] {
+  background: transparent !important;
+  color: #dce9ff !important;
+  border-color: rgba(100, 150, 255, 0.28) !important;
+}
+
+/* Sign in button */
+[data-amplify-authenticator] button[type="submit"] {
+  background: #0f8fb3 !important;
+  border: none !important;
+  color: white !important;
+  font-weight: 700;
+}
+
+[data-amplify-authenticator] button[type="submit"]:hover {
+  background: #12a2ca !important;
+}
+
+/* Links like forgot password */
+[data-amplify-authenticator] a {
+  color: #10b7e8 !important;
+}
+
+@media (max-width: 900px) {
+  .auth-page {
+    grid-template-columns: 1fr;
+  }
+
+  .auth-left {
+    min-height: 260px;
+  }
+
+  .auth-overlay {
+    padding: 28px;
+  }
+
+  .auth-copy h1 {
+    font-size: 30px;
+  }
+
+  .auth-copy p {
+    font-size: 16px;
+  }
+  
+}
+
+.top-bar {
+  padding: 10px 16px;
+  text-align: right;
+  background: #08111f;
+  border-bottom: 1px solid rgba(70, 120, 220, 0.2);
+}
+
+.username {
+  margin-right: 12px;
+  color: #cfe6ff;
+  font-weight: 500;
+}
+
+.signout-btn {
+  background: transparent;
+  border: 1px solid rgba(100,150,255,0.3);
+  color: #cfe6ff;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.signout-btn:hover {
+  background: rgba(100,150,255,0.1);
+}
+
