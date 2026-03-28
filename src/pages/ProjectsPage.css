@@ -118,6 +118,21 @@
   gap: 20px;
 }
 
+<<<<<<< HEAD
+=======
+/* ── Loading / Error feedback ──────────────────────────────────────────────── */
+.pp-feedback {
+  font-family: var(--pp-mono);
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  padding: 60px 0;
+  text-align: center;
+}
+
+.pp-loading { color: var(--pp-text-dim); }
+.pp-error   { color: #e05555; }
+
+>>>>>>> claude/dreamy-visvesvaraya
 /* ── Empty State ───────────────────────────────────────────────────────────── */
 .pp-empty {
   display: flex;

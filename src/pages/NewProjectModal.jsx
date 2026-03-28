@@ -23,7 +23,7 @@ export default function NewProjectModal({ onCreate, onCancel }) {
     }
 
     setError("");
-    onCreate({ name: name.trim() }); // 🔥 no file anymore
+    onCreate({ name: name.trim() });
   };
 
   return (

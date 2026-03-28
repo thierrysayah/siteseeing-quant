@@ -55,6 +55,7 @@ function MainApp() {
 
   const [currentPage, setCurrentPage] = useState('projects');
   const [selectedProject, setSelectedProject] = useState(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   if (!user) {
     return <LoginScreen />;
@@ -67,6 +68,7 @@ function MainApp() {
 
   const handleBackToProjects = () => {
     setCurrentPage('projects');
+    setRefreshKey((k) => k + 1);
   };
 
   return (
@@ -92,7 +94,11 @@ function MainApp() {
       </div>
 
       {currentPage === 'projects' ? (
-        <ProjectsPage onOpenProject={handleOpenProject} user={user} />
+        <ProjectsPage
+          onOpenProject={handleOpenProject}
+          user={user}
+          refreshKey={refreshKey}
+        />
       ) : (
         <DetectionTool
           project={selectedProject}

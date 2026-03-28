@@ -1,42 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import ProjectCard from "./ProjectCard";
 import NewProjectModal from "./NewProjectModal";
+import { listProjects, createProject, deleteProject } from "../services/projectStorage";
 import "./ProjectsPage.css";
-
-const MOCK_PROJECTS = [
-  {
-    id: "proj_001",
-    name: "Tower Block — Level 3",
-    fileName: "tower_block_l3_rev4.pdf",
-    status: "In Progress",
-    lastEdited: "2026-03-25T14:32:00Z",
-    counts: { zones: 12, doors: 8, windows: 24, walls: 47 },
-  },
-  {
-    id: "proj_002",
-    name: "Villa Renovation — Ground Floor",
-    fileName: "villa_gf_arch_drawings.pdf",
-    status: "Complete",
-    lastEdited: "2026-03-20T09:10:00Z",
-    counts: { zones: 6, doors: 5, windows: 11, walls: 28 },
-  },
-  {
-    id: "proj_003",
-    name: "Office Fit-Out — Zone A",
-    fileName: "office_zone_a_v2.pdf",
-    status: "Draft",
-    lastEdited: "2026-03-18T17:55:00Z",
-    counts: { zones: 3, doors: 2, windows: 6, walls: 15 },
-  },
-  {
-    id: "proj_004",
-    name: "Residential Complex — Block B",
-    fileName: "res_complex_B_arch.pdf",
-    status: "In Progress",
-    lastEdited: "2026-03-10T11:20:00Z",
-    counts: null,
-  },
-];
 
 function formatDate(isoString) {
   const d = new Date(isoString);
@@ -51,41 +17,60 @@ function generateId() {
   return "proj_" + Math.random().toString(36).slice(2, 9);
 }
 
-export default function ProjectsPage({ onOpenProject, user }) {
-  const [projects, setProjects] = useState(MOCK_PROJECTS);
+export default function ProjectsPage({ onOpenProject, user, refreshKey }) {
+  const [projects, setProjects] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [showModal, setShowModal] = useState(false);
 
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    listProjects()
+      .then((data) => { if (!cancelled) setProjects(data); })
+      .catch(() => { if (!cancelled) setError("Failed to load projects."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [refreshKey]);
+
   const handleOpen = (project) => {
-    if (onOpenProject) {
-      onOpenProject(project);
+    if (onOpenProject) onOpenProject(project);
+  };
+
+  const handleDelete = async (projectId) => {
+    if (!window.confirm("Delete this project? This cannot be undone.")) return;
+    setProjects((prev) => prev.filter((p) => p.id !== projectId));
+    try {
+      await deleteProject(projectId);
+    } catch {
+      listProjects().then(setProjects).catch(() => {});
     }
   };
 
-  const handleDelete = (projectId) => {
-    if (!window.confirm("Delete this project? This cannot be undone.")) return;
-    setProjects((prev) => prev.filter((p) => p.id !== projectId));
-  };
-
-  const handleCreate = ({ name }) => {
-      const newProject = {
-        id: generateId(),
-        name,
-        fileName: null,   // 🔥 no file yet
-        file: null,
-        status: "Draft",
-        lastEdited: new Date().toISOString(),
-        counts: null,
-        owner: user?.username || user?.userId || "local-user",
-        ratio: null,
-      };
-    
-      setProjects((prev) => [newProject, ...prev]);
-      setShowModal(false);
-    
-      if (onOpenProject) {
-        onOpenProject(newProject);
-      }
+  const handleCreate = async ({ name }) => {
+    const newProject = {
+      id: generateId(),
+      name,
+      fileName: null,
+      file: null,
+      status: "Draft",
+      lastEdited: new Date().toISOString(),
+      counts: null,
+      owner: user?.username || user?.userId || "unknown",
+      ratio: null,
     };
+
+    setShowModal(false);
+
+    try {
+      await createProject(newProject.id, newProject.name, newProject.owner);
+    } catch (err) {
+      console.error("Failed to persist new project:", err);
+    }
+
+    if (onOpenProject) onOpenProject(newProject);
+  };
 
   return (
     <div className="pp-root">
@@ -96,9 +81,11 @@ export default function ProjectsPage({ onOpenProject, user }) {
           <h1 className="pp-title">Projects</h1>
         </div>
         <div className="pp-header-right">
-          <span className="pp-project-count">
-            {projects.length} project{projects.length !== 1 ? "s" : ""}
-          </span>
+          {!loading && (
+            <span className="pp-project-count">
+              {projects.length} project{projects.length !== 1 ? "s" : ""}
+            </span>
+          )}
           <button className="pp-btn-primary" onClick={() => setShowModal(true)}>
             + New Project
           </button>
@@ -106,9 +93,16 @@ export default function ProjectsPage({ onOpenProject, user }) {
       </header>
 
       <main className="pp-main">
-        {projects.length === 0 ? (
+        {loading && (
+          <div className="pp-feedback pp-loading">Loading projects…</div>
+        )}
+        {!loading && error && (
+          <div className="pp-feedback pp-error">{error}</div>
+        )}
+        {!loading && !error && projects.length === 0 && (
           <EmptyState onNew={() => setShowModal(true)} />
-        ) : (
+        )}
+        {!loading && !error && projects.length > 0 && (
           <div className="pp-grid">
             {projects.map((project) => (
               <ProjectCard
