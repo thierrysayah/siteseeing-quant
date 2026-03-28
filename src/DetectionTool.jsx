@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { loadProject, saveProject } from "./services/projectStorage";
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const WALL_MODEL_URL = "https://predict-69b7f2f29e8ba20d1c3c-dproatj77a-lm.a.run.app/predict";
@@ -569,7 +570,7 @@ const pdfStyles = {
 };
 
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
-export default function DetectionTool() {
+export default function DetectionTool({ project, user, onBack }) {
   // Image state
   const [originalImg, setOriginalImg] = useState(null); // HTMLImageElement
   const [imgNaturalSize, setImgNaturalSize] = useState({ w: 0, h: 0 });
@@ -637,13 +638,100 @@ export default function DetectionTool() {
   const [editClass, setEditClass] = useState("Internal_Wall");
   const [editConf, setEditConf] = useState("");
 
+  // File tracking & save state
+  const [currentFile, setCurrentFile] = useState(null);
+  const [saveStatus, setSaveStatus] = useState(null); // null | 'saving' | 'saved' | 'error'
+
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
+
+  // ─── Load project from S3 on mount ───────────────────────────────────────────
+  useEffect(() => {
+    if (!project?.id) return;
+    let cancelled = false;
+
+    // Clear any stale state immediately (handles switching between projects)
+    setAnnotations([]);
+    setOriginalImg(null);
+    setImgNaturalSize({ w: 0, h: 0 });
+    setRatio(null);
+    setPixelLength("");
+    setRealLength("");
+    setZoneTags({ ...DEFAULT_ZONE_TAGS });
+    setCurrentFile(null);
+    setSaveStatus(null);
+
+    loadProject(project.id)
+      .then((data) => {
+        if (cancelled || !data) return;
+        if (data.annotations?.length) setAnnotations(data.annotations);
+        if (data.customTags && Object.keys(data.customTags).length)
+          setZoneTags(data.customTags);
+        if (data.imageInfo?.w) setImgNaturalSize(data.imageInfo);
+        if (data.scale?.pixelToMeter != null) {
+          setRatio(data.scale.pixelToMeter);
+          setPixelLength(data.scale.pixelLength || "");
+          setRealLength(data.scale.realLength || "");
+        }
+        if (data.originalFileUrl) {
+          loadImageFromUrl(data.originalFileUrl, data.originalExt);
+        }
+      })
+      .catch(() => {}); // New project — nothing saved yet
+
+    return () => { cancelled = true; };
+  }, [project?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ─── Load image from presigned URL (restoring saved project) ─────────────────
+  const loadImageFromUrl = useCallback((url, ext) => {
+    if (ext === 'pdf') {
+      // Fetch and open in PDF modal
+      fetch(url)
+        .then((r) => r.arrayBuffer())
+        .then((buf) => setPdfModalData(buf))
+        .catch(() => setStatus("Failed to restore PDF from saved project."));
+    } else {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        setOriginalImg(img);
+        setImgNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
+        const bs = computeBaseScale(img.naturalWidth, img.naturalHeight);
+        setBaseScale(bs);
+        setZoom(1.0);
+        setStatus(`Restored saved image: ${img.naturalWidth}×${img.naturalHeight} px`);
+      };
+      img.onerror = () => setStatus("Failed to restore image from saved project.");
+      img.src = url;
+    }
+  }, [computeBaseScale]);
+
+  // ─── Save project to S3 ───────────────────────────────────────────────────────
+  const handleSave = async () => {
+    if (!project?.id) return;
+    setSaveStatus('saving');
+    try {
+      await saveProject(project.id, {
+        name: project.name,
+        annotations,
+        scale: { pixelToMeter: ratio, pixelLength, realLength },
+        customTags: zoneTags,
+        imageInfo: imgNaturalSize,
+        file: currentFile,
+      });
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus(null), 3000);
+    } catch (err) {
+      console.error('Save failed:', err);
+      setSaveStatus('error');
+    }
+  };
 
   // ─── PDF upload ──────────────────────────────────────────────────────────────
   const handlePdfChange = (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    setCurrentFile(file);
     setStatus(`Opening PDF: ${file.name} …`);
     const reader = new FileReader();
     reader.onload = () => setPdfModalData(reader.result); // ArrayBuffer
@@ -724,6 +812,7 @@ export default function DetectionTool() {
   const handleFileChange = (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    setCurrentFile(file);
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
@@ -1244,6 +1333,21 @@ export default function DetectionTool() {
           📄 Import PDF
           <input type="file" accept="application/pdf,.pdf" onChange={handlePdfChange} style={{ display: "none" }} />
         </label>
+        {project?.id && (
+          <button
+            onClick={handleSave}
+            disabled={saveStatus === 'saving'}
+            style={{
+              ...styles.uploadBtn,
+              background: saveStatus === 'error' ? '#3a0f0f' : saveStatus === 'saved' ? '#0d2a1a' : '#0d1e38',
+              borderColor: saveStatus === 'error' ? '#6a1a1a' : saveStatus === 'saved' ? '#1a5a3a' : '#1e3a6a',
+              color: saveStatus === 'error' ? '#e05555' : saveStatus === 'saved' ? '#4ada8a' : '#6acf',
+              cursor: saveStatus === 'saving' ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {saveStatus === 'saving' ? '⟳ Saving…' : saveStatus === 'saved' ? '✓ Saved' : saveStatus === 'error' ? '✕ Error' : '💾 Save'}
+          </button>
+        )}
       </div>
 
       <div style={styles.body}>

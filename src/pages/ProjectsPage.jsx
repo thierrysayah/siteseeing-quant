@@ -1,0 +1,145 @@
+import { useState, useEffect } from "react";
+import ProjectCard from "./ProjectCard";
+import NewProjectModal from "./NewProjectModal";
+import { listProjects, createProject, deleteProject } from "../services/projectStorage";
+import "./ProjectsPage.css";
+
+function formatDate(isoString) {
+  const d = new Date(isoString);
+  return d.toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
+
+function generateId() {
+  return "proj_" + Math.random().toString(36).slice(2, 9);
+}
+
+export default function ProjectsPage({ onOpenProject, user, refreshKey }) {
+  const [projects, setProjects] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [showModal, setShowModal] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    listProjects()
+      .then((data) => { if (!cancelled) setProjects(data); })
+      .catch(() => { if (!cancelled) setError("Failed to load projects."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [refreshKey]);
+
+  const handleOpen = (project) => {
+    if (onOpenProject) onOpenProject(project);
+  };
+
+  const handleDelete = async (projectId) => {
+    if (!window.confirm("Delete this project? This cannot be undone.")) return;
+    setProjects((prev) => prev.filter((p) => p.id !== projectId));
+    try {
+      await deleteProject(projectId);
+    } catch {
+      // Restore list if delete failed
+      listProjects().then(setProjects).catch(() => {});
+    }
+  };
+
+  const handleCreate = async ({ name }) => {
+    const newProject = {
+      id: generateId(),
+      name,
+      fileName: null,
+      file: null,
+      status: "Draft",
+      lastEdited: new Date().toISOString(),
+      counts: null,
+      owner: user?.username || user?.userId || "unknown",
+      ratio: null,
+    };
+
+    setShowModal(false);
+
+    // Write metadata to S3 (best-effort — navigate regardless)
+    try {
+      await createProject(newProject.id, newProject.name, newProject.owner);
+    } catch (err) {
+      console.error("Failed to persist new project:", err);
+    }
+
+    if (onOpenProject) onOpenProject(newProject);
+  };
+
+  return (
+    <div className="pp-root">
+      <header className="pp-header">
+        <div className="pp-header-left">
+          <span className="pp-logo">⬡ QUANT</span>
+          <span className="pp-header-divider" />
+          <h1 className="pp-title">Projects</h1>
+        </div>
+        <div className="pp-header-right">
+          {!loading && (
+            <span className="pp-project-count">
+              {projects.length} project{projects.length !== 1 ? "s" : ""}
+            </span>
+          )}
+          <button className="pp-btn-primary" onClick={() => setShowModal(true)}>
+            + New Project
+          </button>
+        </div>
+      </header>
+
+      <main className="pp-main">
+        {loading && (
+          <div className="pp-feedback pp-loading">Loading projects…</div>
+        )}
+        {!loading && error && (
+          <div className="pp-feedback pp-error">{error}</div>
+        )}
+        {!loading && !error && projects.length === 0 && (
+          <EmptyState onNew={() => setShowModal(true)} />
+        )}
+        {!loading && !error && projects.length > 0 && (
+          <div className="pp-grid">
+            {projects.map((project) => (
+              <ProjectCard
+                key={project.id}
+                project={project}
+                formatDate={formatDate}
+                onOpen={handleOpen}
+                onDelete={handleDelete}
+              />
+            ))}
+          </div>
+        )}
+      </main>
+
+      {showModal && (
+        <NewProjectModal
+          onCreate={handleCreate}
+          onCancel={() => setShowModal(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function EmptyState({ onNew }) {
+  return (
+    <div className="pp-empty">
+      <div className="pp-empty-icon">⬡</div>
+      <p className="pp-empty-title">No projects yet</p>
+      <p className="pp-empty-sub">
+        Create a project to start working on a drawing.
+      </p>
+      <button className="pp-btn-primary" onClick={onNew}>
+        + New Project
+      </button>
+    </div>
+  );
+}

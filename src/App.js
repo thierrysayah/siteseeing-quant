@@ -1,4 +1,4 @@
-import DetectionTool from './DetectionTool';
+import { useState } from 'react';
 import {
   Authenticator,
   View,
@@ -8,6 +8,9 @@ import {
 } from '@aws-amplify/ui-react';
 import '@aws-amplify/ui-react/styles.css';
 import './App.css';
+
+import DetectionTool from './DetectionTool';
+import ProjectsPage from './pages/ProjectsPage';
 
 function LoginScreen() {
   return (
@@ -50,19 +53,59 @@ function MainApp() {
     context.signOut,
   ]);
 
+  const [currentPage, setCurrentPage] = useState('projects');
+  const [selectedProject, setSelectedProject] = useState(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+
   if (!user) {
     return <LoginScreen />;
   }
 
+  const handleOpenProject = (project) => {
+    setSelectedProject(project);
+    setCurrentPage('editor');
+  };
+
+  const handleBackToProjects = () => {
+    setCurrentPage('projects');
+    setRefreshKey((k) => k + 1);
+  };
+
   return (
     <div>
       <div className="top-bar">
-          <span className="username">{user?.username}</span>
+        <span className="username">
+          {currentPage === 'editor' && selectedProject?.name
+            ? selectedProject.name
+            : user?.username}
+        </span>
+
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+          {currentPage === 'editor' && (
+            <button className="signout-btn" onClick={handleBackToProjects}>
+              Back to Projects
+            </button>
+          )}
+
           <button className="signout-btn" onClick={signOut}>
             Sign out
           </button>
         </div>
-      <DetectionTool />
+      </div>
+
+      {currentPage === 'projects' ? (
+        <ProjectsPage
+          onOpenProject={handleOpenProject}
+          user={user}
+          refreshKey={refreshKey}
+        />
+      ) : (
+        <DetectionTool
+          project={selectedProject}
+          user={user}
+          onBack={handleBackToProjects}
+        />
+      )}
     </div>
   );
 }
