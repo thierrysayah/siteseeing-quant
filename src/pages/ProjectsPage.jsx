@@ -13,8 +13,14 @@ function formatDate(isoString) {
   });
 }
 
-function generateId() {
-  return "proj_" + Math.random().toString(36).slice(2, 9);
+function generateId(name) {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+  const suffix = Math.random().toString(36).slice(2, 7);
+  return `${slug}-${suffix}`;
 }
 
 export default function ProjectsPage({ onOpenProject, user, refreshKey }) {
@@ -50,7 +56,7 @@ export default function ProjectsPage({ onOpenProject, user, refreshKey }) {
 
   const handleCreate = async ({ name }) => {
     const newProject = {
-      id: generateId(),
+      id: generateId(name),
       name,
       fileName: null,
       file: null,

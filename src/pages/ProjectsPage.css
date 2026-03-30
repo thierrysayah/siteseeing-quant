@@ -118,8 +118,6 @@
   gap: 20px;
 }
 
-<<<<<<< HEAD
-=======
 /* ── Loading / Error feedback ──────────────────────────────────────────────── */
 .pp-feedback {
   font-family: var(--pp-mono);
@@ -132,7 +130,6 @@
 .pp-loading { color: var(--pp-text-dim); }
 .pp-error   { color: #e05555; }
 
->>>>>>> claude/dreamy-visvesvaraya
 /* ── Empty State ───────────────────────────────────────────────────────────── */
 .pp-empty {
   display: flex;
@@ -354,12 +351,6 @@
   font-size: 10px;
   color: var(--pp-text-dim);
   letter-spacing: 0.3px;
-}
-
-.pc-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .pc-btn-delete {

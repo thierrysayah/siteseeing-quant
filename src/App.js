@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Authenticator,
   View,
@@ -56,6 +56,19 @@ function MainApp() {
   const [currentPage, setCurrentPage] = useState('projects');
   const [selectedProject, setSelectedProject] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+
+  // Reset to projects page whenever a new sign-in happens (user transitions
+  // from null → non-null), so the editor never persists across sessions.
+  const prevUserRef = useRef(user);
+  useEffect(() => {
+    const prev = prevUserRef.current;
+    prevUserRef.current = user;
+    if (!prev && user) {
+      setCurrentPage('projects');
+      setSelectedProject(null);
+      setRefreshKey((k) => k + 1);
+    }
+  }, [user]);
 
   if (!user) {
     return <LoginScreen />;

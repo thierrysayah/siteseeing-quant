@@ -370,20 +370,27 @@ function PdfRegionSelector({ pdfData, onConfirm, onCancel }) {
   const [prevScale, setPrevScale] = useState(1);          // preview / full
   const [rect, setRect] = useState(null);                 // {x1,y1,x2,y2} in PREVIEW coords
   const [selStatus, setSelStatus] = useState("Drag on the preview to select a region.");
+  const [loadError, setLoadError] = useState(null);
   const dragStart = useRef(null);
   const isDragging = useRef(false);
 
   // ── Load pdf.js + parse document ──────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
+    setLoadError(null);
     loadPdfJs().then(async (pdfjsLib) => {
-      const typedArray = new Uint8Array(pdfData);
+      // Copy the ArrayBuffer before handing it to pdf.js: the worker transfer
+      // detaches the original, causing a DataCloneError on any subsequent load.
+      const typedArray = new Uint8Array(pdfData.slice(0));
       const doc = await pdfjsLib.getDocument({ data: typedArray }).promise;
       if (cancelled) return;
       setPdfDoc(doc);
       setPageCount(doc.numPages);
       setPageIndex(0);
-    }).catch(console.error);
+    }).catch((err) => {
+      console.error('[PdfRegionSelector] Failed to load PDF:', err);
+      if (!cancelled) setLoadError(err?.message || 'Failed to parse PDF.');
+    });
     return () => { cancelled = true; };
   }, [pdfData]);
 
@@ -392,16 +399,21 @@ function PdfRegionSelector({ pdfData, onConfirm, onCancel }) {
     if (!pdfDoc) return;
     let cancelled = false;
     (async () => {
-      const page = await pdfDoc.getPage(pageIndex + 1); // pdf.js is 1-based
-      const viewport = page.getViewport({ scale: PDF_SCALE });
-      const offscreen = document.createElement("canvas");
-      offscreen.width  = Math.round(viewport.width);
-      offscreen.height = Math.round(viewport.height);
-      await page.render({ canvasContext: offscreen.getContext("2d"), viewport }).promise;
-      if (cancelled) return;
-      setPageCanvas(offscreen);
-      setRect(null);
-      setSelStatus("Drag on the preview to select a region, or use 'Full Page'.");
+      try {
+        const page = await pdfDoc.getPage(pageIndex + 1); // pdf.js is 1-based
+        const viewport = page.getViewport({ scale: PDF_SCALE });
+        const offscreen = document.createElement("canvas");
+        offscreen.width  = Math.round(viewport.width);
+        offscreen.height = Math.round(viewport.height);
+        await page.render({ canvasContext: offscreen.getContext("2d"), viewport }).promise;
+        if (cancelled) return;
+        setPageCanvas(offscreen);
+        setRect(null);
+        setSelStatus("Drag on the preview to select a region, or use 'Full Page'.");
+      } catch (err) {
+        console.error('[PdfRegionSelector] Failed to render page:', err);
+        if (!cancelled) setLoadError(err?.message || 'Failed to render this page.');
+      }
     })();
     return () => { cancelled = true; };
   }, [pdfDoc, pageIndex]);
@@ -523,8 +535,17 @@ function PdfRegionSelector({ pdfData, onConfirm, onCancel }) {
         )}
 
         <div style={pdfStyles.canvasWrap}>
-          {!pageCanvas && (
+          {!pageCanvas && !loadError && (
             <div style={pdfStyles.loading}>⟳ Rendering page…</div>
+          )}
+          {loadError && (
+            <div style={{ ...pdfStyles.loading, color: "#e05555", maxWidth: 480, textAlign: "center", lineHeight: 1.6 }}>
+              ✕ Could not render this PDF.<br />
+              <span style={{ fontSize: 10, color: "#7a4a4a" }}>{loadError}</span><br /><br />
+              <span style={{ fontSize: 11, color: "#5a7a9a" }}>
+                Try exporting the drawing as a PNG or TIFF from your CAD software and use Load Image instead.
+              </span>
+            </div>
           )}
           <canvas
             ref={previewCanvasRef}
@@ -641,97 +662,19 @@ export default function DetectionTool({ project, user, onBack }) {
   // File tracking & save state
   const [currentFile, setCurrentFile] = useState(null);
   const [saveStatus, setSaveStatus] = useState(null); // null | 'saving' | 'saved' | 'error'
+  // Persists file info across re-saves so originalExt is never overwritten with null
+  const existingFileInfoRef = useRef({ ext: null, fileName: null });
 
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
-
-  // ─── Load project from S3 on mount ───────────────────────────────────────────
-  useEffect(() => {
-    if (!project?.id) return;
-    let cancelled = false;
-
-    // Clear any stale state immediately (handles switching between projects)
-    setAnnotations([]);
-    setOriginalImg(null);
-    setImgNaturalSize({ w: 0, h: 0 });
-    setRatio(null);
-    setPixelLength("");
-    setRealLength("");
-    setZoneTags({ ...DEFAULT_ZONE_TAGS });
-    setCurrentFile(null);
-    setSaveStatus(null);
-
-    loadProject(project.id)
-      .then((data) => {
-        if (cancelled || !data) return;
-        if (data.annotations?.length) setAnnotations(data.annotations);
-        if (data.customTags && Object.keys(data.customTags).length)
-          setZoneTags(data.customTags);
-        if (data.imageInfo?.w) setImgNaturalSize(data.imageInfo);
-        if (data.scale?.pixelToMeter != null) {
-          setRatio(data.scale.pixelToMeter);
-          setPixelLength(data.scale.pixelLength || "");
-          setRealLength(data.scale.realLength || "");
-        }
-        if (data.originalFileUrl) {
-          loadImageFromUrl(data.originalFileUrl, data.originalExt);
-        }
-      })
-      .catch(() => {}); // New project — nothing saved yet
-
-    return () => { cancelled = true; };
-  }, [project?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // ─── Load image from presigned URL (restoring saved project) ─────────────────
-  const loadImageFromUrl = useCallback((url, ext) => {
-    if (ext === 'pdf') {
-      // Fetch and open in PDF modal
-      fetch(url)
-        .then((r) => r.arrayBuffer())
-        .then((buf) => setPdfModalData(buf))
-        .catch(() => setStatus("Failed to restore PDF from saved project."));
-    } else {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => {
-        setOriginalImg(img);
-        setImgNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
-        const bs = computeBaseScale(img.naturalWidth, img.naturalHeight);
-        setBaseScale(bs);
-        setZoom(1.0);
-        setStatus(`Restored saved image: ${img.naturalWidth}×${img.naturalHeight} px`);
-      };
-      img.onerror = () => setStatus("Failed to restore image from saved project.");
-      img.src = url;
-    }
-  }, [computeBaseScale]);
-
-  // ─── Save project to S3 ───────────────────────────────────────────────────────
-  const handleSave = async () => {
-    if (!project?.id) return;
-    setSaveStatus('saving');
-    try {
-      await saveProject(project.id, {
-        name: project.name,
-        annotations,
-        scale: { pixelToMeter: ratio, pixelLength, realLength },
-        customTags: zoneTags,
-        imageInfo: imgNaturalSize,
-        file: currentFile,
-      });
-      setSaveStatus('saved');
-      setTimeout(() => setSaveStatus(null), 3000);
-    } catch (err) {
-      console.error('Save failed:', err);
-      setSaveStatus('error');
-    }
-  };
 
   // ─── PDF upload ──────────────────────────────────────────────────────────────
   const handlePdfChange = (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    setCurrentFile(file);
+    // Don't track the raw PDF as currentFile here — we'll save the rendered PNG
+    // canvas instead (set in handlePdfConfirm) so re-opening the project restores
+    // the image directly without going through the region selector again.
     setStatus(`Opening PDF: ${file.name} …`);
     const reader = new FileReader();
     reader.onload = () => setPdfModalData(reader.result); // ArrayBuffer
@@ -743,6 +686,17 @@ export default function DetectionTool({ project, user, onBack }) {
   // Called when user confirms crop in the PDF modal
   const handlePdfConfirm = (croppedCanvas) => {
     setPdfModalData(null);
+    // Convert the cropped/full-page canvas to a PNG File.  This PNG is what gets
+    // uploaded to S3 as "original.png", so re-opening the project restores the
+    // image directly (no PDF selector) — exactly like a regular image upload.
+    croppedCanvas.toBlob((blob) => {
+      if (blob) {
+        const pngName = `${project?.name || 'pdf-page'}.png`;
+        const pngFile = new File([blob], pngName, { type: 'image/png' });
+        setCurrentFile(pngFile);
+        existingFileInfoRef.current = { ext: 'png', fileName: pngFile.name };
+      }
+    }, 'image/png');
     loadImageFromCanvas(croppedCanvas, "PDF page");
   };
 
@@ -779,6 +733,103 @@ export default function DetectionTool({ project, user, onBack }) {
     return Math.min(maxW / imgW, maxH / imgH, 1.0);
   }, []);
 
+  // ─── Load image from presigned URL (restoring saved project) ─────────────────
+  const loadImageFromUrl = useCallback((url, ext) => {
+    // Projects saved before the PNG-canvas fix may still have ext === 'pdf'.
+    // Re-open the selector for those so the user can re-select the region once;
+    // after the next Save the file will be stored as a PNG and won't need this path.
+    if (ext === 'pdf') {
+      fetch(url)
+        .then((r) => r.arrayBuffer())
+        .then((buf) => {
+          // Copy before giving to PdfRegionSelector to avoid transfer-detach issues.
+          setPdfModalData(buf.slice(0));
+        })
+        .catch(() => setStatus("Failed to restore PDF from saved project."));
+      return;
+    }
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      setOriginalImg(img);
+      setImgNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
+      const bs = computeBaseScale(img.naturalWidth, img.naturalHeight);
+      setBaseScale(bs);
+      setZoom(1.0);
+      setStatus(`Restored saved image: ${img.naturalWidth}×${img.naturalHeight} px`);
+    };
+    img.onerror = () => setStatus("Failed to restore image from saved project.");
+    setStatus("Opening file…");
+    img.src = url;
+  }, [computeBaseScale]);
+
+  // ─── Load project from S3 on mount ───────────────────────────────────────────
+  useEffect(() => {
+    if (!project?.id) return;
+    let cancelled = false;
+
+    setAnnotations([]);
+    setOriginalImg(null);
+    setImgNaturalSize({ w: 0, h: 0 });
+    setRatio(null);
+    setPixelLength("");
+    setRealLength("");
+    setZoneTags({ ...DEFAULT_ZONE_TAGS });
+    setCurrentFile(null);
+    setSaveStatus(null);
+
+    loadProject(project.id)
+      .then((data) => {
+        if (cancelled || !data) return;
+        if (data.annotations?.length) setAnnotations(data.annotations);
+        if (data.customTags && Object.keys(data.customTags).length)
+          setZoneTags(data.customTags);
+        if (data.imageInfo?.w) setImgNaturalSize(data.imageInfo);
+        if (data.scale?.pixelToMeter != null) {
+          setRatio(data.scale.pixelToMeter);
+          setPixelLength(data.scale.pixelLength || "");
+          setRealLength(data.scale.realLength || "");
+        }
+        if (data.originalExt) {
+          existingFileInfoRef.current = {
+            ext: data.originalExt,
+            fileName: data.metadata?.fileName || null,
+          };
+        }
+        if (data.originalFileUrl) {
+          loadImageFromUrl(data.originalFileUrl, data.originalExt);
+        }
+      })
+      .catch((err) => console.error('[DetectionTool] loadProject failed:', err));
+
+    return () => { cancelled = true; };
+  }, [project?.id, loadImageFromUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ─── Save project to S3 ───────────────────────────────────────────────────────
+  const handleSave = async () => {
+    if (!project?.id) return;
+    setSaveStatus('saving');
+    try {
+      await saveProject(project.id, {
+        name: project.name,
+        annotations,
+        scale: { pixelToMeter: ratio, pixelLength, realLength },
+        customTags: zoneTags,
+        imageInfo: imgNaturalSize,
+        file: currentFile,
+        existingExt: existingFileInfoRef.current.ext,
+        existingFileName: existingFileInfoRef.current.fileName,
+      });
+      setSaveStatus('saved');
+      setStatus("Save complete.");
+      setTimeout(() => setSaveStatus(null), 3000);
+    } catch (err) {
+      console.error('Save failed:', err);
+      setStatus(`Save failed: ${err?.message || String(err)}`);
+      setSaveStatus('error');
+    }
+  };
+
   // ─── Canvas redraw ───────────────────────────────────────────────────────────
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -813,6 +864,8 @@ export default function DetectionTool({ project, user, onBack }) {
     const file = e.target.files[0];
     if (!file) return;
     setCurrentFile(file);
+    existingFileInfoRef.current = { ext: file.name.split('.').pop().toLowerCase(), fileName: file.name };
+    setStatus("Opening file…");
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
@@ -1124,6 +1177,12 @@ export default function DetectionTool({ project, user, onBack }) {
     tempCanvas.height = imgNaturalSize.h;
     tempCanvas.getContext("2d").drawImage(originalImg, 0, 0);
 
+    // Apply confidence override if provided (must be a valid 0–1 float)
+    const confVal = confOverride !== '' ? parseFloat(confOverride) : null;
+    const useConf = confVal != null && !isNaN(confVal) && confVal > 0 && confVal <= 1;
+    const wallModelData = useConf ? { ...WALL_MODEL_DATA, conf: confVal } : WALL_MODEL_DATA;
+    const zoneModelData = useConf ? { ...ZONE_MODEL_DATA, conf: confVal } : ZONE_MODEL_DATA;
+
     setInferring(true);
     setStatus(tiled ? "Running tiled inference…" : "Running inference…");
 
@@ -1131,17 +1190,19 @@ export default function DetectionTool({ project, user, onBack }) {
       const blob = await new Promise((res) => tempCanvas.toBlob(res, "image/jpeg", 0.95));
 
       if (tiled && (imgNaturalSize.w > TILE_SIZE || imgNaturalSize.h > TILE_SIZE)) {
-        const allAnns = await runTiledInference(tempCanvas, blob);
-        setAnnotations(allAnns);
+        const allAnns = await runTiledInference(tempCanvas, blob, wallModelData, zoneModelData);
+        // Keep manually drawn shapes; replace all AI detections with fresh results
+        setAnnotations(prev => [...prev.filter(a => a.sourceModel === 'manual'), ...allAnns]);
         setStatus(`Tiled inference complete — ${allAnns.length} detections.`);
       } else {
         const [wallRes, zoneRes] = await Promise.all([
-          postInference(blob, WALL_MODEL_URL, WALL_MODEL_HEADERS, WALL_MODEL_DATA),
-          postInference(blob, ZONE_MODEL_URL, ZONE_MODEL_HEADERS, ZONE_MODEL_DATA),
+          postInference(blob, WALL_MODEL_URL, WALL_MODEL_HEADERS, wallModelData),
+          postInference(blob, ZONE_MODEL_URL, ZONE_MODEL_HEADERS, zoneModelData),
         ]);
         const wallAnns = parseModelResponse(wallRes, "wall_model");
         const zoneAnns = parseModelResponse(zoneRes, "zone_door_window_model");
-        setAnnotations([...wallAnns, ...zoneAnns]);
+        // Keep manually drawn shapes; replace all AI detections with fresh results
+        setAnnotations(prev => [...prev.filter(a => a.sourceModel === 'manual'), ...wallAnns, ...zoneAnns]);
         setStatus(`Inference complete — ${wallAnns.length + zoneAnns.length} detections.`);
       }
       setSelectedIdx(null);
@@ -1162,14 +1223,16 @@ export default function DetectionTool({ project, user, onBack }) {
     return res.json();
   };
 
-  const runTiledInference = async (canvas, _blob) => {
+  const runTiledInference = async (canvas, _blob, wallModelData, zoneModelData) => {
     const { w: W, h: H } = imgNaturalSize;
     const stride = TILE_SIZE - TILE_OVERLAP;
     const allAnns = [];
     const offsets = [];
     for (let y = 0; y < H; y += stride) for (let x = 0; x < W; x += stride) offsets.push([x, y]);
 
-    for (const [tx, ty] of offsets) {
+    for (let i = 0; i < offsets.length; i++) {
+      const [tx, ty] = offsets[i];
+      setStatus(`Analysing tile ${i + 1} of ${offsets.length}…`);
       const tw = Math.min(TILE_SIZE, W - tx), th = Math.min(TILE_SIZE, H - ty);
       const tc = document.createElement("canvas");
       tc.width = tw; tc.height = th;
@@ -1177,8 +1240,8 @@ export default function DetectionTool({ project, user, onBack }) {
       const tBlob = await new Promise(res => tc.toBlob(res, "image/jpeg", 0.9));
       try {
         const [wallRes, zoneRes] = await Promise.all([
-          postInference(tBlob, WALL_MODEL_URL, WALL_MODEL_HEADERS, WALL_MODEL_DATA),
-          postInference(tBlob, ZONE_MODEL_URL, ZONE_MODEL_HEADERS, ZONE_MODEL_DATA),
+          postInference(tBlob, WALL_MODEL_URL, WALL_MODEL_HEADERS, wallModelData),
+          postInference(tBlob, ZONE_MODEL_URL, ZONE_MODEL_HEADERS, zoneModelData),
         ]);
         [...parseModelResponse(wallRes, "wall_model"), ...parseModelResponse(zoneRes, "zone_door_window_model")].forEach(a => {
           allAnns.push({ ...a, x1: a.x1 + tx, y1: a.y1 + ty, x2: a.x2 + tx, y2: a.y2 + ty });
@@ -1398,7 +1461,7 @@ export default function DetectionTool({ project, user, onBack }) {
           {/* Inference buttons */}
           <div style={styles.inferenceBar}>
             <span style={styles.confLabel}>Conf:</span>
-            <input value={confOverride} onChange={e => setConfOverride(e.target.value)} placeholder="default" style={styles.confInput} />
+            <input value={confOverride} onChange={e => { const v = e.target.value; if (v === '' || /^0?\.?\d*$/.test(v)) setConfOverride(v); }} placeholder="0–1" style={styles.confInput} />
             {/*  this button was removed , it was originally to run image inference separately, however PDFs and images are running from 1 button now
             <button onClick={() => runInference(false)} disabled={inferring || !originalImg} style={styles.inferBtn}>
               {inferring ? "⟳ Running…" : "▶ ⊞ Run Inference"}
@@ -1509,11 +1572,11 @@ export default function DetectionTool({ project, user, onBack }) {
             <div style={styles.sectionTitle}>SCALE CALIBRATION</div>
             <div style={styles.row}>
               <span style={styles.label}>Px len:</span>
-              <input value={pixelLength} onChange={e => setPixelLength(e.target.value)} style={styles.smallInput} placeholder={lastMeasurePx || "px"} />
+              <input value={pixelLength} onChange={e => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setPixelLength(v); }} style={styles.smallInput} placeholder={lastMeasurePx || "px"} />
             </div>
             <div style={styles.row}>
               <span style={styles.label}>Real (m):</span>
-              <input value={realLength} onChange={e => setRealLength(e.target.value)} style={styles.smallInput} placeholder="m" />
+              <input value={realLength} onChange={e => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setRealLength(v); }} style={styles.smallInput} placeholder="m" />
             </div>
             <button onClick={calculateRatio} style={{ ...styles.smallBtn, width: "100%" }}>Calc Ratio</button>
             {ratio != null && <div style={styles.ratioDisplay}>{ratio.toFixed(8)} m/px</div>}

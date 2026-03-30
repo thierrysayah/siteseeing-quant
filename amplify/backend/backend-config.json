@@ -48,6 +48,30 @@
           "resourceName": "amplifyhosting"
         }
       ]
+    },
+    "AMPLIFY_storage_estimationplatform54fe8981_bucketName": {
+      "usedBy": [
+        {
+          "category": "storage",
+          "resourceName": "estimationplatform54fe8981"
+        }
+      ]
+    },
+    "AMPLIFY_storage_estimationplatform54fe8981_region": {
+      "usedBy": [
+        {
+          "category": "storage",
+          "resourceName": "estimationplatform54fe8981"
+        }
+      ]
+    }
+  },
+  "storage": {
+    "estimationplatform54fe8981": {
+      "dependsOn": [],
+      "providerPlugin": "awscloudformation",
+      "service": "S3",
+      "serviceType": "imported"
     }
   }
 }

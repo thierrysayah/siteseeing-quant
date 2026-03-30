@@ -68,26 +68,24 @@ export default function ProjectCard({ project, formatDate, onOpen, onDelete }) {
         <div className="pc-no-counts">No analysis run yet</div>
       )}
 
-      {/* ── Footer: date + actions ── */}
+      {/* ── Footer: delete (left) · date (centre) · open (right) ── */}
       <div className="pc-footer">
+        <button
+          className="pc-btn-delete"
+          onClick={() => onDelete(project.id)}
+          title="Delete project"
+        >
+          🗑
+        </button>
         <span className="pc-date">
           Edited {formatDate(lastEdited)}
         </span>
-        <div className="pc-actions">
-          <button
-            className="pc-btn-delete"
-            onClick={() => onDelete(project.id)}
-            title="Delete project"
-          >
-            🗑
-          </button>
-          <button
-            className="pc-btn-open"
-            onClick={() => onOpen(project)}
-          >
-            Open →
-          </button>
-        </div>
+        <button
+          className="pc-btn-open"
+          onClick={() => onOpen(project)}
+        >
+          Open →
+        </button>
       </div>
     </div>
   );

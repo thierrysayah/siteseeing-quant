@@ -1,17 +1,34 @@
-import { uploadData, downloadData, list, remove, getUrl } from 'aws-amplify/storage';
+import { uploadData, list, remove, getUrl } from 'aws-amplify/storage';
 import { getCurrentUser } from 'aws-amplify/auth';
 
 // ─── PATH HELPER ──────────────────────────────────────────────────────────────
-async function userPath(projectId, filename) {
+// Uses the Cognito User Pool sub (userId) — stable, user-specific, human-traceable
+// via Cognito User Pool console. Path: private/{sub}/projects/...
+async function getUserSub() {
   const { userId } = await getCurrentUser();
-  return `private/${userId}/projects/${projectId}/${filename}`;
+  return userId;
+}
+
+async function userPath(projectId, filename) {
+  const sub = await getUserSub();
+  return `private/${sub}/projects/${projectId}/${filename}`;
 }
 
 async function userPrefix(projectId) {
-  const { userId } = await getCurrentUser();
+  const sub = await getUserSub();
   return projectId
-    ? `private/${userId}/projects/${projectId}/`
-    : `private/${userId}/projects/`;
+    ? `private/${sub}/projects/${projectId}/`
+    : `private/${sub}/projects/`;
+}
+
+// ─── CACHE-SAFE DOWNLOAD ──────────────────────────────────────────────────────
+// Uses a fresh presigned URL (unique query-string per call) + fetch cache:'no-store'
+// so the browser NEVER serves a stale cached response for any S3 JSON file.
+async function fetchJSON(path) {
+  const { url } = await getUrl({ path, options: { expiresIn: 60 } });
+  const res = await fetch(url.toString(), { cache: 'no-store' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
 }
 
 // ─── COUNT HELPER ─────────────────────────────────────────────────────────────
@@ -43,9 +60,7 @@ export async function listProjects() {
   const projects = await Promise.all(
     metadataKeys.map(async (key) => {
       try {
-        const { body } = await downloadData({ path: key }).result;
-        const text = await body.text();
-        return JSON.parse(text);
+        return await fetchJSON(key);
       } catch {
         return null;
       }
@@ -73,19 +88,21 @@ export async function createProject(id, name, owner) {
   await uploadData({
     path: key,
     data: JSON.stringify(metadata),
-    options: { contentType: 'application/json' },
+    options: { contentType: 'application/json', cacheControl: 'no-cache, no-store, must-revalidate' },
   }).result;
 }
 
 // ─── SAVE PROJECT ─────────────────────────────────────────────────────────────
 export async function saveProject(
   projectId,
-  { name, annotations, scale, customTags, imageInfo, file }
+  { name, annotations, scale, customTags, imageInfo, file, existingExt, existingFileName }
 ) {
   const counts = deriveCountsFromAnnotations(annotations);
+  // Preserve existing ext/fileName if no new file is provided (e.g. re-saving after load)
   const originalExt = file
     ? file.name.split('.').pop().toLowerCase()
-    : null;
+    : (existingExt || null);
+  const fileName = file ? file.name : (existingFileName || null);
 
   const metadata = {
     id: projectId,
@@ -93,7 +110,7 @@ export async function saveProject(
     status: counts ? 'In Progress' : 'Draft',
     lastEdited: new Date().toISOString(),
     counts,
-    fileName: file ? file.name : null,
+    fileName,
     originalExt,
   };
 
@@ -111,16 +128,17 @@ export async function saveProject(
     userPath(projectId, 'annotations.json'),
   ]);
 
+  const NO_CACHE = 'no-cache, no-store, must-revalidate';
   const uploads = [
     uploadData({
       path: metaKey,
       data: JSON.stringify(metadata),
-      options: { contentType: 'application/json' },
+      options: { contentType: 'application/json', cacheControl: NO_CACHE },
     }).result,
     uploadData({
       path: annotKey,
       data: JSON.stringify(annotationsPayload),
-      options: { contentType: 'application/json' },
+      options: { contentType: 'application/json', cacheControl: NO_CACHE },
     }).result,
   ];
 
@@ -146,12 +164,10 @@ export async function loadProject(projectId) {
     userPath(projectId, 'annotations.json'),
   ]);
 
-  // Try to download annotations; return null for new (unsaved) projects
+  // Fetch annotations — returns null for new (unsaved) projects
   let annotData;
   try {
-    const { body } = await downloadData({ path: annotKey }).result;
-    const text = await body.text();
-    annotData = JSON.parse(text);
+    annotData = await fetchJSON(annotKey);
   } catch {
     return null; // Project not yet saved
   }
@@ -159,9 +175,7 @@ export async function loadProject(projectId) {
   // Fetch metadata
   let metadata = null;
   try {
-    const { body } = await downloadData({ path: metaKey }).result;
-    const text = await body.text();
-    metadata = JSON.parse(text);
+    metadata = await fetchJSON(metaKey);
   } catch {
     // metadata missing but annotations exist — continue
   }
@@ -173,9 +187,11 @@ export async function loadProject(projectId) {
       const fileKey = await userPath(projectId, `original.${metadata.originalExt}`);
       const urlResult = await getUrl({ path: fileKey });
       originalFileUrl = urlResult.url.toString();
-    } catch {
-      // file missing — silently ignore
+    } catch (err) {
+      console.error('[loadProject] Failed to generate presigned URL:', err);
     }
+  } else {
+    console.warn('[loadProject] No originalExt in metadata — image will not be restored.', metadata);
   }
 
   return {

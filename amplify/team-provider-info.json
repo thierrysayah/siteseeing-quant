@@ -20,6 +20,12 @@
       },
       "auth": {
         "estimationplatformece78c7f": {}
+      },
+      "storage": {
+        "estimationplatform54fe8981": {
+          "bucketName": "estimation-platform-user-data",
+          "region": "eu-west-3"
+        }
       }
     }
   }
