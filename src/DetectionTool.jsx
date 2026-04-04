@@ -10,6 +10,10 @@ const ZONE_MODEL_URL = "https://predict-69bbe87c3bb65e1f7377-dproatj77a-nw.a.run
 const ZONE_MODEL_HEADERS = { Authorization: "Bearer ul_28460c43f1db933b0dc3c576368ac6ce07f45392" };
 const ZONE_MODEL_DATA = { conf: 0.25, iou: 0.7, imgsz: 640 };
 
+const IMAGE_SEARCH_URL   = ""; // set after ECS deployment — e.g. https://your-alb.amazonaws.com/search
+const IMAGE_SEARCH_TOKEN = ""; // API_TOKEN env var value set on the ECS task
+const IMAGE_SEARCH_COLOR = "#00FFEE"; // cyan — distinct from TEMP_COLOR red
+
 const CLASSES = ["Internal_Wall", "External_Wall", "zone", "door", "window"];
 const UNASSIGNED_CLASS = "Unassigned";
 const CLASS_COLORS = {
@@ -298,13 +302,16 @@ function drawAnnotations(ctx, anns, scale, {
 
   // Temp box
   if (tempBox) {
-    ctx.strokeStyle = TEMP_COLOR;
-    ctx.lineWidth = 2;
+    const isSearchBox = tempBox._isImageSearch === true;
+    ctx.strokeStyle = isSearchBox ? IMAGE_SEARCH_COLOR : TEMP_COLOR;
+    ctx.lineWidth = isSearchBox ? 2 : 2;
+    if (isSearchBox) ctx.setLineDash([6, 3]);
     const [x1, y1, x2, y2] = annotationBbox(tempBox);
     ctx.strokeRect(x1 * scale, y1 * scale, (x2 - x1) * scale, (y2 - y1) * scale);
-    ctx.fillStyle = "#FFFFFF";
+    ctx.setLineDash([]);
+    ctx.fillStyle = isSearchBox ? IMAGE_SEARCH_COLOR : "#FFFFFF";
     ctx.font = "bold 11px monospace";
-    ctx.fillText(tempBox.clsName, x1 * scale + 3, Math.max(12, y1 * scale - 4));
+    ctx.fillText(isSearchBox ? "Image Search" : tempBox.clsName, x1 * scale + 3, Math.max(12, y1 * scale - 4));
   }
 
   // Temp polygon
@@ -654,6 +661,7 @@ export default function DetectionTool({ project, user, onBack }) {
 
   // Inference
   const [inferring, setInferring] = useState(false);
+  const [imageSearching, setImageSearching] = useState(false);
   const [status, setStatus] = useState("Load an image to begin.");
 
   // PDF import state
@@ -996,6 +1004,10 @@ export default function DetectionTool({ project, user, onBack }) {
       boxDrawing.current = true;
       boxStart.current = [ox, oy];
       setTempBox({ shapeType: "box", clsName: newClass, x1: ox, y1: oy, x2: ox, y2: oy, points: null });
+    } else if (drawMode === "imageSearch") {
+      boxDrawing.current = true;
+      boxStart.current = [ox, oy];
+      setTempBox({ shapeType: "box", clsName: "Image Search", _isImageSearch: true, x1: ox, y1: oy, x2: ox, y2: oy, points: null });
     } else if (drawMode === "line") {
       lineDrawing.current = true;
       lineStart.current = [ox, oy];
@@ -1073,9 +1085,10 @@ export default function DetectionTool({ project, user, onBack }) {
     }
 
     // ── Drawing modes ────────────────────────────────────────────────────────
-    if (drawMode === "box" && mouseDown.current && boxDrawing.current) {
+    if ((drawMode === "box" || drawMode === "imageSearch") && mouseDown.current && boxDrawing.current) {
       const [sx, sy] = boxStart.current;
-      setTempBox({ shapeType: "box", clsName: newClass, x1: sx, y1: sy, x2: ox, y2: oy, points: null });
+      const isSearch = drawMode === "imageSearch";
+      setTempBox({ shapeType: "box", clsName: isSearch ? "Image Search" : newClass, _isImageSearch: isSearch, x1: sx, y1: sy, x2: ox, y2: oy, points: null });
     } else if (drawMode === "line" && mouseDown.current && lineDrawing.current) {
       const [sx, sy] = lineStart.current;
       setTempLine([[sx, sy], [ox, oy]]);
@@ -1154,6 +1167,21 @@ export default function DetectionTool({ project, user, onBack }) {
       boxDrawing.current = false;
       boxStart.current = null;
       setTempBox(null);
+    } else if (drawMode === "imageSearch" && boxDrawing.current) {
+      const [sx, sy] = boxStart.current;
+      const x1 = Math.round(Math.min(sx, ox));
+      const y1 = Math.round(Math.min(sy, oy));
+      const x2 = Math.round(Math.max(sx, ox));
+      const y2 = Math.round(Math.max(sy, oy));
+      boxDrawing.current = false;
+      boxStart.current = null;
+      setTempBox(null);
+      const regionAnn = { shapeType: "box", x1, y1, x2, y2, points: null };
+      if (isValidAnnotation(regionAnn)) {
+        runImageSearch(x1, y1, x2, y2);
+      } else {
+        setStatus("Image Search: draw a larger region.");
+      }
     } else if (drawMode === "line" && lineDrawing.current) {
       const [sx, sy] = lineStart.current;
       const len = Math.hypot(ox - sx, oy - sy);
@@ -1273,6 +1301,61 @@ export default function DetectionTool({ project, user, onBack }) {
       } catch (_) {}
     }
     return nms(allAnns, NMS_IOU_THRESH);
+  };
+
+  // ─── Image Search ─────────────────────────────────────────────────────────────
+  const runImageSearch = async (x1, y1, x2, y2) => {
+    if (!originalImg || imageSearching) return;
+    if (!IMAGE_SEARCH_URL) {
+      setStatus("Image Search: API URL not configured — see image-search-api/DEPLOY.md.");
+      return;
+    }
+    setImageSearching(true);
+    setStatus("Image Search: searching for similar objects…");
+    try {
+      // Draw the original image (no annotations) onto a clean canvas
+      const cleanCanvas = document.createElement("canvas");
+      cleanCanvas.width  = imgNaturalSize.w;
+      cleanCanvas.height = imgNaturalSize.h;
+      cleanCanvas.getContext("2d").drawImage(originalImg, 0, 0);
+      const blob = await new Promise((res) => cleanCanvas.toBlob(res, "image/jpeg", 0.95));
+
+      const confVal = confOverride !== "" ? parseFloat(confOverride) : 0.25;
+      const fd = new FormData();
+      fd.append("file", blob, "image.jpg");
+      fd.append("x1", String(x1));
+      fd.append("y1", String(y1));
+      fd.append("x2", String(x2));
+      fd.append("y2", String(y2));
+      fd.append("conf", String(isNaN(confVal) ? 0.25 : confVal));
+
+      const headers = IMAGE_SEARCH_TOKEN ? { Authorization: `Bearer ${IMAGE_SEARCH_TOKEN}` } : {};
+      const res = await fetch(IMAGE_SEARCH_URL, { method: "POST", headers, body: fd });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+
+      const newAnns = (json.detections || []).map((d) => ({
+        id: Math.random().toString(36).slice(2),
+        shapeType: "box",
+        clsName: UNASSIGNED_CLASS,
+        confidence: d.confidence ?? null,
+        sourceModel: "image_search",
+        zoneTag: null,
+        x1: Math.round(d.x1), y1: Math.round(d.y1),
+        x2: Math.round(d.x2), y2: Math.round(d.y2),
+        points: null,
+      }));
+
+      if (newAnns.length > 0) {
+        setAnnotations((prev) => [...prev, ...newAnns]);
+        setVisibleClasses((prev) => new Set([...prev, UNASSIGNED_CLASS]));
+      }
+      setStatus(`Image Search: ${newAnns.length} similar object(s) found.`);
+    } catch (err) {
+      setStatus(`Image Search failed: ${err.message}`);
+    } finally {
+      setImageSearching(false);
+    }
   };
 
   // ─── Edit / delete ───────────────────────────────────────────────────────────
@@ -1445,6 +1528,19 @@ export default function DetectionTool({ project, user, onBack }) {
             {toolBtn("box", "⬜ Box")}
             {toolBtn("polygon", "⬡ Polygon")}
             {toolBtn("line", "📏 Measure")}
+            <button
+              onClick={() => { setDrawMode("imageSearch"); setTempBox(null); setTempPolyPts([]); setTempPolyMouse(null); setTempLine(null); setStatus("Image Search: draw a box around the object to find similar ones."); }}
+              disabled={!originalImg || imageSearching}
+              style={{
+                ...styles.toolBtn,
+                background: drawMode === "imageSearch" ? "#004444" : "#1a2035",
+                border: drawMode === "imageSearch" ? `1px solid ${IMAGE_SEARCH_COLOR}` : "1px solid #2d3a52",
+                color: drawMode === "imageSearch" ? IMAGE_SEARCH_COLOR : "#9ab",
+                opacity: (!originalImg || imageSearching) ? 0.5 : 1,
+              }}
+            >
+              {imageSearching ? "⟳ Searching…" : "🔍 Img Search"}
+            </button>
             {drawMode === "polygon" && tempPolyPts.length >= 3 && (
               <button onClick={finishPolygon} style={{ ...styles.toolBtn, background: "#006633" }}>✓ Finish Poly</button>
             )}
