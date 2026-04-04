@@ -95,7 +95,7 @@ export async function createProject(id, name, owner) {
 // ─── SAVE PROJECT ─────────────────────────────────────────────────────────────
 export async function saveProject(
   projectId,
-  { name, annotations, scale, customTags, imageInfo, file, existingExt, existingFileName }
+  { name, annotations, scale, customTags, customClasses, imageInfo, file, existingExt, existingFileName }
 ) {
   const counts = deriveCountsFromAnnotations(annotations);
   // Preserve existing ext/fileName if no new file is provided (e.g. re-saving after load)
@@ -120,6 +120,7 @@ export async function saveProject(
     imageInfo: imageInfo || { w: 0, h: 0 },
     scale: scale || { pixelToMeter: null, pixelLength: '', realLength: '' },
     customTags: customTags || {},
+    customClasses: customClasses || [],
     annotations: annotations || [],
   };
 
@@ -199,6 +200,7 @@ export async function loadProject(projectId) {
     annotations: annotData.annotations || [],
     scale: annotData.scale || {},
     customTags: annotData.customTags || {},
+    customClasses: annotData.customClasses || [],
     imageInfo: annotData.imageInfo || { w: 0, h: 0 },
     originalFileUrl,
     originalExt: metadata?.originalExt || null,

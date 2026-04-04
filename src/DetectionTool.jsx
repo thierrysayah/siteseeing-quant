@@ -11,12 +11,14 @@ const ZONE_MODEL_HEADERS = { Authorization: "Bearer ul_28460c43f1db933b0dc3c5763
 const ZONE_MODEL_DATA = { conf: 0.25, iou: 0.7, imgsz: 640 };
 
 const CLASSES = ["Internal_Wall", "External_Wall", "zone", "door", "window"];
+const UNASSIGNED_CLASS = "Unassigned";
 const CLASS_COLORS = {
   Internal_Wall: "#00B050",
   External_Wall: "#0070C0",
   zone: "#C00000",
   door: "#7030A0",
   window: "#ED7D31",
+  Unassigned: "#667799",
 };
 const DEFAULT_COLOR = "#FFAA00";
 const HOVER_COLOR = "#FFFF00";
@@ -192,8 +194,9 @@ function nms(anns, thresh) {
 function drawAnnotations(ctx, anns, scale, {
   ratio, hoverIdx, selectedIdx, selectedIndices,
   tempBox, tempPolyPts, tempPolyMouse, tempLine, lastMeasureLine,
-  hotHandle, zoneTags,
+  hotHandle, zoneTags, classColors,
 }) {
+  const getColor = (cls) => (classColors && classColors[cls]) || CLASS_COLORS[cls] || DEFAULT_COLOR;
   // Tagged shape fills (all classes)
   for (const ann of anns) {
     if (ann.zoneTag) {
@@ -216,7 +219,7 @@ function drawAnnotations(ctx, anns, scale, {
 
   // Annotations
   anns.forEach((ann, i) => {
-    let color = safeColor(ann.clsName);
+    let color = getColor(ann.clsName);
     let lw = 2;
     if (i === hoverIdx) { color = HOVER_COLOR; lw = 3; }
     if (selectedIndices && selectedIndices.has(i) && i !== selectedIdx) { color = SELECTED_MULTI_COLOR; lw = 3; }
@@ -659,11 +662,26 @@ export default function DetectionTool({ project, user, onBack }) {
   const [editClass, setEditClass] = useState("Internal_Wall");
   const [editConf, setEditConf] = useState("");
 
+  // Custom classes
+  const [customClasses, setCustomClasses] = useState([]);
+  const [showClassManager, setShowClassManager] = useState(false);
+  const [newCustomClassName, setNewCustomClassName] = useState("");
+  const [newCustomClassColor, setNewCustomClassColor] = useState("#FF6B6B");
+
   // File tracking & save state
   const [currentFile, setCurrentFile] = useState(null);
   const [saveStatus, setSaveStatus] = useState(null); // null | 'saving' | 'saved' | 'error'
   // Persists file info across re-saves so originalExt is never overwritten with null
   const existingFileInfoRef = useRef({ ext: null, fileName: null });
+
+  // Derived class helpers (updated whenever customClasses changes)
+  const allClasses = [...CLASSES, UNASSIGNED_CLASS, ...customClasses.map(c => c.name)];
+  const allClassColors = (() => {
+    const map = { ...CLASS_COLORS };
+    customClasses.forEach(c => { map[c.name] = c.color; });
+    return map;
+  })();
+  const getClassColor = (cls) => allClassColors[cls] || DEFAULT_COLOR;
 
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
@@ -775,6 +793,7 @@ export default function DetectionTool({ project, user, onBack }) {
     setPixelLength("");
     setRealLength("");
     setZoneTags({ ...DEFAULT_ZONE_TAGS });
+    setCustomClasses([]);
     setCurrentFile(null);
     setSaveStatus(null);
 
@@ -784,6 +803,10 @@ export default function DetectionTool({ project, user, onBack }) {
         if (data.annotations?.length) setAnnotations(data.annotations);
         if (data.customTags && Object.keys(data.customTags).length)
           setZoneTags(data.customTags);
+        if (data.customClasses?.length) {
+          setCustomClasses(data.customClasses);
+          setVisibleClasses(prev => new Set([...prev, ...data.customClasses.map(c => c.name)]));
+        }
         if (data.imageInfo?.w) setImgNaturalSize(data.imageInfo);
         if (data.scale?.pixelToMeter != null) {
           setRatio(data.scale.pixelToMeter);
@@ -815,6 +838,7 @@ export default function DetectionTool({ project, user, onBack }) {
         annotations,
         scale: { pixelToMeter: ratio, pixelLength, realLength },
         customTags: zoneTags,
+        customClasses,
         imageInfo: imgNaturalSize,
         file: currentFile,
         existingExt: existingFileInfoRef.current.ext,
@@ -854,10 +878,10 @@ export default function DetectionTool({ project, user, onBack }) {
       ratio, hoverIdx: visHover, selectedIdx: visSel,
       selectedIndices: visSelSet,
       tempBox, tempPolyPts, tempPolyMouse, tempLine, lastMeasureLine,
-      hotHandle: handleDragging.current, zoneTags,
+      hotHandle: handleDragging.current, zoneTags, classColors: allClassColors,
     });
   }, [originalImg, annotations, scale, visibleClasses, hoverIdx, selectedIdx, selectedIndices,
-      tempBox, tempPolyPts, tempPolyMouse, tempLine, lastMeasureLine, ratio, zoneTags]);
+      tempBox, tempPolyPts, tempPolyMouse, tempLine, lastMeasureLine, ratio, zoneTags, customClasses]);
 
   // ─── Image upload ────────────────────────────────────────────────────────────
   const handleFileChange = (e) => {
@@ -1478,44 +1502,47 @@ export default function DetectionTool({ project, user, onBack }) {
           {/* Class visibility */}
           <div style={styles.section}>
             <div style={styles.sectionTitle}>VISIBILITY</div>
-            {CLASSES.map(cls => (
-              <label key={cls} style={styles.visRow}>
-                <input
-                  type="checkbox"
-                  checked={visibleClasses.has(cls)}
-                  onChange={e => {
-                    const isChecked = e.target.checked;
-                    setVisibleClasses(prev => {
-                      const s = new Set(prev);
-                      if (isChecked) s.add(cls);
-                      else s.delete(cls);
+            {allClasses.map(cls => {
+              const color = allClassColors[cls] || DEFAULT_COLOR;
+              return (
+                <label key={cls} style={styles.visRow}>
+                  <input
+                    type="checkbox"
+                    checked={visibleClasses.has(cls)}
+                    onChange={e => {
+                      const isChecked = e.target.checked;
+                      setVisibleClasses(prev => {
+                        const s = new Set(prev);
+                        if (isChecked) s.add(cls);
+                        else s.delete(cls);
 
-                      setSelectedIndices(prevSel => {
-                        const filtered = new Set(
-                          [...prevSel].filter(i => s.has(annotations[i]?.clsName))
-                        );
-                        const nextSelectedIdx =
-                          selectedIdx != null && filtered.has(selectedIdx)
-                            ? selectedIdx
-                            : (filtered.size ? [...filtered][filtered.size - 1] : null);
-                        setSelectedIdx(nextSelectedIdx);
-                        return filtered;
+                        setSelectedIndices(prevSel => {
+                          const filtered = new Set(
+                            [...prevSel].filter(i => s.has(annotations[i]?.clsName))
+                          );
+                          const nextSelectedIdx =
+                            selectedIdx != null && filtered.has(selectedIdx)
+                              ? selectedIdx
+                              : (filtered.size ? [...filtered][filtered.size - 1] : null);
+                          setSelectedIdx(nextSelectedIdx);
+                          return filtered;
+                        });
+
+                        return s;
                       });
-
-                      return s;
-                    });
-                  }}
-                />
-                <span style={{ ...styles.classChip, borderColor: CLASS_COLORS[cls] || DEFAULT_COLOR, color: CLASS_COLORS[cls] || DEFAULT_COLOR }}>{cls}</span>
-              </label>
-            ))}
+                    }}
+                  />
+                  <span style={{ ...styles.classChip, borderColor: color, color }}>{cls}</span>
+                </label>
+              );
+            })}
           </div>
 
           {/* Draw class */}
           <div style={styles.section}>
             <div style={styles.sectionTitle}>NEW SHAPE CLASS</div>
             <select value={newClass} onChange={e => setNewClass(e.target.value)} style={styles.select}>
-              {CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
+              {allClasses.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
 
@@ -1524,7 +1551,7 @@ export default function DetectionTool({ project, user, onBack }) {
             <div style={styles.sectionTitle}>EDIT SELECTED</div>
             <div style={styles.row}>
               <select value={editClass} onChange={e => setEditClass(e.target.value)} style={{ ...styles.select, flex: 1 }}>
-                {CLASSES.map(c => <option key={c} value={c}>{c}</option>)}
+                {allClasses.map(c => <option key={c} value={c}>{c}</option>)}
               </select>
               <button onClick={applyClass} style={styles.smallBtn}>Apply</button>
             </div>
@@ -1567,6 +1594,56 @@ export default function DetectionTool({ project, user, onBack }) {
             )}
           </div>
 
+          {/* Custom class manager */}
+          <div style={styles.section}>
+            <div style={{ ...styles.sectionTitle, display: "flex", justifyContent: "space-between" }}>
+              CUSTOM CLASSES
+              <button onClick={() => setShowClassManager(v => !v)} style={styles.tinyBtn}>{showClassManager ? "▲" : "▼"}</button>
+            </div>
+            {showClassManager && (
+              <div>
+                {customClasses.length === 0 && (
+                  <div style={{ color: "#3a5070", fontSize: 10, marginBottom: 4 }}>No custom classes yet.</div>
+                )}
+                {customClasses.map(cc => (
+                  <div key={cc.name} style={{ ...styles.row, marginBottom: 2 }}>
+                    <span style={{ width: 12, height: 12, background: cc.color, display: "inline-block", borderRadius: 2, marginRight: 6, flexShrink: 0 }} />
+                    <span style={{ ...styles.label, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{cc.name}</span>
+                    <button onClick={() => {
+                      setCustomClasses(prev => prev.filter(c => c.name !== cc.name));
+                      setVisibleClasses(prev => { const s = new Set(prev); s.delete(cc.name); s.add(UNASSIGNED_CLASS); return s; });
+                      setAnnotations(prev => prev.map(a => a.clsName === cc.name ? { ...a, clsName: UNASSIGNED_CLASS } : a));
+                    }} style={styles.tinyBtn}>✕</button>
+                  </div>
+                ))}
+                <div style={styles.row}>
+                  <input
+                    value={newCustomClassName}
+                    onChange={e => setNewCustomClassName(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key !== "Enter") return;
+                      const name = newCustomClassName.trim();
+                      if (!name || allClasses.includes(name)) return;
+                      setCustomClasses(prev => [...prev, { name, color: newCustomClassColor }]);
+                      setVisibleClasses(prev => new Set([...prev, name]));
+                      setNewCustomClassName("");
+                    }}
+                    placeholder="class name"
+                    style={{ ...styles.smallInput, flex: 1, width: "auto" }}
+                  />
+                  <input type="color" value={newCustomClassColor} onChange={e => setNewCustomClassColor(e.target.value)} style={{ width: 28, height: 24, padding: 1, background: "none", border: "none", cursor: "pointer" }} />
+                  <button onClick={() => {
+                    const name = newCustomClassName.trim();
+                    if (!name || allClasses.includes(name)) return;
+                    setCustomClasses(prev => [...prev, { name, color: newCustomClassColor }]);
+                    setVisibleClasses(prev => new Set([...prev, name]));
+                    setNewCustomClassName("");
+                  }} style={styles.smallBtn}>Add</button>
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Scale calibration */}
           <div style={styles.section}>
             <div style={styles.sectionTitle}>SCALE CALIBRATION</div>
@@ -1598,8 +1675,8 @@ export default function DetectionTool({ project, user, onBack }) {
                 const isSel = selectedIdx === origIdx;
                 return (
                   <div key={ann.id} onClick={() => { setSelectedIdx(origIdx); setSelectedIndices(new Set([origIdx])); setEditClass(ann.clsName); setEditConf(ann.confidence != null ? String(ann.confidence) : ""); }}
-                    style={{ ...styles.annRow, background: isSel ? "#1a3056" : "transparent", borderLeft: `3px solid ${safeColor(ann.clsName)}` }}>
-                    <span style={{ color: safeColor(ann.clsName), fontWeight: 600, fontSize: 10 }}>{ann.clsName}</span>
+                    style={{ ...styles.annRow, background: isSel ? "#1a3056" : "transparent", borderLeft: `3px solid ${getClassColor(ann.clsName)}` }}>
+                    <span style={{ color: getClassColor(ann.clsName), fontWeight: 600, fontSize: 10 }}>{ann.clsName}</span>
                     {ann.zoneTag && <span style={{ color: "#aaa", fontSize: 9 }}> :{ann.zoneTag}</span>}
                     <br />
                     <span style={{ color: "#667", fontSize: 9 }}>({x1},{y1})–({x2},{y2}) {ann.shapeType === "polygon" ? "[poly]" : ""}</span>
