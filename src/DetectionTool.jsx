@@ -10,6 +10,11 @@ const ZONE_MODEL_URL = "https://predict-69bbe87c3bb65e1f7377-dproatj77a-nw.a.run
 const ZONE_MODEL_HEADERS = { Authorization: "Bearer ul_28460c43f1db933b0dc3c576368ac6ce07f45392" };
 const ZONE_MODEL_DATA = { conf: 0.25, iou: 0.7, imgsz: 640 };
 
+// Instance segmentation model — zones only (returns polygons, not boxes)
+const ZONE_SEG_MODEL_URL = "https://predict-69d4e9609d26fcda25f5-dproatj77a-od.a.run.app/predict";
+const ZONE_SEG_MODEL_HEADERS = { Authorization: "Bearer ul_28460c43f1db933b0dc3c576368ac6ce07f45392" };
+const ZONE_SEG_MODEL_DATA = { conf: 0.25, iou: 0.7, imgsz: 640 };
+
 const IMAGE_SEARCH_URL   = ""; // set after ECS deployment — e.g. https://your-alb.amazonaws.com/search
 const IMAGE_SEARCH_TOKEN = ""; // API_TOKEN env var value set on the ECS task
 const IMAGE_SEARCH_COLOR = "#00FFEE"; // cyan — distinct from TEMP_COLOR red
@@ -163,6 +168,68 @@ function parseModelResponse(json, sourceModel) {
     }
   }
   return result;
+}
+
+// Parse segmentation model response — returns polygon annotations
+function parseSegmentationResponse(json, sourceModel) {
+  const result = [];
+  if (!json || !json.images) return result;
+  for (const img of json.images) {
+    for (const item of img.results || []) {
+      const cls = item.name || item.class_name || String(item.class || "unknown");
+      let points = null;
+
+      if (item.segments) {
+        if (Array.isArray(item.segments.x) && Array.isArray(item.segments.y)) {
+          // Ultralytics format: { x: [...], y: [...] } — may be normalised (0–1) or pixel coords
+          const xs = item.segments.x;
+          const ys = item.segments.y;
+          points = xs.map((x, i) => [x, ys[i]]);
+        } else if (Array.isArray(item.segments)) {
+          // Flat [[x,y], ...] format
+          points = item.segments;
+        }
+      }
+
+      if (points && points.length >= 3) {
+        result.push({
+          id: Math.random().toString(36).slice(2),
+          shapeType: "polygon",
+          clsName: cls,
+          confidence: item.confidence ?? null,
+          sourceModel,
+          zoneTag: null,
+          x1: null, y1: null, x2: null, y2: null,
+          points,
+        });
+      } else if (item.box) {
+        // Fallback to bounding box if no valid polygon returned
+        const { x1, y1, x2, y2 } = item.box || {};
+        if (x1 !== undefined) {
+          result.push({
+            id: Math.random().toString(36).slice(2),
+            shapeType: "box",
+            clsName: cls,
+            confidence: item.confidence ?? null,
+            sourceModel,
+            zoneTag: null,
+            x1: Math.min(x1, x2), y1: Math.min(y1, y2),
+            x2: Math.max(x1, x2), y2: Math.max(y1, y2),
+            points: null,
+          });
+        }
+      }
+    }
+  }
+  return result;
+}
+
+// Offset an annotation by tile origin (handles both boxes and polygons)
+function offsetAnnotation(ann, tx, ty) {
+  if (ann.shapeType === "polygon" && ann.points) {
+    return { ...ann, points: ann.points.map(([x, y]) => [x + tx, y + ty]) };
+  }
+  return { ...ann, x1: ann.x1 + tx, y1: ann.y1 + ty, x2: ann.x2 + tx, y2: ann.y2 + ty };
 }
 
 // IoU for NMS
@@ -1234,6 +1301,7 @@ export default function DetectionTool({ project, user, onBack }) {
     const useConf = confVal != null && !isNaN(confVal) && confVal > 0 && confVal <= 1;
     const wallModelData = useConf ? { ...WALL_MODEL_DATA, conf: confVal } : WALL_MODEL_DATA;
     const zoneModelData = useConf ? { ...ZONE_MODEL_DATA, conf: confVal } : ZONE_MODEL_DATA;
+    const zoneSegModelData = useConf ? { ...ZONE_SEG_MODEL_DATA, conf: confVal } : ZONE_SEG_MODEL_DATA;
 
     setInferring(true);
     setStatus(tiled ? "Running tiled inference…" : "Running inference…");
@@ -1242,20 +1310,26 @@ export default function DetectionTool({ project, user, onBack }) {
       const blob = await new Promise((res) => tempCanvas.toBlob(res, "image/jpeg", 0.95));
 
       if (tiled && (imgNaturalSize.w > TILE_SIZE || imgNaturalSize.h > TILE_SIZE)) {
-        const allAnns = await runTiledInference(tempCanvas, blob, wallModelData, zoneModelData);
+        const allAnns = await runTiledInference(tempCanvas, blob, wallModelData, zoneModelData, zoneSegModelData);
         // Keep manually drawn shapes; replace all AI detections with fresh results
         setAnnotations(prev => [...prev.filter(a => a.sourceModel === 'manual'), ...allAnns]);
         setStatus(`Tiled inference complete — ${allAnns.length} detections.`);
       } else {
-        const [wallRes, zoneRes] = await Promise.all([
+        const [wallRes, doorWinRes, zoneSegRes] = await Promise.all([
           postInference(blob, WALL_MODEL_URL, WALL_MODEL_HEADERS, wallModelData),
           postInference(blob, ZONE_MODEL_URL, ZONE_MODEL_HEADERS, zoneModelData),
+          postInference(blob, ZONE_SEG_MODEL_URL, ZONE_SEG_MODEL_HEADERS, zoneSegModelData),
         ]);
-        const wallAnns = parseModelResponse(wallRes, "wall_model");
-        const zoneAnns = parseModelResponse(zoneRes, "zone_door_window_model");
+        const wallAnns    = parseModelResponse(wallRes, "wall_model");
+        // Old zone model: keep doors and windows only
+        const doorWinAnns = parseModelResponse(doorWinRes, "zone_door_window_model")
+          .filter(a => a.clsName === "door" || a.clsName === "window");
+        // New seg model: zones as polygons
+        const zoneSegAnns = parseSegmentationResponse(zoneSegRes, "zone_seg_model");
+        const allAnns = [...wallAnns, ...doorWinAnns, ...zoneSegAnns];
         // Keep manually drawn shapes; replace all AI detections with fresh results
-        setAnnotations(prev => [...prev.filter(a => a.sourceModel === 'manual'), ...wallAnns, ...zoneAnns]);
-        setStatus(`Inference complete — ${wallAnns.length + zoneAnns.length} detections.`);
+        setAnnotations(prev => [...prev.filter(a => a.sourceModel === 'manual'), ...allAnns]);
+        setStatus(`Inference complete — ${allAnns.length} detections.`);
       }
       setSelectedIdx(null);
       setSelectedIndices(new Set());
@@ -1275,7 +1349,7 @@ export default function DetectionTool({ project, user, onBack }) {
     return res.json();
   };
 
-  const runTiledInference = async (canvas, _blob, wallModelData, zoneModelData) => {
+  const runTiledInference = async (canvas, _blob, wallModelData, zoneModelData, zoneSegModelData) => {
     const { w: W, h: H } = imgNaturalSize;
     const stride = TILE_SIZE - TILE_OVERLAP;
     const allAnns = [];
@@ -1291,13 +1365,17 @@ export default function DetectionTool({ project, user, onBack }) {
       tc.getContext("2d").drawImage(canvas, tx, ty, tw, th, 0, 0, tw, th);
       const tBlob = await new Promise(res => tc.toBlob(res, "image/jpeg", 0.9));
       try {
-        const [wallRes, zoneRes] = await Promise.all([
+        const [wallRes, doorWinRes, zoneSegRes] = await Promise.all([
           postInference(tBlob, WALL_MODEL_URL, WALL_MODEL_HEADERS, wallModelData),
           postInference(tBlob, ZONE_MODEL_URL, ZONE_MODEL_HEADERS, zoneModelData),
+          postInference(tBlob, ZONE_SEG_MODEL_URL, ZONE_SEG_MODEL_HEADERS, zoneSegModelData),
         ]);
-        [...parseModelResponse(wallRes, "wall_model"), ...parseModelResponse(zoneRes, "zone_door_window_model")].forEach(a => {
-          allAnns.push({ ...a, x1: a.x1 + tx, y1: a.y1 + ty, x2: a.x2 + tx, y2: a.y2 + ty });
-        });
+        const tileAnns = [
+          ...parseModelResponse(wallRes, "wall_model"),
+          ...parseModelResponse(doorWinRes, "zone_door_window_model").filter(a => a.clsName === "door" || a.clsName === "window"),
+          ...parseSegmentationResponse(zoneSegRes, "zone_seg_model"),
+        ];
+        tileAnns.forEach(a => allAnns.push(offsetAnnotation(a, tx, ty)));
       } catch (_) {}
     }
     return nms(allAnns, NMS_IOU_THRESH);
@@ -1528,6 +1606,7 @@ export default function DetectionTool({ project, user, onBack }) {
             {toolBtn("box", "⬜ Box")}
             {toolBtn("polygon", "⬡ Polygon")}
             {toolBtn("line", "📏 Measure")}
+            {/* Image Search button — hidden until backend is deployed
             <button
               onClick={() => { setDrawMode("imageSearch"); setTempBox(null); setTempPolyPts([]); setTempPolyMouse(null); setTempLine(null); setStatus("Image Search: draw a box around the object to find similar ones."); }}
               disabled={!originalImg || imageSearching}
@@ -1541,6 +1620,7 @@ export default function DetectionTool({ project, user, onBack }) {
             >
               {imageSearching ? "⟳ Searching…" : "🔍 Img Search"}
             </button>
+            */}
             {drawMode === "polygon" && tempPolyPts.length >= 3 && (
               <button onClick={finishPolygon} style={{ ...styles.toolBtn, background: "#006633" }}>✓ Finish Poly</button>
             )}
