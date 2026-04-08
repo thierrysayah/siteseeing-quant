@@ -354,8 +354,8 @@ function drawAnnotations(ctx, anns, scale, {
     ctx.font = "bold 11px monospace";
     ctx.fillText(label, x1 * scale + 3, Math.max(12, y1 * scale - 4));
 
-    // Polygon area/perimeter overlay (all polygon shapes when scale is set)
-    if (ann.shapeType === "polygon" && ratio) {
+    // Area/perimeter overlay — all polygons + any box classed as "zone"
+    if ((ann.shapeType === "polygon" || ann.clsName === "zone") && ratio) {
       const areaPx = annotationAreaPx(ann);
       const areaM2 = areaPx * ratio * ratio;
       const perimPx = annotationPerimeterPx(ann);
@@ -1794,7 +1794,7 @@ export default function DetectionTool({ project, user, onBack }) {
       const [x1, y1, x2, y2] = annotationBbox(ann);
       const areaPx = annotationAreaPx(ann);
       const areaM2 = ratio ? areaPx * ratio * ratio : null;
-      const perimPx = ann.shapeType === "polygon" ? annotationPerimeterPx(ann) : null;
+      const perimPx = (ann.shapeType === "polygon" || ann.clsName === "zone") ? annotationPerimeterPx(ann) : null;
       const perimM = ratio && perimPx != null ? perimPx * ratio : null;
       return { shape_type: ann.shapeType, class: ann.clsName, x1, y1, x2, y2, polygon_points: ann.points, confidence: ann.confidence, source_model: ann.sourceModel, zone_tag: ann.zoneTag, area_pixels2: areaPx, area_m2: areaM2, perimeter_pixels: perimPx, perimeter_m: perimM };
     });
@@ -1809,7 +1809,7 @@ export default function DetectionTool({ project, user, onBack }) {
       const [x1, y1, x2, y2] = annotationBbox(ann);
       const areaPx = annotationAreaPx(ann);
       const areaM2 = ratio ? areaPx * ratio * ratio : "";
-      const perimPx = ann.shapeType === "polygon" ? annotationPerimeterPx(ann) : "";
+      const perimPx = (ann.shapeType === "polygon" || ann.clsName === "zone") ? annotationPerimeterPx(ann) : "";
       const perimM = ratio && perimPx !== "" ? perimPx * ratio : "";
       return [ann.shapeType, ann.clsName, x1, y1, x2, y2, ann.points ? JSON.stringify(ann.points) : "", ann.confidence ?? "", ann.sourceModel ?? "", ann.zoneTag ?? "", areaPx, areaM2, perimPx, perimM];
     });
