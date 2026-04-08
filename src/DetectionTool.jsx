@@ -299,7 +299,7 @@ function nms(anns, thresh) {
 function drawAnnotations(ctx, anns, scale, {
   ratio, hoverIdx, selectedIdx, selectedIndices,
   tempBox, tempPolyPts, tempPolyMouse, tempLine, lastMeasureLine,
-  hotHandle, zoneTags, classColors, tempCircle, lastMeasureM,
+  hotHandle, zoneTags, classColors, tempCircle, lastLineIsMeasure,
   areaTextColor, perimTextColor, measureTextColor, showConfidence,
 }) {
   const getColor = (cls) => (classColors && classColors[cls]) || CLASS_COLORS[cls] || DEFAULT_COLOR;
@@ -486,7 +486,13 @@ function drawAnnotations(ctx, anns, scale, {
       ctx.fillText(`${len.toFixed(1)} px`, mx, my);
     }
   };
-  drawMeasureLine(lastMeasureLine, false, lastMeasureM);
+  // Compute real-world distance live so it always reflects the current ratio
+  const lastLineRealM = (() => {
+    if (!lastLineIsMeasure || !ratio || !lastMeasureLine) return null;
+    const [p1, p2] = lastMeasureLine;
+    return Math.hypot(p2[0] - p1[0], p2[1] - p1[1]) * ratio;
+  })();
+  drawMeasureLine(lastMeasureLine, false, lastLineRealM);
   drawMeasureLine(tempLine, true);
 }
 
@@ -862,7 +868,7 @@ export default function DetectionTool({ project, user, onBack }) {
   const [tempCircle, setTempCircle] = useState(null); // {cx, cy, r}
 
   // Measure tool result
-  const [lastMeasureM, setLastMeasureM] = useState(null);
+  const [lastLineIsMeasure, setLastLineIsMeasure] = useState(false); // true = measure tool, false = scale cal
 
   // Custom classes
   const [customClasses, setCustomClasses] = useState([]);
@@ -1112,12 +1118,12 @@ export default function DetectionTool({ project, user, onBack }) {
       selectedIndices: visSelSet,
       tempBox, tempPolyPts, tempPolyMouse, tempLine, lastMeasureLine,
       hotHandle: handleDragging.current, zoneTags, classColors: allClassColors,
-      tempCircle, lastMeasureM,
+      tempCircle, lastLineIsMeasure,
       areaTextColor, perimTextColor, measureTextColor, showConfidence,
     });
   }, [originalImg, annotations, scale, visibleClasses, hoverIdx, selectedIdx, selectedIndices,
       tempBox, tempPolyPts, tempPolyMouse, tempLine, lastMeasureLine, ratio, zoneTags, customClasses,
-      tempCircle, lastMeasureM, areaTextColor, perimTextColor, measureTextColor, showConfidence]);
+      tempCircle, lastLineIsMeasure, areaTextColor, perimTextColor, measureTextColor, showConfidence]);
 
   // ─── Image upload ────────────────────────────────────────────────────────────
   const handleFileChange = (e) => {
@@ -1526,7 +1532,7 @@ export default function DetectionTool({ project, user, onBack }) {
       setLastMeasureLine([[sx, sy], [ox, oy]]);
       setLastMeasurePx(len.toFixed(2));
       setPixelLength(len.toFixed(2));
-      setLastMeasureM(null); // scale cal line — no real-world label
+      setLastLineIsMeasure(false);
       setStatus(`Scale calibration: ${len.toFixed(2)} px — enter real length and click Set Scale.`);
       lineDrawing.current = false;
       lineStart.current = null;
@@ -1534,11 +1540,10 @@ export default function DetectionTool({ project, user, onBack }) {
     } else if (drawMode === "measure" && lineDrawing.current) {
       const [sx, sy] = lineStart.current;
       const len = Math.hypot(ox - sx, oy - sy);
-      const realM = ratio ? len * ratio : null;
       setLastMeasureLine([[sx, sy], [ox, oy]]);
-      setLastMeasureM(realM);
-      if (realM != null) {
-        setStatus(`Measure: ${len.toFixed(2)} px = ${realM.toFixed(3)} m`);
+      setLastLineIsMeasure(true);
+      if (ratio) {
+        setStatus(`Measure: ${len.toFixed(2)} px = ${(len * ratio).toFixed(3)} m`);
       } else {
         setStatus(`Measure: ${len.toFixed(2)} px (set scale to get real distance)`);
       }
