@@ -367,7 +367,6 @@ function drawAnnotations(ctx, anns, scale, {
       ctx.fillStyle = color;
       if (ratio) {
         ctx.fillText(`${(lineLen * ratio).toFixed(3)} m`, lmx, lmy);
-        ctx.fillText(`(${lineLen.toFixed(1)} px)`, lmx, lmy + 13);
       } else {
         ctx.fillText(`${lineLen.toFixed(1)} px`, lmx, lmy);
       }
