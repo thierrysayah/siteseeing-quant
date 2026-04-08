@@ -96,6 +96,7 @@ function bboxOfPoints(pts) {
 
 function annotationBbox(ann) {
   if (ann.shapeType === "box") return [ann.x1, ann.y1, ann.x2, ann.y2];
+  if (ann.shapeType === "line") return [Math.min(ann.x1, ann.x2), Math.min(ann.y1, ann.y2), Math.max(ann.x1, ann.x2), Math.max(ann.y1, ann.y2)];
   return bboxOfPoints(ann.points);
 }
 
@@ -119,6 +120,7 @@ function annotationPerimeterPx(ann) {
     const [x1, y1, x2, y2] = annotationBbox(ann);
     return 2 * (Math.max(0, x2 - x1) + Math.max(0, y2 - y1));
   }
+  if (ann.shapeType === "line") return Math.hypot(ann.x2 - ann.x1, ann.y2 - ann.y1);
   const pts = ann.points || [];
   if (pts.length < 2) return 0;
   let total = 0;
@@ -133,10 +135,18 @@ function annotationContains(ann, x, y) {
   if (ann.shapeType === "box") {
     return ann.x1 <= x && x <= ann.x2 && ann.y1 <= y && y <= ann.y2;
   }
+  if (ann.shapeType === "line") {
+    const dx = ann.x2 - ann.x1, dy = ann.y2 - ann.y1;
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq < 1) return Math.hypot(x - ann.x1, y - ann.y1) < 8;
+    const t = Math.max(0, Math.min(1, ((x - ann.x1) * dx + (y - ann.y1) * dy) / lenSq));
+    return Math.hypot(x - (ann.x1 + t * dx), y - (ann.y1 + t * dy)) < 8;
+  }
   return pointInPolygon(x, y, ann.points || []);
 }
 
 function isValidAnnotation(ann) {
+  if (ann.shapeType === "line") return Math.hypot(ann.x2 - ann.x1, ann.y2 - ann.y1) >= MIN_BOX_SIZE;
   const [x1, y1, x2, y2] = annotationBbox(ann);
   const w = x2 - x1, h = y2 - y1;
   if (ann.shapeType === "box") return w >= MIN_BOX_SIZE && h >= MIN_BOX_SIZE;
@@ -298,7 +308,7 @@ function nms(anns, thresh) {
 // ─── CANVAS DRAW ──────────────────────────────────────────────────────────────
 function drawAnnotations(ctx, anns, scale, {
   ratio, hoverIdx, selectedIdx, selectedIndices,
-  tempBox, tempPolyPts, tempPolyMouse, tempLine, lastMeasureLine,
+  tempBox, tempPolyPts, tempPolyMouse, tempLine, tempLineShape, lastMeasureLine,
   hotHandle, zoneTags, classColors, tempCircle, lastLineIsMeasure,
   areaTextColor, perimTextColor, measureTextColor, showConfidence,
 }) {
@@ -337,6 +347,30 @@ function drawAnnotations(ctx, anns, scale, {
 
     if (ann.shapeType === "box") {
       ctx.strokeRect(x1 * scale, y1 * scale, (x2 - x1) * scale, (y2 - y1) * scale);
+    } else if (ann.shapeType === "line") {
+      ctx.beginPath();
+      ctx.moveTo(ann.x1 * scale, ann.y1 * scale);
+      ctx.lineTo(ann.x2 * scale, ann.y2 * scale);
+      ctx.stroke();
+      // Endpoint dots
+      ctx.fillStyle = color;
+      [[ann.x1, ann.y1], [ann.x2, ann.y2]].forEach(([px, py]) => {
+        ctx.beginPath();
+        ctx.arc(px * scale, py * scale, 4, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      // Length label
+      const lineLen = Math.hypot(ann.x2 - ann.x1, ann.y2 - ann.y1);
+      const lmx = ((ann.x1 + ann.x2) / 2) * scale + 4;
+      const lmy = Math.max(12, ((ann.y1 + ann.y2) / 2) * scale - 8);
+      ctx.font = "bold 11px monospace";
+      ctx.fillStyle = color;
+      if (ratio) {
+        ctx.fillText(`${(lineLen * ratio).toFixed(3)} m`, lmx, lmy);
+        ctx.fillText(`(${lineLen.toFixed(1)} px)`, lmx, lmy + 13);
+      } else {
+        ctx.fillText(`${lineLen.toFixed(1)} px`, lmx, lmy);
+      }
     } else if (ann.points && ann.points.length >= 2) {
       ctx.beginPath();
       ctx.moveTo(ann.points[0][0] * scale, ann.points[0][1] * scale);
@@ -345,14 +379,16 @@ function drawAnnotations(ctx, anns, scale, {
       ctx.stroke();
     }
 
-    // Label
-    let label = ann.clsName;
-    if (ann.zoneTag) label += `: ${ann.zoneTag}`;
-    if (showConfidence && ann.confidence != null) label += ` ${ann.confidence.toFixed(2)}`;
-    if (ann.shapeType === "polygon") label += " [poly]";
-    ctx.fillStyle = color;
-    ctx.font = "bold 11px monospace";
-    ctx.fillText(label, x1 * scale + 3, Math.max(12, y1 * scale - 4));
+    // Label (skip for line — length already shown inline)
+    if (ann.shapeType !== "line") {
+      let label = ann.clsName;
+      if (ann.zoneTag) label += `: ${ann.zoneTag}`;
+      if (showConfidence && ann.confidence != null) label += ` ${ann.confidence.toFixed(2)}`;
+      if (ann.shapeType === "polygon") label += " [poly]";
+      ctx.fillStyle = color;
+      ctx.font = "bold 11px monospace";
+      ctx.fillText(label, x1 * scale + 3, Math.max(12, y1 * scale - 4));
+    }
 
     // Area/perimeter overlay — all polygons + any box classed as "zone"
     if ((ann.shapeType === "polygon" || ann.clsName === "zone") && ratio) {
@@ -398,6 +434,20 @@ function drawAnnotations(ctx, anns, scale, {
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.arc(px * scale, py * scale, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    });
+  }
+
+  // Line endpoint handles
+  if (selectedIdx != null && anns[selectedIdx]?.shapeType === "line") {
+    const ann = anns[selectedIdx];
+    [[ann.x1, ann.y1], [ann.x2, ann.y2]].forEach(([px, py]) => {
+      ctx.fillStyle = "#FFFFFF";
+      ctx.strokeStyle = "#000000";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(px * scale, py * scale, 7, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
     });
@@ -456,6 +506,25 @@ function drawAnnotations(ctx, anns, scale, {
     ctx.beginPath();
     ctx.arc(tempCircle.cx * scale, tempCircle.cy * scale, 3, 0, Math.PI * 2);
     ctx.fill();
+  }
+
+  // Temp line shape preview (for lineShape draw mode)
+  if (tempLineShape && tempLineShape.length === 2) {
+    const [p1, p2] = tempLineShape;
+    ctx.strokeStyle = TEMP_COLOR;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 3]);
+    ctx.beginPath();
+    ctx.moveTo(p1[0] * scale, p1[1] * scale);
+    ctx.lineTo(p2[0] * scale, p2[1] * scale);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = TEMP_COLOR;
+    [p1, p2].forEach(([px, py]) => {
+      ctx.beginPath();
+      ctx.arc(px * scale, py * scale, 3, 0, Math.PI * 2);
+      ctx.fill();
+    });
   }
 
   // Measure lines
@@ -750,12 +819,13 @@ export default function DetectionTool({ project, user, onBack }) {
   const [visibleClasses, setVisibleClasses] = useState(new Set(CLASSES));
 
   // Drawing
-  const [drawMode, setDrawMode] = useState("select"); // select | box | polygon | circle | line | measure
+  const [drawMode, setDrawMode] = useState("select"); // select | lineShape | box | polygon | circle | line | measure
   const [newClass, setNewClass] = useState("Internal_Wall");
   const [tempBox, setTempBox] = useState(null);
   const [tempPolyPts, setTempPolyPts] = useState([]);
   const [tempPolyMouse, setTempPolyMouse] = useState(null);
   const [tempLine, setTempLine] = useState(null);
+  const [tempLineShape, setTempLineShape] = useState(null); // preview while drawing a line annotation
   const [lastMeasureLine, setLastMeasureLine] = useState(null);
   const [lastMeasurePx, setLastMeasurePx] = useState("");
 
@@ -825,6 +895,11 @@ export default function DetectionTool({ project, user, onBack }) {
   const polyVtxAnnIdx = useRef(null);
   const polyVtxOrigPts = useRef(null);   // full points snapshot before drag
   const polyVtxDragStart = useRef(null); // [ox,oy] image-coords
+  // line endpoint drag
+  const lineEndDragging = useRef(null);  // 0 = p1, 1 = p2, null = none
+  const lineEndAnnIdx = useRef(null);
+  const lineEndOrigCoords = useRef(null); // [x1,y1,x2,y2] before drag
+  const lineEndDragStart = useRef(null);  // [ox,oy] image-coords
 
   // Scale / measure
   const [pixelLength, setPixelLength] = useState("");
@@ -1116,13 +1191,13 @@ export default function DetectionTool({ project, user, onBack }) {
     drawAnnotations(ctx, visAnns, scale, {
       ratio, hoverIdx: visHover, selectedIdx: visSel,
       selectedIndices: visSelSet,
-      tempBox, tempPolyPts, tempPolyMouse, tempLine, lastMeasureLine,
+      tempBox, tempPolyPts, tempPolyMouse, tempLine, tempLineShape, lastMeasureLine,
       hotHandle: handleDragging.current, zoneTags, classColors: allClassColors,
       tempCircle, lastLineIsMeasure,
       areaTextColor, perimTextColor, measureTextColor, showConfidence,
     });
   }, [originalImg, annotations, scale, visibleClasses, hoverIdx, selectedIdx, selectedIndices,
-      tempBox, tempPolyPts, tempPolyMouse, tempLine, lastMeasureLine, ratio, zoneTags, customClasses,
+      tempBox, tempPolyPts, tempPolyMouse, tempLine, tempLineShape, lastMeasureLine, ratio, zoneTags, customClasses,
       tempCircle, lastLineIsMeasure, areaTextColor, perimTextColor, measureTextColor, showConfidence]);
 
   // ─── Image upload ────────────────────────────────────────────────────────────
@@ -1203,6 +1278,14 @@ export default function DetectionTool({ project, user, onBack }) {
     return null;
   };
 
+  // Returns 0 (p1) or 1 (p2) if screen point (cx,cy) is within 10px of a line endpoint, else null
+  const hitLineEndpoint = (ann, cx, cy) => {
+    if (ann.shapeType !== "line") return null;
+    if (Math.hypot(cx - ann.x1 * scale, cy - ann.y1 * scale) <= 10) return 0;
+    if (Math.hypot(cx - ann.x2 * scale, cy - ann.y2 * scale) <= 10) return 1;
+    return null;
+  };
+
   const applyHandleDrag = (ann, hi, orig, dx, dy) => {
     let [x1, y1, x2, y2] = orig;
     if (hi === 0) { x1 += dx; y1 += dy; }
@@ -1237,6 +1320,21 @@ export default function DetectionTool({ project, user, onBack }) {
         handleOrigBox.current = [a.x1, a.y1, a.x2, a.y2];
         handleDragScreenStart.current = [cx, cy];
         return; // consumed
+      }
+    }
+
+    // ── 1b. Line endpoint drag ───────────────────────────────────────────────
+    if (drawMode === "select" && selectedIdx != null && annotations[selectedIdx]?.shapeType === "line") {
+      const endpt = hitLineEndpoint(annotations[selectedIdx], cx, cy);
+      if (endpt != null) {
+        preDragSnapshot.current = snapshotAnns(annotations);
+        didDrag.current = false;
+        lineEndDragging.current = endpt;
+        lineEndAnnIdx.current = selectedIdx;
+        const ann = annotations[selectedIdx];
+        lineEndOrigCoords.current = [ann.x1, ann.y1, ann.x2, ann.y2];
+        lineEndDragStart.current = [ox, oy];
+        return;
       }
     }
 
@@ -1301,6 +1399,10 @@ export default function DetectionTool({ project, user, onBack }) {
       boxDrawing.current = true;
       boxStart.current = [ox, oy];
       setTempCircle({ cx: ox, cy: oy, r: 0 });
+    } else if (drawMode === "lineShape") {
+      lineDrawing.current = true;
+      lineStart.current = [ox, oy];
+      setTempLineShape([[ox, oy], [ox, oy]]);
     } else if (drawMode === "line") {
       lineDrawing.current = true;
       lineStart.current = [ox, oy];
@@ -1342,7 +1444,9 @@ export default function DetectionTool({ project, user, onBack }) {
         const ann = annotations[idx];
         dragOrigPts.current = ann.shapeType === "polygon"
           ? ann.points.map(p => [...p])
-          : [...annotationBbox(ann)]; // [x1,y1,x2,y2]
+          : ann.shapeType === "line"
+            ? [ann.x1, ann.y1, ann.x2, ann.y2]  // actual endpoints, not bbox
+            : [...annotationBbox(ann)];            // box: [x1,y1,x2,y2]
       } else {
         if (!e.ctrlKey && !e.metaKey) { setSelectedIdx(null); setSelectedIndices(new Set()); }
         dragAnnIdx.current = null;
@@ -1365,6 +1469,23 @@ export default function DetectionTool({ project, user, onBack }) {
       );
       didDrag.current = true;
       setAnnotations(prev => prev.map((a, i) => i === handleAnnIdx.current ? updated : a));
+      return;
+    }
+
+    // ── Line endpoint drag ───────────────────────────────────────────────────
+    if (lineEndDragging.current != null && mouseDown.current) {
+      const [sx, sy] = lineEndDragStart.current;
+      const dx = ox - sx, dy = oy - sy;
+      const [origX1, origY1, origX2, origY2] = lineEndOrigCoords.current;
+      didDrag.current = true;
+      setAnnotations(prev => prev.map((a, i) => {
+        if (i !== lineEndAnnIdx.current) return a;
+        if (lineEndDragging.current === 0) {
+          return { ...a, x1: Math.round(origX1 + dx), y1: Math.round(origY1 + dy) };
+        } else {
+          return { ...a, x2: Math.round(origX2 + dx), y2: Math.round(origY2 + dy) };
+        }
+      }));
       return;
     }
 
@@ -1393,6 +1514,9 @@ export default function DetectionTool({ project, user, onBack }) {
     } else if (drawMode === "circle" && mouseDown.current && boxDrawing.current) {
       const [cx, cy] = boxStart.current;
       setTempCircle({ cx, cy, r: Math.hypot(ox - cx, oy - cy) });
+    } else if (drawMode === "lineShape" && mouseDown.current && lineDrawing.current) {
+      const [sx, sy] = lineStart.current;
+      setTempLineShape([[sx, sy], [ox, oy]]);
     } else if ((drawMode === "line" || drawMode === "measure") && mouseDown.current && lineDrawing.current) {
       const [sx, sy] = lineStart.current;
       setTempLine([[sx, sy], [ox, oy]]);
@@ -1406,7 +1530,7 @@ export default function DetectionTool({ project, user, onBack }) {
       didDrag.current = true;
       setAnnotations(prev => prev.map((a, i) => {
         if (i !== dragAnnIdx.current) return a;
-        if (a.shapeType === "box") {
+        if (a.shapeType === "box" || a.shapeType === "line") {
           const [x1, y1, x2, y2] = dragOrigPts.current;
           return { ...a, x1: Math.round(x1+dx), y1: Math.round(y1+dy), x2: Math.round(x2+dx), y2: Math.round(y2+dy) };
         }
@@ -1453,6 +1577,19 @@ export default function DetectionTool({ project, user, onBack }) {
       polyVtxDragStart.current = null;
       mouseDown.current = false;
       setStatus("Vertex moved.");
+      return;
+    }
+
+    // ── Line endpoint drag end ───────────────────────────────────────────────
+    if (lineEndDragging.current != null) {
+      if (preDragSnapshot.current && didDrag.current) { pushHistory(preDragSnapshot.current); }
+      preDragSnapshot.current = null; didDrag.current = false;
+      lineEndDragging.current = null;
+      lineEndAnnIdx.current = null;
+      lineEndOrigCoords.current = null;
+      lineEndDragStart.current = null;
+      mouseDown.current = false;
+      setStatus("Line endpoint moved.");
       return;
     }
 
@@ -1526,6 +1663,32 @@ export default function DetectionTool({ project, user, onBack }) {
       setTempCircle(null);
       boxDrawing.current = false;
       boxStart.current = null;
+    } else if (drawMode === "lineShape" && lineDrawing.current) {
+      const [sx, sy] = lineStart.current;
+      const ann = {
+        id: Math.random().toString(36).slice(2),
+        shapeType: "line", clsName: newClass,
+        confidence: null, sourceModel: "manual", zoneTag: null,
+        x1: Math.round(sx), y1: Math.round(sy), x2: Math.round(ox), y2: Math.round(oy),
+        points: null,
+      };
+      if (isValidAnnotation(ann)) {
+        pushHistory(annotations);
+        setAnnotations(prev => {
+          const next = [...prev, ann];
+          setSelectedIdx(next.length - 1);
+          setSelectedIndices(new Set([next.length - 1]));
+          return next;
+        });
+        const len = Math.hypot(ox - sx, oy - sy);
+        if (ratio) setStatus(`Line added: ${len.toFixed(1)} px = ${(len * ratio).toFixed(3)} m`);
+        else setStatus(`Line added: ${len.toFixed(1)} px (set scale to see real length)`);
+      } else {
+        setStatus("Line too short.");
+      }
+      lineDrawing.current = false;
+      lineStart.current = null;
+      setTempLineShape(null);
     } else if (drawMode === "line" && lineDrawing.current) {
       const [sx, sy] = lineStart.current;
       const len = Math.hypot(ox - sx, oy - sy);
@@ -1799,7 +1962,7 @@ export default function DetectionTool({ project, user, onBack }) {
       const [x1, y1, x2, y2] = annotationBbox(ann);
       const areaPx = annotationAreaPx(ann);
       const areaM2 = ratio ? areaPx * ratio * ratio : null;
-      const perimPx = (ann.shapeType === "polygon" || ann.clsName === "zone") ? annotationPerimeterPx(ann) : null;
+      const perimPx = (ann.shapeType === "polygon" || ann.shapeType === "line" || ann.clsName === "zone") ? annotationPerimeterPx(ann) : null;
       const perimM = ratio && perimPx != null ? perimPx * ratio : null;
       return { shape_type: ann.shapeType, class: ann.clsName, x1, y1, x2, y2, polygon_points: ann.points, confidence: ann.confidence, source_model: ann.sourceModel, zone_tag: ann.zoneTag, area_pixels2: areaPx, area_m2: areaM2, perimeter_pixels: perimPx, perimeter_m: perimM };
     });
@@ -1814,7 +1977,7 @@ export default function DetectionTool({ project, user, onBack }) {
       const [x1, y1, x2, y2] = annotationBbox(ann);
       const areaPx = annotationAreaPx(ann);
       const areaM2 = ratio ? areaPx * ratio * ratio : "";
-      const perimPx = (ann.shapeType === "polygon" || ann.clsName === "zone") ? annotationPerimeterPx(ann) : "";
+      const perimPx = (ann.shapeType === "polygon" || ann.shapeType === "line" || ann.clsName === "zone") ? annotationPerimeterPx(ann) : "";
       const perimM = ratio && perimPx !== "" ? perimPx * ratio : "";
       return [ann.shapeType, ann.clsName, x1, y1, x2, y2, ann.points ? JSON.stringify(ann.points) : "", ann.confidence ?? "", ann.sourceModel ?? "", ann.zoneTag ?? "", areaPx, areaM2, perimPx, perimM];
     });
@@ -1875,7 +2038,7 @@ export default function DetectionTool({ project, user, onBack }) {
   // ─── UI ──────────────────────────────────────────────────────────────────────
   const toolBtn = (mode, label) => (
     <button
-      onClick={() => { setDrawMode(mode); setTempBox(null); setTempPolyPts([]); setTempPolyMouse(null); setTempLine(null); setTempCircle(null); }}
+      onClick={() => { setDrawMode(mode); setTempBox(null); setTempPolyPts([]); setTempPolyMouse(null); setTempLine(null); setTempLineShape(null); setTempCircle(null); }}
       style={{ ...styles.toolBtn, background: drawMode === mode ? "#1e6fff" : "#1a2035", border: drawMode === mode ? "1px solid #1e6fff" : "1px solid #2d3a52" }}
     >{label}</button>
   );
@@ -2022,6 +2185,7 @@ export default function DetectionTool({ project, user, onBack }) {
         <div style={styles.canvasPanel}>
           <div style={styles.canvasToolbar}>
             {toolBtn("select", "↖ Select")}
+            {toolBtn("lineShape", "─ Line")}
             {toolBtn("box", "⬜ Box")}
             {toolBtn("polygon", "⬡ Polygon")}
             {toolBtn("circle", "⬤ Circle")}
