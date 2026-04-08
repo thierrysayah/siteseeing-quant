@@ -171,12 +171,15 @@ function parseModelResponse(json, sourceModel) {
 }
 
 // Parse segmentation model response — returns polygon annotations
-function parseSegmentationResponse(json, sourceModel) {
+// autoEps > 0 runs RDP simplification on import; pass 0 to skip.
+function parseSegmentationResponse(json, sourceModel, autoEps = 5) {
   const result = [];
   if (!json || !json.images) return result;
   for (const img of json.images) {
     for (const item of img.results || []) {
-      const cls = item.name || item.class_name || String(item.class || "unknown");
+      const rawCls = item.name || item.class_name || String(item.class || "unknown");
+      // Remap model-specific class names to the app's class vocabulary
+      const cls = rawCls === "room" ? "zone" : rawCls;
       let points = null;
 
       if (item.segments) {
@@ -192,6 +195,7 @@ function parseSegmentationResponse(json, sourceModel) {
       }
 
       if (points && points.length >= 3) {
+        const simplified = autoEps > 0 ? rdpSimplifyPolygon(points, autoEps) : points;
         result.push({
           id: Math.random().toString(36).slice(2),
           shapeType: "polygon",
@@ -200,7 +204,7 @@ function parseSegmentationResponse(json, sourceModel) {
           sourceModel,
           zoneTag: null,
           x1: null, y1: null, x2: null, y2: null,
-          points,
+          points: simplified,
         });
       } else if (item.box) {
         // Fallback to bounding box if no valid polygon returned
@@ -230,6 +234,36 @@ function offsetAnnotation(ann, tx, ty) {
     return { ...ann, points: ann.points.map(([x, y]) => [x + tx, y + ty]) };
   }
   return { ...ann, x1: ann.x1 + tx, y1: ann.y1 + ty, x2: ann.x2 + tx, y2: ann.y2 + ty };
+}
+
+// ─── Ramer-Douglas-Peucker polygon simplification ────────────────────────────
+function rdpSimplify(points, epsilon) {
+  if (points.length <= 2) return points;
+  let maxDist = 0, maxIdx = 0;
+  const [x1, y1] = points[0];
+  const [xn, yn] = points[points.length - 1];
+  for (let i = 1; i < points.length - 1; i++) {
+    const [px, py] = points[i];
+    const num = Math.abs((yn - y1) * px - (xn - x1) * py + xn * y1 - yn * x1);
+    const den = Math.hypot(yn - y1, xn - x1);
+    const dist = den < 1e-10 ? Math.hypot(px - x1, py - y1) : num / den;
+    if (dist > maxDist) { maxDist = dist; maxIdx = i; }
+  }
+  if (maxDist > epsilon) {
+    const left  = rdpSimplify(points.slice(0, maxIdx + 1), epsilon);
+    const right = rdpSimplify(points.slice(maxIdx), epsilon);
+    return [...left.slice(0, -1), ...right];
+  }
+  return [points[0], points[points.length - 1]];
+}
+
+function rdpSimplifyPolygon(points, epsilon) {
+  if (points.length <= 3) return points;
+  // Close the polygon, run RDP, then remove the duplicated closing point
+  const open       = [...points, points[0]];
+  const simplified = rdpSimplify(open, epsilon);
+  const result     = simplified.slice(0, -1);
+  return result.length >= 3 ? result : points;
 }
 
 // IoU for NMS
@@ -265,7 +299,8 @@ function nms(anns, thresh) {
 function drawAnnotations(ctx, anns, scale, {
   ratio, hoverIdx, selectedIdx, selectedIndices,
   tempBox, tempPolyPts, tempPolyMouse, tempLine, lastMeasureLine,
-  hotHandle, zoneTags, classColors,
+  hotHandle, zoneTags, classColors, tempCircle, lastMeasureM,
+  areaTextColor, perimTextColor, measureTextColor, showConfidence,
 }) {
   const getColor = (cls) => (classColors && classColors[cls]) || CLASS_COLORS[cls] || DEFAULT_COLOR;
   // Tagged shape fills (all classes)
@@ -313,23 +348,24 @@ function drawAnnotations(ctx, anns, scale, {
     // Label
     let label = ann.clsName;
     if (ann.zoneTag) label += `: ${ann.zoneTag}`;
-    if (ann.confidence != null) label += ` ${ann.confidence.toFixed(2)}`;
+    if (showConfidence && ann.confidence != null) label += ` ${ann.confidence.toFixed(2)}`;
     if (ann.shapeType === "polygon") label += " [poly]";
     ctx.fillStyle = color;
     ctx.font = "bold 11px monospace";
     ctx.fillText(label, x1 * scale + 3, Math.max(12, y1 * scale - 4));
 
-    // Zone area overlay
-    if (ann.clsName === "zone" && ratio) {
+    // Polygon area/perimeter overlay (all polygon shapes when scale is set)
+    if (ann.shapeType === "polygon" && ratio) {
       const areaPx = annotationAreaPx(ann);
       const areaM2 = areaPx * ratio * ratio;
       const perimPx = annotationPerimeterPx(ann);
       const perimM = perimPx * ratio;
       const cx = ((x1 + x2) / 2) * scale;
       const cy = ((y1 + y2) / 2) * scale;
-      ctx.fillStyle = "#c0c0c0";
       ctx.font = "bold 12px monospace";
+      ctx.fillStyle = areaTextColor || "#c0c0c0";
       ctx.fillText(`${areaM2.toFixed(2)} m²`, cx, cy);
+      ctx.fillStyle = perimTextColor || "#c0c0c0";
       ctx.fillText(`P: ${perimM.toFixed(2)} m`, cx, cy + 16);
     }
   });
@@ -406,12 +442,29 @@ function drawAnnotations(ctx, anns, scale, {
     }
   }
 
+  // Temp circle preview
+  if (tempCircle && tempCircle.r > 0) {
+    ctx.strokeStyle = TEMP_COLOR;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 3]);
+    ctx.beginPath();
+    ctx.arc(tempCircle.cx * scale, tempCircle.cy * scale, tempCircle.r * scale, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // crosshair at centre
+    ctx.fillStyle = TEMP_COLOR;
+    ctx.beginPath();
+    ctx.arc(tempCircle.cx * scale, tempCircle.cy * scale, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   // Measure lines
-  const drawMeasureLine = (line, isTemp) => {
+  const drawMeasureLine = (line, isTemp, realM) => {
     if (!line || line.length !== 2) return;
     const [p1, p2] = line;
-    ctx.strokeStyle = MEASURE_COLOR;
-    ctx.fillStyle = MEASURE_COLOR;
+    const mColor = measureTextColor || MEASURE_COLOR;
+    ctx.strokeStyle = mColor;
+    ctx.fillStyle = mColor;
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(p1[0] * scale, p1[1] * scale);
@@ -426,9 +479,14 @@ function drawAnnotations(ctx, anns, scale, {
     const mx = ((p1[0] + p2[0]) / 2) * scale + 4;
     const my = Math.max(12, ((p1[1] + p2[1]) / 2) * scale - 18);
     ctx.font = "bold 11px monospace";
-    ctx.fillText(`${len.toFixed(1)} px`, mx, my);
+    if (realM != null) {
+      ctx.fillText(`${realM.toFixed(3)} m`, mx, my);
+      ctx.fillText(`(${len.toFixed(1)} px)`, mx, my + 14);
+    } else {
+      ctx.fillText(`${len.toFixed(1)} px`, mx, my);
+    }
   };
-  drawMeasureLine(lastMeasureLine);
+  drawMeasureLine(lastMeasureLine, false, lastMeasureM);
   drawMeasureLine(tempLine, true);
 }
 
@@ -686,7 +744,7 @@ export default function DetectionTool({ project, user, onBack }) {
   const [visibleClasses, setVisibleClasses] = useState(new Set(CLASSES));
 
   // Drawing
-  const [drawMode, setDrawMode] = useState("select"); // select | box | polygon | line
+  const [drawMode, setDrawMode] = useState("select"); // select | box | polygon | circle | line | measure
   const [newClass, setNewClass] = useState("Internal_Wall");
   const [tempBox, setTempBox] = useState(null);
   const [tempPolyPts, setTempPolyPts] = useState([]);
@@ -694,6 +752,54 @@ export default function DetectionTool({ project, user, onBack }) {
   const [tempLine, setTempLine] = useState(null);
   const [lastMeasureLine, setLastMeasureLine] = useState(null);
   const [lastMeasurePx, setLastMeasurePx] = useState("");
+
+  // ─── Undo / Redo (up to 10 snapshots each) ───────────────────────────────────
+  const [history, setHistory] = useState([]);  // past states (oldest → newest)
+  const [future,  setFuture]  = useState([]);  // redo states (most-recent-undone first)
+  const preDragSnapshot = useRef(null); // captured at drag-start, pushed at drag-end
+  const didDrag = useRef(false);        // true only if the shape actually moved during the drag
+
+  const snapshotAnns = (anns) => anns.map(a => ({
+    ...a,
+    points: a.points ? a.points.map(p => [...p]) : null,
+  }));
+
+  // Every new action pushes to history and wipes the redo stack
+  const pushHistory = useCallback((anns) => {
+    setHistory(prev => [...prev.slice(-9), snapshotAnns(anns)]);
+    setFuture([]);
+  }, []);
+
+  const undo = useCallback(() => {
+    setHistory(prev => {
+      if (!prev.length) return prev;
+      const snapshot = prev[prev.length - 1];
+      // Save current annotations into redo stack before restoring
+      setAnnotations(current => {
+        setFuture(f => [...f.slice(-9), snapshotAnns(current)]);
+        return snapshot;
+      });
+      setSelectedIdx(null);
+      setSelectedIndices(new Set());
+      setStatus(`Undo — ${prev.length - 1} step(s) remaining.`);
+      return prev.slice(0, -1);
+    });
+  }, []);
+
+  const redo = useCallback(() => {
+    setFuture(prev => {
+      if (!prev.length) return prev;
+      const snapshot = prev[prev.length - 1];
+      setAnnotations(current => {
+        setHistory(h => [...h.slice(-9), snapshotAnns(current)]);
+        return snapshot;
+      });
+      setSelectedIdx(null);
+      setSelectedIndices(new Set());
+      setStatus(`Redo — ${prev.length - 1} step(s) remaining.`);
+      return prev.slice(0, -1);
+    });
+  }, []);
 
   // Box / shape drag internals
   const boxDrawing = useRef(false);
@@ -737,6 +843,27 @@ export default function DetectionTool({ project, user, onBack }) {
   const [editClass, setEditClass] = useState("Internal_Wall");
   const [editConf, setEditConf] = useState("");
 
+  // Polygon editing
+  const [simplifyEpsilon, setSimplifyEpsilon] = useState("3");
+
+  // Settings
+  const [showSettings,      setShowSettings]      = useState(false);
+  const [showConfidence,    setShowConfidence]    = useState(false);
+  const [autoSimplifyDist,  setAutoSimplifyDist]  = useState("0"); // 0 = off
+  const [areaTextColor,     setAreaTextColor]     = useState("#c0c0c0");
+  const [perimTextColor,    setPerimTextColor]    = useState("#c0c0c0");
+  const [measureTextColor,  setMeasureTextColor]  = useState("#00FFFF");
+  const [autoSave,          setAutoSave]          = useState(false);
+  const [autoSaveInterval,  setAutoSaveInterval]  = useState("30"); // seconds
+  const handleSaveRef = useRef(null); // always points to latest handleSave (avoids stale closure)
+  const isDirty = useRef(false);      // true when annotations have changed since last save
+
+  // Circle drawing temp state (image coords)
+  const [tempCircle, setTempCircle] = useState(null); // {cx, cy, r}
+
+  // Measure tool result
+  const [lastMeasureM, setLastMeasureM] = useState(null);
+
   // Custom classes
   const [customClasses, setCustomClasses] = useState([]);
   const [showClassManager, setShowClassManager] = useState(false);
@@ -746,6 +873,7 @@ export default function DetectionTool({ project, user, onBack }) {
   // File tracking & save state
   const [currentFile, setCurrentFile] = useState(null);
   const [saveStatus, setSaveStatus] = useState(null); // null | 'saving' | 'saved' | 'error'
+  const [lastSaveTime, setLastSaveTime] = useState(null); // Date of last successful save
   // Persists file info across re-saves so originalExt is never overwritten with null
   const existingFileInfoRef = useRef({ ext: null, fileName: null });
 
@@ -888,6 +1016,14 @@ export default function DetectionTool({ project, user, onBack }) {
           setPixelLength(data.scale.pixelLength || "");
           setRealLength(data.scale.realLength || "");
         }
+        if (data.settings?.autoSimplifyDist != null) {
+          setAutoSimplifyDist(String(data.settings.autoSimplifyDist));
+        }
+        if (data.settings?.areaTextColor)    setAreaTextColor(data.settings.areaTextColor);
+        if (data.settings?.perimTextColor)   setPerimTextColor(data.settings.perimTextColor);
+        if (data.settings?.measureTextColor) setMeasureTextColor(data.settings.measureTextColor);
+        if (data.settings?.autoSave != null)          setAutoSave(Boolean(data.settings.autoSave));
+        if (data.settings?.autoSaveInterval != null)  setAutoSaveInterval(String(data.settings.autoSaveInterval));
         if (data.originalExt) {
           existingFileInfoRef.current = {
             ext: data.originalExt,
@@ -912,6 +1048,7 @@ export default function DetectionTool({ project, user, onBack }) {
         name: project.name,
         annotations,
         scale: { pixelToMeter: ratio, pixelLength, realLength },
+        settings: { autoSimplifyDist, areaTextColor, perimTextColor, measureTextColor, autoSave, autoSaveInterval },
         customTags: zoneTags,
         customClasses,
         imageInfo: imgNaturalSize,
@@ -920,6 +1057,7 @@ export default function DetectionTool({ project, user, onBack }) {
         existingFileName: existingFileInfoRef.current.fileName,
       });
       setSaveStatus('saved');
+      setLastSaveTime(new Date());
       setStatus("Save complete.");
       setTimeout(() => setSaveStatus(null), 3000);
     } catch (err) {
@@ -928,6 +1066,26 @@ export default function DetectionTool({ project, user, onBack }) {
       setSaveStatus('error');
     }
   };
+
+  // Keep ref current so the interval always calls the latest version of handleSave
+  useEffect(() => { handleSaveRef.current = handleSave; });
+
+  // Mark dirty whenever annotations change
+  useEffect(() => { isDirty.current = true; }, [annotations]);
+
+  // Auto-save interval — only saves if something changed since last save
+  useEffect(() => {
+    if (!autoSave || !project?.id) return;
+    const secs = parseInt(autoSaveInterval, 10);
+    if (isNaN(secs) || secs < 10) return;
+    const id = setInterval(() => {
+      if (isDirty.current) {
+        isDirty.current = false;
+        handleSaveRef.current?.();
+      }
+    }, secs * 1000);
+    return () => clearInterval(id);
+  }, [autoSave, autoSaveInterval, project?.id]);
 
   // ─── Canvas redraw ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -954,9 +1112,12 @@ export default function DetectionTool({ project, user, onBack }) {
       selectedIndices: visSelSet,
       tempBox, tempPolyPts, tempPolyMouse, tempLine, lastMeasureLine,
       hotHandle: handleDragging.current, zoneTags, classColors: allClassColors,
+      tempCircle, lastMeasureM,
+      areaTextColor, perimTextColor, measureTextColor, showConfidence,
     });
   }, [originalImg, annotations, scale, visibleClasses, hoverIdx, selectedIdx, selectedIndices,
-      tempBox, tempPolyPts, tempPolyMouse, tempLine, lastMeasureLine, ratio, zoneTags, customClasses]);
+      tempBox, tempPolyPts, tempPolyMouse, tempLine, lastMeasureLine, ratio, zoneTags, customClasses,
+      tempCircle, lastMeasureM, areaTextColor, perimTextColor, measureTextColor, showConfidence]);
 
   // ─── Image upload ────────────────────────────────────────────────────────────
   const handleFileChange = (e) => {
@@ -1019,6 +1180,23 @@ export default function DetectionTool({ project, user, onBack }) {
     return null;
   };
 
+  // Returns edge index i if screen point (cx,cy) is within 8px of edge pts[i]→pts[i+1]
+  const hitPolyEdge = (ann, cx, cy) => {
+    if (ann.shapeType !== "polygon" || !ann.points) return null;
+    const pts = ann.points;
+    for (let i = 0; i < pts.length; i++) {
+      const [ax, ay] = [pts[i][0] * scale,               pts[i][1] * scale];
+      const [bx, by] = [pts[(i + 1) % pts.length][0] * scale, pts[(i + 1) % pts.length][1] * scale];
+      const dx = bx - ax, dy = by - ay;
+      const lenSq = dx * dx + dy * dy;
+      if (lenSq < 1) continue;
+      const t = Math.max(0, Math.min(1, ((cx - ax) * dx + (cy - ay) * dy) / lenSq));
+      const dist = Math.hypot(cx - (ax + t * dx), cy - (ay + t * dy));
+      if (dist <= 8) return i;
+    }
+    return null;
+  };
+
   const applyHandleDrag = (ann, hi, orig, dx, dy) => {
     let [x1, y1, x2, y2] = orig;
     if (hi === 0) { x1 += dx; y1 += dy; }
@@ -1045,6 +1223,8 @@ export default function DetectionTool({ project, user, onBack }) {
     if (selectedIdx != null && annotations[selectedIdx]?.shapeType === "box") {
       const hi = hitHandle(annotations[selectedIdx], cx, cy);
       if (hi != null) {
+        preDragSnapshot.current = snapshotAnns(annotations);
+        didDrag.current = false;
         handleDragging.current = hi;
         handleAnnIdx.current = selectedIdx;
         const a = annotations[selectedIdx];
@@ -1054,15 +1234,51 @@ export default function DetectionTool({ project, user, onBack }) {
       }
     }
 
-    // ── 2. Polygon vertex drag ───────────────────────────────────────────────
+    // ── 2. Polygon vertex / edge editing ────────────────────────────────────
     if (drawMode === "select" && selectedIdx != null && annotations[selectedIdx]?.shapeType === "polygon") {
       const vi = hitPolyVertex(annotations[selectedIdx], cx, cy);
       if (vi != null) {
+        // Shift+click on vertex → delete it (keep ≥ 3 vertices)
+        if (e.shiftKey) {
+          const pts = annotations[selectedIdx].points;
+          if (pts.length > 3) {
+            pushHistory(annotations);
+            const newPts = pts.filter((_, k) => k !== vi);
+            setAnnotations(prev => prev.map((a, i) => i === selectedIdx ? { ...a, points: newPts } : a));
+            setStatus(`Deleted vertex ${vi}. ${newPts.length} vertices remaining.`);
+          } else {
+            setStatus("Cannot delete — polygon must have at least 3 vertices.");
+          }
+          return;
+        }
+        // Normal click → drag vertex (snapshot captured here, pushed on mouseUp)
+        preDragSnapshot.current = snapshotAnns(annotations);
+        didDrag.current = false;
         polyVtxDragging.current = vi;
         polyVtxAnnIdx.current = selectedIdx;
         polyVtxOrigPts.current = annotations[selectedIdx].points.map(p => [...p]);
         polyVtxDragStart.current = [ox, oy];
         return; // consumed — do NOT fall through to whole-shape drag
+      }
+      // Click on edge (no vertex, no shift) → insert new vertex at closest point on edge
+      if (!e.shiftKey) {
+        const ei = hitPolyEdge(annotations[selectedIdx], cx, cy);
+        if (ei != null) {
+          pushHistory(annotations);
+          const pts = annotations[selectedIdx].points;
+          const [ax, ay] = pts[ei];
+          const [bx, by] = pts[(ei + 1) % pts.length];
+          const dx = bx - ax, dy = by - ay;
+          const lenSq = dx * dx + dy * dy;
+          const t = lenSq < 1 ? 0 : Math.max(0, Math.min(1,
+            ((ox - ax) * dx + (oy - ay) * dy) / lenSq
+          ));
+          const newPt = [Math.round(ax + t * dx), Math.round(ay + t * dy)];
+          const newPts = [...pts.slice(0, ei + 1), newPt, ...pts.slice(ei + 1)];
+          setAnnotations(prev => prev.map((a, i) => i === selectedIdx ? { ...a, points: newPts } : a));
+          setStatus(`Inserted vertex at edge ${ei}. ${newPts.length} vertices total.`);
+          return;
+        }
       }
     }
 
@@ -1075,7 +1291,15 @@ export default function DetectionTool({ project, user, onBack }) {
       boxDrawing.current = true;
       boxStart.current = [ox, oy];
       setTempBox({ shapeType: "box", clsName: "Image Search", _isImageSearch: true, x1: ox, y1: oy, x2: ox, y2: oy, points: null });
+    } else if (drawMode === "circle") {
+      boxDrawing.current = true;
+      boxStart.current = [ox, oy];
+      setTempCircle({ cx: ox, cy: oy, r: 0 });
     } else if (drawMode === "line") {
+      lineDrawing.current = true;
+      lineStart.current = [ox, oy];
+      setTempLine([[ox, oy], [ox, oy]]);
+    } else if (drawMode === "measure") {
       lineDrawing.current = true;
       lineStart.current = [ox, oy];
       setTempLine([[ox, oy], [ox, oy]]);
@@ -1104,7 +1328,9 @@ export default function DetectionTool({ project, user, onBack }) {
           setEditClass(annotations[idx].clsName);
           setEditConf(annotations[idx].confidence != null ? String(annotations[idx].confidence) : "");
         }
-        // snapshot for whole-shape drag
+        // snapshot for whole-shape drag (undo) + move internals
+        preDragSnapshot.current = snapshotAnns(annotations);
+        didDrag.current = false;
         dragAnnIdx.current = idx;
         dragStart.current = [ox, oy];
         const ann = annotations[idx];
@@ -1131,6 +1357,7 @@ export default function DetectionTool({ project, user, onBack }) {
         annotations[handleAnnIdx.current], handleDragging.current,
         handleOrigBox.current, dxOrig, dyOrig
       );
+      didDrag.current = true;
       setAnnotations(prev => prev.map((a, i) => i === handleAnnIdx.current ? updated : a));
       return;
     }
@@ -1141,6 +1368,7 @@ export default function DetectionTool({ project, user, onBack }) {
       const dx = ox - sx, dy = oy - sy;
       const origPts = polyVtxOrigPts.current;
       const vi = polyVtxDragging.current;
+      didDrag.current = true;
       setAnnotations(prev => prev.map((a, i) => {
         if (i !== polyVtxAnnIdx.current) return a;
         const newPts = origPts.map((p, pi) =>
@@ -1156,7 +1384,10 @@ export default function DetectionTool({ project, user, onBack }) {
       const [sx, sy] = boxStart.current;
       const isSearch = drawMode === "imageSearch";
       setTempBox({ shapeType: "box", clsName: isSearch ? "Image Search" : newClass, _isImageSearch: isSearch, x1: sx, y1: sy, x2: ox, y2: oy, points: null });
-    } else if (drawMode === "line" && mouseDown.current && lineDrawing.current) {
+    } else if (drawMode === "circle" && mouseDown.current && boxDrawing.current) {
+      const [cx, cy] = boxStart.current;
+      setTempCircle({ cx, cy, r: Math.hypot(ox - cx, oy - cy) });
+    } else if ((drawMode === "line" || drawMode === "measure") && mouseDown.current && lineDrawing.current) {
       const [sx, sy] = lineStart.current;
       setTempLine([[sx, sy], [ox, oy]]);
     } else if (drawMode === "polygon" && tempPolyPts.length > 0) {
@@ -1166,6 +1397,7 @@ export default function DetectionTool({ project, user, onBack }) {
     } else if (drawMode === "select" && mouseDown.current && dragAnnIdx.current != null) {
       const [sx, sy] = dragStart.current;
       const dx = ox - sx, dy = oy - sy;
+      didDrag.current = true;
       setAnnotations(prev => prev.map((a, i) => {
         if (i !== dragAnnIdx.current) return a;
         if (a.shapeType === "box") {
@@ -1194,6 +1426,8 @@ export default function DetectionTool({ project, user, onBack }) {
 
     // ── Box handle drag end ──────────────────────────────────────────────────
     if (handleDragging.current != null) {
+      if (preDragSnapshot.current && didDrag.current) { pushHistory(preDragSnapshot.current); }
+      preDragSnapshot.current = null; didDrag.current = false;
       handleDragging.current = null;
       handleAnnIdx.current = null;
       handleOrigBox.current = null;
@@ -1205,6 +1439,8 @@ export default function DetectionTool({ project, user, onBack }) {
 
     // ── Polygon vertex drag end ──────────────────────────────────────────────
     if (polyVtxDragging.current != null) {
+      if (preDragSnapshot.current && didDrag.current) { pushHistory(preDragSnapshot.current); }
+      preDragSnapshot.current = null; didDrag.current = false;
       polyVtxDragging.current = null;
       polyVtxAnnIdx.current = null;
       polyVtxOrigPts.current = null;
@@ -1212,6 +1448,13 @@ export default function DetectionTool({ project, user, onBack }) {
       mouseDown.current = false;
       setStatus("Vertex moved.");
       return;
+    }
+
+    // ── Whole-shape drag end — only push if shape actually moved ────────────
+    if (preDragSnapshot.current && dragAnnIdx.current != null) {
+      if (didDrag.current) pushHistory(preDragSnapshot.current);
+      preDragSnapshot.current = null;
+      didDrag.current = false;
     }
 
     // ── Box draw commit ──────────────────────────────────────────────────────
@@ -1224,6 +1467,7 @@ export default function DetectionTool({ project, user, onBack }) {
         points: null,
       };
       if (isValidAnnotation(ann)) {
+        pushHistory(annotations);
         setAnnotations(prev => {
           const next = [...prev, ann];
           setSelectedIdx(next.length - 1);
@@ -1249,13 +1493,55 @@ export default function DetectionTool({ project, user, onBack }) {
       } else {
         setStatus("Image Search: draw a larger region.");
       }
+    } else if (drawMode === "circle" && boxDrawing.current) {
+      const [cx, cy] = boxStart.current;
+      const r = Math.hypot(ox - cx, oy - cy);
+      if (r >= MIN_BOX_SIZE / 2) {
+        const N = 18;
+        const pts = Array.from({ length: N }, (_, i) => {
+          const angle = (2 * Math.PI * i) / N;
+          return [Math.round(cx + r * Math.cos(angle)), Math.round(cy + r * Math.sin(angle))];
+        });
+        const ann = {
+          id: Math.random().toString(36).slice(2),
+          shapeType: "polygon", clsName: newClass,
+          confidence: null, sourceModel: "manual", zoneTag: null,
+          x1: null, y1: null, x2: null, y2: null, points: pts,
+        };
+        pushHistory(annotations);
+        setAnnotations(prev => {
+          const next = [...prev, ann];
+          setSelectedIdx(next.length - 1);
+          setSelectedIndices(new Set([next.length - 1]));
+          return next;
+        });
+        setStatus(`Circle added (r≈${r.toFixed(1)} px).`);
+      }
+      setTempCircle(null);
+      boxDrawing.current = false;
+      boxStart.current = null;
     } else if (drawMode === "line" && lineDrawing.current) {
       const [sx, sy] = lineStart.current;
       const len = Math.hypot(ox - sx, oy - sy);
       setLastMeasureLine([[sx, sy], [ox, oy]]);
       setLastMeasurePx(len.toFixed(2));
       setPixelLength(len.toFixed(2));
-      setStatus(`Measured: ${len.toFixed(2)} px`);
+      setLastMeasureM(null); // scale cal line — no real-world label
+      setStatus(`Scale calibration: ${len.toFixed(2)} px — enter real length and click Set Scale.`);
+      lineDrawing.current = false;
+      lineStart.current = null;
+      setTempLine(null);
+    } else if (drawMode === "measure" && lineDrawing.current) {
+      const [sx, sy] = lineStart.current;
+      const len = Math.hypot(ox - sx, oy - sy);
+      const realM = ratio ? len * ratio : null;
+      setLastMeasureLine([[sx, sy], [ox, oy]]);
+      setLastMeasureM(realM);
+      if (realM != null) {
+        setStatus(`Measure: ${len.toFixed(2)} px = ${realM.toFixed(3)} m`);
+      } else {
+        setStatus(`Measure: ${len.toFixed(2)} px (set scale to get real distance)`);
+      }
       lineDrawing.current = false;
       lineStart.current = null;
       setTempLine(null);
@@ -1281,6 +1567,7 @@ export default function DetectionTool({ project, user, onBack }) {
     if (tempPolyPts.length < 3) { setStatus("Need at least 3 points."); return; }
     const ann = { id: Math.random().toString(36).slice(2), shapeType: "polygon", clsName: newClass, confidence: null, sourceModel: "manual", zoneTag: null, x1: null, y1: null, x2: null, y2: null, points: [...tempPolyPts] };
     if (!isValidAnnotation(ann)) { setStatus("Polygon too small."); return; }
+    pushHistory(annotations);
     setAnnotations(prev => { const next = [...prev, ann]; setSelectedIdx(next.length - 1); setSelectedIndices(new Set([next.length - 1])); return next; });
     setTempPolyPts([]);
     setTempPolyMouse(null);
@@ -1309,10 +1596,11 @@ export default function DetectionTool({ project, user, onBack }) {
     try {
       const blob = await new Promise((res) => tempCanvas.toBlob(res, "image/jpeg", 0.95));
 
+      const autoEps = (() => { const v = parseInt(autoSimplifyDist, 10); return !isNaN(v) && v > 0 ? v : 0; })();
       if (tiled && (imgNaturalSize.w > TILE_SIZE || imgNaturalSize.h > TILE_SIZE)) {
-        const allAnns = await runTiledInference(tempCanvas, blob, wallModelData, zoneModelData, zoneSegModelData);
+        const allAnns = await runTiledInference(tempCanvas, blob, wallModelData, zoneModelData, zoneSegModelData, autoEps);
         // Keep manually drawn shapes; replace all AI detections with fresh results
-        setAnnotations(prev => [...prev.filter(a => a.sourceModel === 'manual'), ...allAnns]);
+        setAnnotations(prev => { pushHistory(prev); return [...prev.filter(a => a.sourceModel === 'manual'), ...allAnns]; });
         setStatus(`Tiled inference complete — ${allAnns.length} detections.`);
       } else {
         const [wallRes, doorWinRes, zoneSegRes] = await Promise.all([
@@ -1320,15 +1608,16 @@ export default function DetectionTool({ project, user, onBack }) {
           postInference(blob, ZONE_MODEL_URL, ZONE_MODEL_HEADERS, zoneModelData),
           postInference(blob, ZONE_SEG_MODEL_URL, ZONE_SEG_MODEL_HEADERS, zoneSegModelData),
         ]);
+        const autoEps = (() => { const v = parseInt(autoSimplifyDist, 10); return !isNaN(v) && v > 0 ? v : 0; })();
         const wallAnns    = parseModelResponse(wallRes, "wall_model");
         // Old zone model: keep doors and windows only
         const doorWinAnns = parseModelResponse(doorWinRes, "zone_door_window_model")
           .filter(a => a.clsName === "door" || a.clsName === "window");
-        // New seg model: zones as polygons
-        const zoneSegAnns = parseSegmentationResponse(zoneSegRes, "zone_seg_model");
+        // New seg model: zones as polygons (auto-simplified if setting > 0)
+        const zoneSegAnns = parseSegmentationResponse(zoneSegRes, "zone_seg_model", autoEps);
         const allAnns = [...wallAnns, ...doorWinAnns, ...zoneSegAnns];
         // Keep manually drawn shapes; replace all AI detections with fresh results
-        setAnnotations(prev => [...prev.filter(a => a.sourceModel === 'manual'), ...allAnns]);
+        setAnnotations(prev => { pushHistory(prev); return [...prev.filter(a => a.sourceModel === 'manual'), ...allAnns]; });
         setStatus(`Inference complete — ${allAnns.length} detections.`);
       }
       setSelectedIdx(null);
@@ -1349,7 +1638,7 @@ export default function DetectionTool({ project, user, onBack }) {
     return res.json();
   };
 
-  const runTiledInference = async (canvas, _blob, wallModelData, zoneModelData, zoneSegModelData) => {
+  const runTiledInference = async (canvas, _blob, wallModelData, zoneModelData, zoneSegModelData, autoEps = 0) => {
     const { w: W, h: H } = imgNaturalSize;
     const stride = TILE_SIZE - TILE_OVERLAP;
     const allAnns = [];
@@ -1373,7 +1662,7 @@ export default function DetectionTool({ project, user, onBack }) {
         const tileAnns = [
           ...parseModelResponse(wallRes, "wall_model"),
           ...parseModelResponse(doorWinRes, "zone_door_window_model").filter(a => a.clsName === "door" || a.clsName === "window"),
-          ...parseSegmentationResponse(zoneSegRes, "zone_seg_model"),
+          ...parseSegmentationResponse(zoneSegRes, "zone_seg_model", autoEps),
         ];
         tileAnns.forEach(a => allAnns.push(offsetAnnotation(a, tx, ty)));
       } catch (_) {}
@@ -1437,8 +1726,23 @@ export default function DetectionTool({ project, user, onBack }) {
   };
 
   // ─── Edit / delete ───────────────────────────────────────────────────────────
+  const simplifySelected = () => {
+    const eps = parseFloat(simplifyEpsilon);
+    if (isNaN(eps) || eps <= 0) return;
+    pushHistory(annotations);
+    let count = 0;
+    setAnnotations(prev => prev.map((a, i) => {
+      if (!selectedIndices.has(i) || a.shapeType !== "polygon" || !a.points) return a;
+      const simplified = rdpSimplifyPolygon(a.points, eps);
+      count++;
+      return { ...a, points: simplified };
+    }));
+    setStatus(`Simplified ${count} polygon(s) with ε=${eps}px.`);
+  };
+
   const applyClass = () => {
     if (selectedIndices.size === 0) return;
+    pushHistory(annotations);
     setAnnotations(prev => prev.map((a, i) =>
       selectedIndices.has(i) ? { ...a, clsName: editClass } : a
     ));
@@ -1454,6 +1758,7 @@ export default function DetectionTool({ project, user, onBack }) {
       return;
     }
 
+    pushHistory(annotations);
     setAnnotations(prev => prev.map((a, i) =>
       targetIndices.has(i) ? { ...a, zoneTag: selectedZoneTag || null } : a
     ));
@@ -1467,6 +1772,7 @@ export default function DetectionTool({ project, user, onBack }) {
 
   const deleteSelected = () => {
     if (selectedIndices.size === 0) return;
+    pushHistory(annotations);
     const toRemove = new Set(selectedIndices);
     setAnnotations(prev => prev.filter((_, i) => !toRemove.has(i)));
     setSelectedIdx(null);
@@ -1488,7 +1794,7 @@ export default function DetectionTool({ project, user, onBack }) {
       const [x1, y1, x2, y2] = annotationBbox(ann);
       const areaPx = annotationAreaPx(ann);
       const areaM2 = ratio ? areaPx * ratio * ratio : null;
-      const perimPx = ann.clsName === "zone" ? annotationPerimeterPx(ann) : null;
+      const perimPx = ann.shapeType === "polygon" ? annotationPerimeterPx(ann) : null;
       const perimM = ratio && perimPx != null ? perimPx * ratio : null;
       return { shape_type: ann.shapeType, class: ann.clsName, x1, y1, x2, y2, polygon_points: ann.points, confidence: ann.confidence, source_model: ann.sourceModel, zone_tag: ann.zoneTag, area_pixels2: areaPx, area_m2: areaM2, perimeter_pixels: perimPx, perimeter_m: perimM };
     });
@@ -1503,7 +1809,7 @@ export default function DetectionTool({ project, user, onBack }) {
       const [x1, y1, x2, y2] = annotationBbox(ann);
       const areaPx = annotationAreaPx(ann);
       const areaM2 = ratio ? areaPx * ratio * ratio : "";
-      const perimPx = ann.clsName === "zone" ? annotationPerimeterPx(ann) : "";
+      const perimPx = ann.shapeType === "polygon" ? annotationPerimeterPx(ann) : "";
       const perimM = ratio && perimPx !== "" ? perimPx * ratio : "";
       return [ann.shapeType, ann.clsName, x1, y1, x2, y2, ann.points ? JSON.stringify(ann.points) : "", ann.confidence ?? "", ann.sourceModel ?? "", ann.zoneTag ?? "", areaPx, areaM2, perimPx, perimM];
     });
@@ -1537,6 +1843,16 @@ export default function DetectionTool({ project, user, onBack }) {
         if (document.activeElement.tagName === "INPUT") return;
         deleteSelected();
       }
+      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
+        if (document.activeElement.tagName === "INPUT") return;
+        e.preventDefault();
+        undo();
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === "y" || (e.key === "z" && e.shiftKey))) {
+        if (document.activeElement.tagName === "INPUT") return;
+        e.preventDefault();
+        redo();
+      }
       if ((e.ctrlKey || e.metaKey) && e.key === "a") {
         e.preventDefault();
         const visibleIdxs = annotations
@@ -1549,12 +1865,12 @@ export default function DetectionTool({ project, user, onBack }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [annotations, selectedIndices]);
+  }, [annotations, selectedIndices, undo, redo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── UI ──────────────────────────────────────────────────────────────────────
   const toolBtn = (mode, label) => (
     <button
-      onClick={() => { setDrawMode(mode); setTempBox(null); setTempPolyPts([]); setTempPolyMouse(null); setTempLine(null); }}
+      onClick={() => { setDrawMode(mode); setTempBox(null); setTempPolyPts([]); setTempPolyMouse(null); setTempLine(null); setTempCircle(null); }}
       style={{ ...styles.toolBtn, background: drawMode === mode ? "#1e6fff" : "#1a2035", border: drawMode === mode ? "1px solid #1e6fff" : "1px solid #2d3a52" }}
     >{label}</button>
   );
@@ -1569,6 +1885,92 @@ export default function DetectionTool({ project, user, onBack }) {
           onCancel={() => { setPdfModalData(null); setStatus("PDF import cancelled."); }}
         />
       )}
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <div style={styles.settingsOverlay} onClick={() => setShowSettings(false)}>
+          <div style={styles.settingsModal} onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <span style={{ color: "#c8f0fa", fontWeight: 700, fontSize: 13, letterSpacing: 2 }}>SETTINGS</span>
+              <button onClick={() => setShowSettings(false)} style={styles.tinyBtn}>✕</button>
+            </div>
+            <div style={{ color: "#7a9aaa", fontSize: 11, marginBottom: 6 }}>
+              Automatic polygon simplification distance
+            </div>
+            <div style={{ color: "#4a6a7a", fontSize: 10, marginBottom: 10 }}>
+              Applied to zone polygons after inference. 0 = disabled.
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input
+                type="number"
+                min="0"
+                max="999"
+                value={autoSimplifyDist}
+                onChange={e => {
+                  const v = parseInt(e.target.value, 10);
+                  if (!isNaN(v) && v >= 0 && v <= 999) setAutoSimplifyDist(String(v));
+                  else if (e.target.value === "") setAutoSimplifyDist("0");
+                }}
+                style={{ ...styles.smallInput, width: 64, fontSize: 14 }}
+              />
+              <span style={{ color: "#5a7a9a", fontSize: 11 }}>px  (0–999)</span>
+            </div>
+
+            <div style={{ borderTop: "1px solid #1a2e50", margin: "14px 0 12px" }} />
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 7, cursor: "pointer", userSelect: "none" }}>
+                <input
+                  type="checkbox"
+                  checked={autoSave}
+                  onChange={e => setAutoSave(e.target.checked)}
+                  style={{ cursor: "pointer" }}
+                />
+                <span style={{ color: "#7a9aaa", fontSize: 11 }}>Auto-save</span>
+              </label>
+            </div>
+            {autoSave && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, paddingLeft: 22 }}>
+                <span style={{ color: "#4a6a7a", fontSize: 11 }}>Every</span>
+                <input
+                  type="number"
+                  min="10"
+                  max="3600"
+                  step="10"
+                  value={autoSaveInterval}
+                  onChange={e => {
+                    const v = parseInt(e.target.value, 10);
+                    if (!isNaN(v) && v >= 10) setAutoSaveInterval(String(v));
+                    else if (e.target.value === "") setAutoSaveInterval("");
+                  }}
+                  style={{ ...styles.smallInput, width: 56 }}
+                />
+                <span style={{ color: "#4a6a7a", fontSize: 11 }}>seconds</span>
+              </div>
+            )}
+
+            <div style={{ borderTop: "1px solid #1a2e50", margin: "14px 0 10px" }} />
+            <div style={{ color: "#7a9aaa", fontSize: 11, marginBottom: 10 }}>Overlay text colors</div>
+
+            {[
+              { label: "Area (m²)",      value: areaTextColor,    set: setAreaTextColor },
+              { label: "Perimeter (P:)", value: perimTextColor,   set: setPerimTextColor },
+              { label: "Measure line",   value: measureTextColor, set: setMeasureTextColor },
+            ].map(({ label, value, set }) => (
+              <div key={label} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                <input
+                  type="color"
+                  value={value}
+                  onChange={e => set(e.target.value)}
+                  style={{ width: 32, height: 26, padding: 2, border: "none", background: "none", cursor: "pointer" }}
+                />
+                <span style={{ color: "#8aabbb", fontSize: 11 }}>{label}</span>
+                <span style={{ color: value, fontSize: 11, marginLeft: "auto", fontFamily: "monospace" }}>{value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div style={styles.header}>
         <span style={styles.logo}>⬡ QUANT 1.0 </span>
@@ -1582,20 +1984,32 @@ export default function DetectionTool({ project, user, onBack }) {
           <input type="file" accept="application/pdf,.pdf" onChange={handlePdfChange} style={{ display: "none" }} />
         </label>
         {project?.id && (
-          <button
-            onClick={handleSave}
-            disabled={saveStatus === 'saving'}
-            style={{
-              ...styles.uploadBtn,
-              background: saveStatus === 'error' ? '#3a0f0f' : saveStatus === 'saved' ? '#0d2a1a' : '#0d1e38',
-              borderColor: saveStatus === 'error' ? '#6a1a1a' : saveStatus === 'saved' ? '#1a5a3a' : '#1e3a6a',
-              color: saveStatus === 'error' ? '#e05555' : saveStatus === 'saved' ? '#4ada8a' : '#6acf',
-              cursor: saveStatus === 'saving' ? 'not-allowed' : 'pointer',
-            }}
-          >
-            {saveStatus === 'saving' ? '⟳ Saving…' : saveStatus === 'saved' ? '✓ Saved' : saveStatus === 'error' ? '✕ Error' : '💾 Save'}
-          </button>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
+            <button
+              onClick={handleSave}
+              disabled={saveStatus === 'saving'}
+              style={{
+                ...styles.uploadBtn,
+                background: saveStatus === 'error' ? '#3a0f0f' : saveStatus === 'saved' ? '#0d2a1a' : '#0d1e38',
+                borderColor: saveStatus === 'error' ? '#6a1a1a' : saveStatus === 'saved' ? '#1a5a3a' : '#1e3a6a',
+                color: saveStatus === 'error' ? '#e05555' : saveStatus === 'saved' ? '#4ada8a' : '#6acf',
+                cursor: saveStatus === 'saving' ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {saveStatus === 'saving' ? '⟳ Saving…' : saveStatus === 'saved' ? '✓ Saved' : saveStatus === 'error' ? '✕ Error' : '💾 Save'}
+            </button>
+            {lastSaveTime && (
+              <span style={{ color: "#3a5a6a", fontSize: 9, whiteSpace: "nowrap" }}>
+                {lastSaveTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+              </span>
+            )}
+          </div>
         )}
+        <button
+          onClick={() => setShowSettings(v => !v)}
+          title="Settings"
+          style={{ ...styles.uploadBtn, padding: "4px 9px", fontSize: 14, lineHeight: 1, background: showSettings ? "#1a3060" : "#152240", borderColor: showSettings ? "#3a6ab0" : "#2a4070" }}
+        >⚙</button>
       </div>
 
       <div style={styles.body}>
@@ -1605,7 +2019,9 @@ export default function DetectionTool({ project, user, onBack }) {
             {toolBtn("select", "↖ Select")}
             {toolBtn("box", "⬜ Box")}
             {toolBtn("polygon", "⬡ Polygon")}
-            {toolBtn("line", "📏 Measure")}
+            {toolBtn("circle", "⬤ Circle")}
+            {toolBtn("measure", "📏 Measure")}
+            {toolBtn("line", "📐 Scale Cal.")}
             {/* Image Search button — hidden until backend is deployed
             <button
               onClick={() => { setDrawMode("imageSearch"); setTempBox(null); setTempPolyPts([]); setTempPolyMouse(null); setTempLine(null); setStatus("Image Search: draw a box around the object to find similar ones."); }}
@@ -1628,6 +2044,18 @@ export default function DetectionTool({ project, user, onBack }) {
               <button onClick={() => { setTempPolyPts([]); setTempPolyMouse(null); }} style={{ ...styles.toolBtn, background: "#660022" }}>✕ Cancel</button>
             )}
             <div style={{ flex: 1 }} />
+            <button
+              onClick={undo}
+              disabled={history.length === 0}
+              title="Undo (Ctrl+Z)"
+              style={{ ...styles.toolBtn, opacity: history.length === 0 ? 0.35 : 1 }}
+            >↩ Undo{history.length > 0 ? ` (${history.length})` : ""}</button>
+            <button
+              onClick={redo}
+              disabled={future.length === 0}
+              title="Redo (Ctrl+Y)"
+              style={{ ...styles.toolBtn, opacity: future.length === 0 ? 0.35 : 1 }}
+            >↪ Redo{future.length > 0 ? ` (${future.length})` : ""}</button>
             <button onClick={() => setZoom(z => clamp(z * 1.2, 0.1, 8))} style={styles.toolBtn}>＋</button>
             <button onClick={() => setZoom(1)} style={styles.toolBtn}>⟳ Reset</button>
             <button onClick={() => setZoom(z => clamp(z / 1.2, 0.1, 8))} style={styles.toolBtn}>－</button>
@@ -1669,6 +2097,10 @@ export default function DetectionTool({ project, user, onBack }) {
             <button onClick={() => runInference(true)} disabled={inferring || !originalImg} style={{ ...styles.inferBtn, background: "#0e4d6e" }}>
               ▶ Run Analysis
             </button>
+            <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", color: "#5a7a9a", fontSize: 11, userSelect: "none" }}>
+              <input type="checkbox" checked={showConfidence} onChange={e => setShowConfidence(e.target.checked)} style={{ cursor: "pointer" }} />
+              Show confidence
+            </label>
             {zoneSummary && <span style={styles.zoneSummary}>{zoneSummary}</span>}
           </div>
         </div>
@@ -1732,10 +2164,6 @@ export default function DetectionTool({ project, user, onBack }) {
               <button onClick={applyClass} style={styles.smallBtn}>Apply</button>
             </div>
             <div style={styles.row}>
-              <span style={styles.label}>Conf:</span>
-              <input value={editConf} onChange={e => setEditConf(e.target.value)} style={styles.smallInput} placeholder="0.00" />
-            </div>
-            <div style={styles.row}>
               <span style={styles.label}>Tag:</span>
               <select value={selectedZoneTag} onChange={e => setSelectedZoneTag(e.target.value)} style={{ ...styles.select, flex: 1 }}>
                 <option value="">— none —</option>
@@ -1744,6 +2172,17 @@ export default function DetectionTool({ project, user, onBack }) {
               <button onClick={applyTag} style={styles.smallBtn}>Set</button>
             </div>
             <button onClick={deleteSelected} style={{ ...styles.smallBtn, background: "#5c1010", width: "100%", marginTop: 4 }}>🗑 Delete Selected</button>
+            <div style={{ ...styles.row, marginTop: 6 }}>
+              <span style={styles.label} title="RDP tolerance in image pixels">ε px:</span>
+              <input
+                value={simplifyEpsilon}
+                onChange={e => setSimplifyEpsilon(e.target.value)}
+                style={{ ...styles.smallInput, width: 44 }}
+                placeholder="3"
+                title="Simplify tolerance in image pixels"
+              />
+              <button onClick={simplifySelected} style={styles.smallBtn} title="Simplify selected polygon(s) with Ramer-Douglas-Peucker">Simplify</button>
+            </div>
           </div>
 
           {/* Tag manager */}
@@ -1823,16 +2262,29 @@ export default function DetectionTool({ project, user, onBack }) {
           {/* Scale calibration */}
           <div style={styles.section}>
             <div style={styles.sectionTitle}>SCALE CALIBRATION</div>
-            <div style={styles.row}>
-              <span style={styles.label}>Px len:</span>
-              <input value={pixelLength} onChange={e => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setPixelLength(v); }} style={styles.smallInput} placeholder={lastMeasurePx || "px"} />
+            <div style={{ color: "#4a6a7a", fontSize: 10, marginBottom: 6 }}>
+              Draw a line with 📐, then enter its real length below.
             </div>
-            <div style={styles.row}>
-              <span style={styles.label}>Real (m):</span>
-              <input value={realLength} onChange={e => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setRealLength(v); }} style={styles.smallInput} placeholder="m" />
+            <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 6 }}>
+              <span style={{ color: "#00ccff", fontSize: 12, whiteSpace: "nowrap" }}>Scale</span>
+              <input
+                value={realLength}
+                onChange={e => { const v = e.target.value; if (v === '' || /^\d+$/.test(v)) setRealLength(v); }}
+                style={{ ...styles.smallInput, width: 48 }}
+                placeholder="1"
+                title="Real-world length"
+              />
+              <span style={{ color: "#5a7a9a", fontSize: 12 }}>:</span>
+              <input
+                value={pixelLength}
+                onChange={e => { const v = e.target.value; if (v === '' || /^\d+$/.test(v)) setPixelLength(v); }}
+                style={{ ...styles.smallInput, width: 48 }}
+                placeholder=""
+                title="Pixel length (auto-filled when you draw a line)"
+              />
             </div>
-            <button onClick={calculateRatio} style={{ ...styles.smallBtn, width: "100%" }}>Calc Ratio</button>
-            {ratio != null && <div style={styles.ratioDisplay}>{ratio.toFixed(8)} m/px</div>}
+            <button onClick={calculateRatio} style={{ ...styles.smallBtn, width: "100%" }}>Set Scale</button>
+            {ratio != null && <div style={styles.ratioDisplay}>1 px = {ratio.toFixed(6)} m</div>}
           </div>
 
           {/* Export */}
@@ -1856,7 +2308,7 @@ export default function DetectionTool({ project, user, onBack }) {
                     {ann.zoneTag && <span style={{ color: "#aaa", fontSize: 9 }}> :{ann.zoneTag}</span>}
                     <br />
                     <span style={{ color: "#667", fontSize: 9 }}>({x1},{y1})–({x2},{y2}) {ann.shapeType === "polygon" ? "[poly]" : ""}</span>
-                    {ann.confidence != null && <span style={{ color: "#556", fontSize: 9 }}> {ann.confidence.toFixed(2)}</span>}
+                    {showConfidence && ann.confidence != null && <span style={{ color: "#556", fontSize: 9 }}> {ann.confidence.toFixed(2)}</span>}
                   </div>
                 );
               })}
@@ -1903,4 +2355,6 @@ const styles = {
   ratioDisplay: { color: "#3a8a5a", fontSize: 10, marginTop: 3 },
   annList: { maxHeight: 300, overflowY: "auto" },
   annRow: { padding: "4px 6px", cursor: "pointer", borderRadius: 2, marginBottom: 1, paddingLeft: 6 },
+  settingsOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 9000, display: "flex", alignItems: "flex-start", justifyContent: "flex-end" },
+  settingsModal: { marginTop: 48, marginRight: 14, background: "#0e1728", border: "1px solid #2a4070", borderRadius: 8, padding: "16px 18px", minWidth: 300, boxShadow: "0 8px 32px rgba(0,0,0,0.7)", zIndex: 9001 },
 };
