@@ -145,6 +145,19 @@ function annotationContains(ann, x, y) {
   return pointInPolygon(x, y, ann.points || []);
 }
 
+// Returns the next sequential numId (max existing + 1, or 1 if none)
+function nextNumId(anns) {
+  let max = 0;
+  for (const a of anns) if (typeof a.numId === "number" && a.numId > max) max = a.numId;
+  return max + 1;
+}
+
+// Assigns sequential numIds to annotations missing one (stable order)
+function fillMissingNumIds(anns) {
+  let next = nextNumId(anns);
+  return anns.map(a => (typeof a.numId === "number" ? a : { ...a, numId: next++ }));
+}
+
 function isValidAnnotation(ann) {
   if (ann.shapeType === "line") return Math.hypot(ann.x2 - ann.x1, ann.y2 - ann.y1) >= MIN_BOX_SIZE;
   const [x1, y1, x2, y2] = annotationBbox(ann);
@@ -359,16 +372,17 @@ function drawAnnotations(ctx, anns, scale, {
         ctx.arc(px * scale, py * scale, 4, 0, Math.PI * 2);
         ctx.fill();
       });
-      // Length label
+      // Length label (with numId prefix)
       const lineLen = Math.hypot(ann.x2 - ann.x1, ann.y2 - ann.y1);
       const lmx = ((ann.x1 + ann.x2) / 2) * scale + 4;
       const lmy = Math.max(12, ((ann.y1 + ann.y2) / 2) * scale - 8);
       ctx.font = "bold 11px monospace";
       ctx.fillStyle = color;
+      const idPrefix = ann.numId != null ? `#${ann.numId} ` : "";
       if (ratio) {
-        ctx.fillText(`${(lineLen * ratio).toFixed(3)} m`, lmx, lmy);
+        ctx.fillText(`${idPrefix}${(lineLen * ratio).toFixed(3)} m`, lmx, lmy);
       } else {
-        ctx.fillText(`${lineLen.toFixed(1)} px`, lmx, lmy);
+        ctx.fillText(`${idPrefix}${lineLen.toFixed(1)} px`, lmx, lmy);
       }
     } else if (ann.points && ann.points.length >= 2) {
       ctx.beginPath();
@@ -378,9 +392,9 @@ function drawAnnotations(ctx, anns, scale, {
       ctx.stroke();
     }
 
-    // Label (skip for line — length already shown inline)
+    // Label (skip for line — length already shown inline with ID)
     if (ann.shapeType !== "line") {
-      let label = ann.clsName;
+      let label = ann.numId != null ? `#${ann.numId} ${ann.clsName}` : ann.clsName;
       if (ann.zoneTag) label += `: ${ann.zoneTag}`;
       if (showConfidence && ann.confidence != null) label += ` ${ann.confidence.toFixed(2)}`;
       if (ann.shapeType === "polygon") label += " [poly]";
@@ -1083,7 +1097,7 @@ export default function DetectionTool({ project, user, onBack }) {
     loadProject(project.id)
       .then((data) => {
         if (cancelled || !data) return;
-        if (data.annotations?.length) setAnnotations(data.annotations);
+        if (data.annotations?.length) setAnnotations(fillMissingNumIds(data.annotations));
         if (data.customTags && Object.keys(data.customTags).length)
           setZoneTags(data.customTags);
         if (data.customClasses?.length) {
@@ -1611,7 +1625,7 @@ export default function DetectionTool({ project, user, onBack }) {
       if (isValidAnnotation(ann)) {
         pushHistory(annotations);
         setAnnotations(prev => {
-          const next = [...prev, ann];
+          const next = [...prev, { ...ann, numId: nextNumId(prev) }];
           setSelectedIdx(next.length - 1);
           setSelectedIndices(new Set([next.length - 1]));
           return next;
@@ -1652,7 +1666,7 @@ export default function DetectionTool({ project, user, onBack }) {
         };
         pushHistory(annotations);
         setAnnotations(prev => {
-          const next = [...prev, ann];
+          const next = [...prev, { ...ann, numId: nextNumId(prev) }];
           setSelectedIdx(next.length - 1);
           setSelectedIndices(new Set([next.length - 1]));
           return next;
@@ -1674,7 +1688,7 @@ export default function DetectionTool({ project, user, onBack }) {
       if (isValidAnnotation(ann)) {
         pushHistory(annotations);
         setAnnotations(prev => {
-          const next = [...prev, ann];
+          const next = [...prev, { ...ann, numId: nextNumId(prev) }];
           setSelectedIdx(next.length - 1);
           setSelectedIndices(new Set([next.length - 1]));
           return next;
@@ -1735,7 +1749,7 @@ export default function DetectionTool({ project, user, onBack }) {
     const ann = { id: Math.random().toString(36).slice(2), shapeType: "polygon", clsName: newClass, confidence: null, sourceModel: "manual", zoneTag: null, x1: null, y1: null, x2: null, y2: null, points: [...tempPolyPts] };
     if (!isValidAnnotation(ann)) { setStatus("Polygon too small."); return; }
     pushHistory(annotations);
-    setAnnotations(prev => { const next = [...prev, ann]; setSelectedIdx(next.length - 1); setSelectedIndices(new Set([next.length - 1])); return next; });
+    setAnnotations(prev => { const next = [...prev, { ...ann, numId: nextNumId(prev) }]; setSelectedIdx(next.length - 1); setSelectedIndices(new Set([next.length - 1])); return next; });
     setTempPolyPts([]);
     setTempPolyMouse(null);
     setStatus("Polygon completed.");
@@ -1767,7 +1781,13 @@ export default function DetectionTool({ project, user, onBack }) {
       if (tiled && (imgNaturalSize.w > TILE_SIZE || imgNaturalSize.h > TILE_SIZE)) {
         const allAnns = await runTiledInference(tempCanvas, blob, wallModelData, zoneModelData, zoneSegModelData, autoEps);
         // Keep manually drawn shapes; replace all AI detections with fresh results
-        setAnnotations(prev => { pushHistory(prev); return [...prev.filter(a => a.sourceModel === 'manual'), ...allAnns]; });
+        setAnnotations(prev => {
+          pushHistory(prev);
+          const kept = prev.filter(a => a.sourceModel === 'manual');
+          let next = nextNumId(kept);
+          const withIds = allAnns.map(a => ({ ...a, numId: next++ }));
+          return [...kept, ...withIds];
+        });
         setStatus(`Tiled inference complete — ${allAnns.length} detections.`);
       } else {
         const [wallRes, doorWinRes, zoneSegRes] = await Promise.all([
@@ -1784,7 +1804,13 @@ export default function DetectionTool({ project, user, onBack }) {
         const zoneSegAnns = parseSegmentationResponse(zoneSegRes, "zone_seg_model", autoEps);
         const allAnns = [...wallAnns, ...doorWinAnns, ...zoneSegAnns];
         // Keep manually drawn shapes; replace all AI detections with fresh results
-        setAnnotations(prev => { pushHistory(prev); return [...prev.filter(a => a.sourceModel === 'manual'), ...allAnns]; });
+        setAnnotations(prev => {
+          pushHistory(prev);
+          const kept = prev.filter(a => a.sourceModel === 'manual');
+          let next = nextNumId(kept);
+          const withIds = allAnns.map(a => ({ ...a, numId: next++ }));
+          return [...kept, ...withIds];
+        });
         setStatus(`Inference complete — ${allAnns.length} detections.`);
       }
       setSelectedIdx(null);
@@ -1881,7 +1907,11 @@ export default function DetectionTool({ project, user, onBack }) {
       }));
 
       if (newAnns.length > 0) {
-        setAnnotations((prev) => [...prev, ...newAnns]);
+        setAnnotations((prev) => {
+          let next = nextNumId(prev);
+          const withIds = newAnns.map(a => ({ ...a, numId: next++ }));
+          return [...prev, ...withIds];
+        });
         setVisibleClasses((prev) => new Set([...prev, UNASSIGNED_CLASS]));
       }
       setStatus(`Image Search: ${newAnns.length} similar object(s) found.`);
@@ -1963,7 +1993,7 @@ export default function DetectionTool({ project, user, onBack }) {
       const areaM2 = ratio ? areaPx * ratio * ratio : null;
       const perimPx = (ann.shapeType === "polygon" || ann.shapeType === "line" || ann.clsName === "zone") ? annotationPerimeterPx(ann) : null;
       const perimM = ratio && perimPx != null ? perimPx * ratio : null;
-      return { shape_type: ann.shapeType, class: ann.clsName, x1, y1, x2, y2, polygon_points: ann.points, confidence: ann.confidence, source_model: ann.sourceModel, zone_tag: ann.zoneTag, area_pixels2: areaPx, area_m2: areaM2, perimeter_pixels: perimPx, perimeter_m: perimM };
+      return { num_id: ann.numId ?? null, shape_type: ann.shapeType, class: ann.clsName, x1, y1, x2, y2, polygon_points: ann.points, confidence: ann.confidence, source_model: ann.sourceModel, zone_tag: ann.zoneTag, area_pixels2: areaPx, area_m2: areaM2, perimeter_pixels: perimPx, perimeter_m: perimM };
     });
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -1971,14 +2001,14 @@ export default function DetectionTool({ project, user, onBack }) {
   };
 
   const exportCSV = () => {
-    const headers = ["shape_type","class","x1","y1","x2","y2","polygon_points","confidence","source_model","zone_tag","area_pixels2","area_m2","perimeter_pixels","perimeter_m"];
+    const headers = ["num_id","shape_type","class","x1","y1","x2","y2","polygon_points","confidence","source_model","zone_tag","area_pixels2","area_m2","perimeter_pixels","perimeter_m"];
     const rows = annotations.map(ann => {
       const [x1, y1, x2, y2] = annotationBbox(ann);
       const areaPx = annotationAreaPx(ann);
       const areaM2 = ratio ? areaPx * ratio * ratio : "";
       const perimPx = (ann.shapeType === "polygon" || ann.shapeType === "line" || ann.clsName === "zone") ? annotationPerimeterPx(ann) : "";
       const perimM = ratio && perimPx !== "" ? perimPx * ratio : "";
-      return [ann.shapeType, ann.clsName, x1, y1, x2, y2, ann.points ? JSON.stringify(ann.points) : "", ann.confidence ?? "", ann.sourceModel ?? "", ann.zoneTag ?? "", areaPx, areaM2, perimPx, perimM];
+      return [ann.numId ?? "", ann.shapeType, ann.clsName, x1, y1, x2, y2, ann.points ? JSON.stringify(ann.points) : "", ann.confidence ?? "", ann.sourceModel ?? "", ann.zoneTag ?? "", areaPx, areaM2, perimPx, perimM];
     });
     const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
@@ -2472,10 +2502,11 @@ export default function DetectionTool({ project, user, onBack }) {
                 return (
                   <div key={ann.id} onClick={() => { setSelectedIdx(origIdx); setSelectedIndices(new Set([origIdx])); setEditClass(ann.clsName); setEditConf(ann.confidence != null ? String(ann.confidence) : ""); }}
                     style={{ ...styles.annRow, background: isSel ? "#1a3056" : "transparent", borderLeft: `3px solid ${getClassColor(ann.clsName)}` }}>
+                    {ann.numId != null && <span style={{ color: "#8ab", fontWeight: 700, fontSize: 10, marginRight: 5 }}>#{ann.numId}</span>}
                     <span style={{ color: getClassColor(ann.clsName), fontWeight: 600, fontSize: 10 }}>{ann.clsName}</span>
                     {ann.zoneTag && <span style={{ color: "#aaa", fontSize: 9 }}> :{ann.zoneTag}</span>}
                     <br />
-                    <span style={{ color: "#667", fontSize: 9 }}>({x1},{y1})–({x2},{y2}) {ann.shapeType === "polygon" ? "[poly]" : ""}</span>
+                    <span style={{ color: "#667", fontSize: 9 }}>({x1},{y1})–({x2},{y2}) {ann.shapeType === "polygon" ? "[poly]" : ann.shapeType === "line" ? "[line]" : ""}</span>
                     {showConfidence && ann.confidence != null && <span style={{ color: "#556", fontSize: 9 }}> {ann.confidence.toFixed(2)}</span>}
                   </div>
                 );
