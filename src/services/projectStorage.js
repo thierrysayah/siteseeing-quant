@@ -32,13 +32,16 @@ async function fetchJSON(path) {
 }
 
 // ─── COUNT HELPER ─────────────────────────────────────────────────────────────
-function deriveCountsFromAnnotations(annotations) {
-  if (!annotations || annotations.length === 0) return null;
+// Accepts either a flat annotations array (v1) or a pages array (v2).
+function deriveCountsFromPages(pages) {
+  if (!pages || pages.length === 0) return null;
+  const allAnns = pages.flatMap(p => p.annotations || []);
+  if (allAnns.length === 0) return null;
   return {
-    zones: annotations.filter((a) => a.clsName === 'zone').length,
-    doors: annotations.filter((a) => a.clsName === 'door').length,
-    windows: annotations.filter((a) => a.clsName === 'window').length,
-    walls: annotations.filter(
+    zones: allAnns.filter((a) => a.clsName === 'zone').length,
+    doors: allAnns.filter((a) => a.clsName === 'door').length,
+    windows: allAnns.filter((a) => a.clsName === 'window').length,
+    walls: allAnns.filter(
       (a) => a.clsName === 'Internal_Wall' || a.clsName === 'External_Wall'
     ).length,
   };
@@ -84,6 +87,7 @@ export async function createProject(id, name, owner) {
     counts: null,
     fileName: null,
     originalExt: null,
+    pageCount: 1,
   };
   await uploadData({
     path: key,
@@ -93,12 +97,13 @@ export async function createProject(id, name, owner) {
 }
 
 // ─── SAVE PROJECT ─────────────────────────────────────────────────────────────
+// Each page gets its own annotations file: annotations-page-0.json, annotations-page-1.json, …
+// Shared settings/scale go into a separate settings.json file.
 export async function saveProject(
   projectId,
-  { name, annotations, scale, settings, customTags, customClasses, imageInfo, file, existingExt, existingFileName }
+  { name, pages, scale, settings, file, pageImages, existingExt, existingFileName }
 ) {
-  const counts = deriveCountsFromAnnotations(annotations);
-  // Preserve existing ext/fileName if no new file is provided (e.g. re-saving after load)
+  const counts = deriveCountsFromPages(pages);
   const originalExt = file
     ? file.name.split('.').pop().toLowerCase()
     : (existingExt || null);
@@ -112,25 +117,24 @@ export async function saveProject(
     counts,
     fileName,
     originalExt,
+    pageCount: pages ? pages.length : 1,
   };
-
-  const annotationsPayload = {
-    schemaVersion: '1.0',
-    savedAt: new Date().toISOString(),
-    imageInfo: imageInfo || { w: 0, h: 0 },
-    scale: scale || { pixelToMeter: null, pixelLength: '', realLength: '' },
-    settings: settings || { autoSimplifyDist: '0' },
-    customTags: customTags || {},
-    customClasses: customClasses || [],
-    annotations: annotations || [],
-  };
-
-  const [metaKey, annotKey] = await Promise.all([
-    userPath(projectId, 'metadata.json'),
-    userPath(projectId, 'annotations.json'),
-  ]);
 
   const NO_CACHE = 'no-cache, no-store, must-revalidate';
+
+  // ── Shared settings file ──────────────────────────────────────────────────
+  const settingsPayload = {
+    schemaVersion: '3.0',
+    savedAt: new Date().toISOString(),
+    scale: scale || { pixelToMeter: null, pixelLength: '', realLength: '' },
+    settings: settings || { autoSimplifyDist: '0' },
+  };
+
+  const [metaKey, settingsKey] = await Promise.all([
+    userPath(projectId, 'metadata.json'),
+    userPath(projectId, 'settings.json'),
+  ]);
+
   const uploads = [
     uploadData({
       path: metaKey,
@@ -138,12 +142,32 @@ export async function saveProject(
       options: { contentType: 'application/json', cacheControl: NO_CACHE },
     }).result,
     uploadData({
-      path: annotKey,
-      data: JSON.stringify(annotationsPayload),
+      path: settingsKey,
+      data: JSON.stringify(settingsPayload),
       options: { contentType: 'application/json', cacheControl: NO_CACHE },
     }).result,
   ];
 
+  // ── Per-page annotation files ─────────────────────────────────────────────
+  if (pages && pages.length > 0) {
+    for (const p of pages) {
+      const pageAnnotPayload = {
+        pageIndex: p.pageIndex,
+        imageInfo: p.imageInfo || { w: 0, h: 0 },
+        annotations: p.annotations || [],
+      };
+      const pageAnnotKey = await userPath(projectId, `annotations-page-${p.pageIndex}.json`);
+      uploads.push(
+        uploadData({
+          path: pageAnnotKey,
+          data: JSON.stringify(pageAnnotPayload),
+          options: { contentType: 'application/json', cacheControl: NO_CACHE },
+        }).result
+      );
+    }
+  }
+
+  // Upload original file (PDF or image) on first save
   if (file && originalExt) {
     const fileKey = await userPath(projectId, `original.${originalExt}`);
     uploads.push(
@@ -155,36 +179,127 @@ export async function saveProject(
     );
   }
 
+  // Upload page images (PNG blobs) — only provided on initial import
+  if (pageImages && pageImages.length > 0) {
+    for (const pi of pageImages) {
+      const pageKey = await userPath(projectId, `page-${pi.pageIndex}.png`);
+      uploads.push(
+        uploadData({
+          path: pageKey,
+          data: pi.blob,
+          options: { contentType: 'image/png' },
+        }).result
+      );
+    }
+  }
+
   await Promise.all(uploads);
   return metadata;
 }
 
 // ─── LOAD PROJECT ─────────────────────────────────────────────────────────────
 export async function loadProject(projectId) {
-  const [metaKey, annotKey] = await Promise.all([
-    userPath(projectId, 'metadata.json'),
-    userPath(projectId, 'annotations.json'),
-  ]);
+  const prefix = await userPrefix(projectId);
 
-  // Fetch annotations — returns null for new (unsaved) projects
-  let annotData;
-  try {
-    annotData = await fetchJSON(annotKey);
-  } catch {
-    return null; // Project not yet saved
-  }
+  // List all files in this project's folder
+  const allFiles = await list({ path: prefix });
+  const allPaths = (allFiles.items || []).map(item => item.path);
 
-  // Fetch metadata
+  // ── Fetch metadata ──────────────────────────────────────────────────────
   let metadata = null;
   try {
+    const metaKey = await userPath(projectId, 'metadata.json');
     metadata = await fetchJSON(metaKey);
   } catch {
-    // metadata missing but annotations exist — continue
+    // metadata missing — continue
   }
 
-  // Build presigned URL for original file
+  // ── Detect schema version ──────────────────────────────────────────────
+  // v3: has settings.json + annotations-page-N.json files
+  // v2: has single annotations.json with pages array
+  // v1: has single annotations.json with flat annotations array
+  const hasSettingsJson = allPaths.some(p => p.endsWith('/settings.json'));
+  const perPageFiles = allPaths.filter(p => /annotations-page-\d+\.json$/.test(p));
+  const hasOldAnnotations = allPaths.some(p => p.endsWith('/annotations.json'));
+
+  let pages = [];
+  let scale = {};
+  let settings = {};
+
+  if (hasSettingsJson && perPageFiles.length > 0) {
+    // ── Schema v3 — per-page annotation files + shared settings ──────────
+    try {
+      const settingsKey = await userPath(projectId, 'settings.json');
+      const settingsData = await fetchJSON(settingsKey);
+      scale = settingsData.scale || {};
+      settings = settingsData.settings || {};
+    } catch {
+      // settings missing — continue with defaults
+    }
+
+    // Load all per-page annotation files in parallel
+    const pageResults = await Promise.all(
+      perPageFiles.map(async (filePath) => {
+        try {
+          return await fetchJSON(filePath);
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    pages = pageResults
+      .filter(Boolean)
+      .sort((a, b) => (a.pageIndex ?? 0) - (b.pageIndex ?? 0));
+
+  } else if (hasOldAnnotations) {
+    // ── Schema v2 or v1 — single annotations.json ────────────────────────
+    let annotData;
+    try {
+      const annotKey = await userPath(projectId, 'annotations.json');
+      annotData = await fetchJSON(annotKey);
+    } catch {
+      return null; // Project not yet saved
+    }
+
+    if (annotData.pages) {
+      // Schema v2 — multi-page in single file
+      pages = annotData.pages;
+      scale = annotData.scale || {};
+      settings = annotData.settings || {};
+    } else {
+      // Schema v1 — single page, wrap into pages array
+      pages = [{
+        pageIndex: 0,
+        imageInfo: annotData.imageInfo || { w: 0, h: 0 },
+        annotations: annotData.annotations || [],
+      }];
+      scale = annotData.scale || {};
+      settings = annotData.settings || {};
+      if (annotData.customTags) settings.customTags = annotData.customTags;
+      if (annotData.customClasses) settings.customClasses = annotData.customClasses;
+    }
+  } else {
+    // No annotations found
+    return null;
+  }
+
+  // ── Build presigned URLs for page images ──────────────────────────────
+  const pageImageUrls = {};
+  const pageFiles = allPaths.filter(p => /page-\d+\.png$/.test(p));
+
+  await Promise.all(pageFiles.map(async (filePath) => {
+    const match = filePath.match(/page-(\d+)\.png$/);
+    if (match) {
+      const idx = parseInt(match[1], 10);
+      const urlResult = await getUrl({ path: filePath, options: { expiresIn: 120 } });
+      pageImageUrls[idx] = urlResult.url.toString();
+    }
+  }));
+
+  // Fallback: if no page-0.png but original.{ext} exists (old v1 projects)
   let originalFileUrl = null;
-  if (metadata?.originalExt) {
+  if (Object.keys(pageImageUrls).length === 0 && metadata?.originalExt) {
     try {
       const fileKey = await userPath(projectId, `original.${metadata.originalExt}`);
       const urlResult = await getUrl({ path: fileKey });
@@ -192,18 +307,14 @@ export async function loadProject(projectId) {
     } catch (err) {
       console.error('[loadProject] Failed to generate presigned URL:', err);
     }
-  } else {
-    console.warn('[loadProject] No originalExt in metadata — image will not be restored.', metadata);
   }
 
   return {
     metadata,
-    annotations: annotData.annotations || [],
-    scale: annotData.scale || {},
-    settings: annotData.settings || {},
-    customTags: annotData.customTags || {},
-    customClasses: annotData.customClasses || [],
-    imageInfo: annotData.imageInfo || { w: 0, h: 0 },
+    pages,
+    scale,
+    settings,
+    pageImageUrls,
     originalFileUrl,
     originalExt: metadata?.originalExt || null,
   };

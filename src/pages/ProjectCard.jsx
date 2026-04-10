@@ -27,7 +27,7 @@ const COUNT_META = [
 ];
 
 export default function ProjectCard({ project, formatDate, onOpen, onDelete }) {
-  const { name, fileName, status, lastEdited, counts } = project;
+  const { name, fileName, status, lastEdited, counts, pageCount } = project;
   const statusStyle = STATUS_STYLES[status] || STATUS_STYLES["Draft"];
 
   return (
@@ -38,7 +38,12 @@ export default function ProjectCard({ project, formatDate, onOpen, onDelete }) {
           <div className="pc-icon">📐</div>
           <div>
             <p className="pc-name">{name}</p>
-            <p className="pc-filename">{fileName}</p>
+            <p className="pc-filename">
+              {fileName}
+              {pageCount > 1 && (
+                <span className="pc-page-badge">{pageCount} pages</span>
+              )}
+            </p>
           </div>
         </div>
         <span

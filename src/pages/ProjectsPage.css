@@ -280,6 +280,20 @@
   max-width: 220px;
 }
 
+.pc-page-badge {
+  display: inline-block;
+  margin-left: 6px;
+  background: #0f1e3a;
+  color: #4a8adf;
+  border: 1px solid #1a3060;
+  border-radius: 8px;
+  padding: 0 6px;
+  font-size: 9px;
+  font-family: var(--pp-mono);
+  line-height: 16px;
+  vertical-align: middle;
+}
+
 /* ── Status badge ── */
 .pc-status {
   font-family: var(--pp-mono);

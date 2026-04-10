@@ -584,16 +584,23 @@ function drawAnnotations(ctx, anns, scale, {
 //   pdfData  – ArrayBuffer of the uploaded PDF
 //   onConfirm(canvas) – called with a HTMLCanvasElement of the cropped region
 //   onCancel()
-function PdfRegionSelector({ pdfData, onConfirm, onCancel }) {
+function PdfPageImportModal({ pdfData, onConfirmSingle, onConfirmMulti, onCancel }) {
   const previewCanvasRef = useRef(null);
   const [pdfDoc, setPdfDoc] = useState(null);
-  const [pageCount, setPageCount] = useState(1);
-  const [pageIndex, setPageIndex] = useState(0);          // 0-based
-  const [pageCanvas, setPageCanvas] = useState(null);     // full-res rendered page
-  const [prevScale, setPrevScale] = useState(1);          // preview / full
-  const [rect, setRect] = useState(null);                 // {x1,y1,x2,y2} in PREVIEW coords
-  const [selStatus, setSelStatus] = useState("Drag on the preview to select a region.");
+  const [totalPages, setTotalPages] = useState(0);
+  const [thumbnails, setThumbnails] = useState([]); // [{pageIndex, dataUrl}]
+  const [selectedPages, setSelectedPages] = useState(new Set());
   const [loadError, setLoadError] = useState(null);
+
+  // Step 2 — crop state
+  const [step, setStep] = useState(1); // 1 = select pages, 2 = crop
+  const [fullResPages, setFullResPages] = useState([]); // [{origPageIndex, pageCanvas}] rendered at full DPI
+  const [cropIdx, setCropIdx] = useState(0); // which page in fullResPages we're cropping
+  const [cropRects, setCropRects] = useState({}); // { idx: {x1,y1,x2,y2} in PREVIEW coords } — null = full page
+  const [prevScale, setPrevScale] = useState(1);
+  const [rendering, setRendering] = useState(false);
+  const [renderProgress, setRenderProgress] = useState('');
+  const [cropStatus, setCropStatus] = useState('');
   const dragStart = useRef(null);
   const isDragging = useRef(false);
 
@@ -602,139 +609,195 @@ function PdfRegionSelector({ pdfData, onConfirm, onCancel }) {
     let cancelled = false;
     setLoadError(null);
     loadPdfJs().then(async (pdfjsLib) => {
-      // Copy the ArrayBuffer before handing it to pdf.js: the worker transfer
-      // detaches the original, causing a DataCloneError on any subsequent load.
       const typedArray = new Uint8Array(pdfData.slice(0));
       const doc = await pdfjsLib.getDocument({ data: typedArray }).promise;
       if (cancelled) return;
       setPdfDoc(doc);
-      setPageCount(doc.numPages);
-      setPageIndex(0);
+      setTotalPages(doc.numPages);
+      const allIdx = new Set();
+      for (let i = 0; i < doc.numPages; i++) allIdx.add(i);
+      setSelectedPages(allIdx);
+
+      const thumbs = [];
+      for (let i = 0; i < doc.numPages; i++) {
+        try {
+          const page = await doc.getPage(i + 1);
+          const thumbScale = 0.3;
+          const viewport = page.getViewport({ scale: thumbScale });
+          const offscreen = document.createElement("canvas");
+          offscreen.width = Math.round(viewport.width);
+          offscreen.height = Math.round(viewport.height);
+          await page.render({ canvasContext: offscreen.getContext("2d"), viewport }).promise;
+          if (cancelled) return;
+          thumbs.push({ pageIndex: i, dataUrl: offscreen.toDataURL("image/jpeg", 0.7) });
+        } catch {
+          thumbs.push({ pageIndex: i, dataUrl: null });
+        }
+      }
+      if (!cancelled) setThumbnails(thumbs);
     }).catch((err) => {
-      console.error('[PdfRegionSelector] Failed to load PDF:', err);
+      console.error('[PdfPageImportModal] Failed to load PDF:', err);
       if (!cancelled) setLoadError(err?.message || 'Failed to parse PDF.');
     });
     return () => { cancelled = true; };
   }, [pdfData]);
 
-  // ── Render a page at PDF_RENDER_DPI onto an offscreen canvas ──────────────
-  useEffect(() => {
-    if (!pdfDoc) return;
-    let cancelled = false;
-    (async () => {
+  const togglePage = (idx) => {
+    setSelectedPages(prev => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+  };
+
+  const selectAll = () => { const s = new Set(); for (let i = 0; i < totalPages; i++) s.add(i); setSelectedPages(s); };
+  const selectNone = () => setSelectedPages(new Set());
+
+  // ── Step 1 → Step 2: render selected pages at full DPI ───────────────────
+  const goToCropStep = async () => {
+    if (!pdfDoc || selectedPages.size === 0) return;
+    setRendering(true);
+    const sorted = [...selectedPages].sort((a, b) => a - b);
+    const rendered = [];
+    for (let i = 0; i < sorted.length; i++) {
+      const pgIdx = sorted[i];
+      setRenderProgress(`Rendering page ${i + 1} of ${sorted.length}…`);
       try {
-        const page = await pdfDoc.getPage(pageIndex + 1); // pdf.js is 1-based
+        const page = await pdfDoc.getPage(pgIdx + 1);
         const viewport = page.getViewport({ scale: PDF_SCALE });
         const offscreen = document.createElement("canvas");
-        offscreen.width  = Math.round(viewport.width);
+        offscreen.width = Math.round(viewport.width);
         offscreen.height = Math.round(viewport.height);
         await page.render({ canvasContext: offscreen.getContext("2d"), viewport }).promise;
-        if (cancelled) return;
-        setPageCanvas(offscreen);
-        setRect(null);
-        setSelStatus("Drag on the preview to select a region, or use 'Full Page'.");
+        rendered.push({ origPageIndex: pgIdx, pageCanvas: offscreen });
       } catch (err) {
-        console.error('[PdfRegionSelector] Failed to render page:', err);
-        if (!cancelled) setLoadError(err?.message || 'Failed to render this page.');
+        console.error(`[PdfPageImportModal] Failed to render page ${pgIdx + 1}:`, err);
       }
-    })();
-    return () => { cancelled = true; };
-  }, [pdfDoc, pageIndex]);
+    }
+    setRendering(false);
+    if (rendered.length === 0) return;
+    setFullResPages(rendered);
+    setCropIdx(0);
+    setCropRects({});
+    setCropStatus("Drag a rectangle to crop, or use 'Full Page'. Navigate pages with ◀ ▶.");
+    setStep(2);
+  };
 
-  // ── Scale the full-res page into the preview canvas ───────────────────────
+  // ── Step 2: draw preview canvas for current crop page ─────────────────────
+  const currentCropPage = fullResPages[cropIdx] || null;
+
   useEffect(() => {
-    if (!pageCanvas || !previewCanvasRef.current) return;
+    if (step !== 2 || !currentCropPage || !previewCanvasRef.current) return;
     const container = previewCanvasRef.current.parentElement;
-    const maxW = container.clientWidth  - 4;
+    const maxW = container.clientWidth - 4;
     const maxH = container.clientHeight - 4;
-    const ps   = Math.min(maxW / pageCanvas.width, maxH / pageCanvas.height, 1.0);
+    const pc = currentCropPage.pageCanvas;
+    const ps = Math.min(maxW / pc.width, maxH / pc.height, 1.0);
     setPrevScale(ps);
-    const pw = Math.round(pageCanvas.width  * ps);
-    const ph = Math.round(pageCanvas.height * ps);
+    const pw = Math.round(pc.width * ps);
+    const ph = Math.round(pc.height * ps);
     const cv = previewCanvasRef.current;
-    cv.width  = pw;
+    cv.width = pw;
     cv.height = ph;
     const ctx = cv.getContext("2d");
-    ctx.drawImage(pageCanvas, 0, 0, pw, ph);
-    if (rect) drawRect(ctx, rect);
-  }, [pageCanvas, rect]);
+    ctx.drawImage(pc, 0, 0, pw, ph);
+    const r = cropRects[cropIdx] || null;
+    if (r) drawCropRect(ctx, r);
+  }, [step, cropIdx, currentCropPage, cropRects]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Redraw rect overlay ────────────────────────────────────────────────────
-  function drawRect(ctx, r) {
+  function drawCropRect(ctx, r) {
     if (!r) return;
-    const { x1, y1, x2, y2 } = r;
     ctx.strokeStyle = "#FF3300";
     ctx.lineWidth = 2;
-    ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    ctx.strokeRect(r.x1, r.y1, r.x2 - r.x1, r.y2 - r.y1);
     ctx.fillStyle = "rgba(255,51,0,0.18)";
-    ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
+    ctx.fillRect(r.x1, r.y1, r.x2 - r.x1, r.y2 - r.y1);
   }
 
-  function repaint(r) {
+  function repaintCrop(r) {
     const cv = previewCanvasRef.current;
-    if (!cv || !pageCanvas) return;
+    if (!cv || !currentCropPage) return;
     const ctx = cv.getContext("2d");
     ctx.clearRect(0, 0, cv.width, cv.height);
-    ctx.drawImage(pageCanvas, 0, 0, cv.width, cv.height);
-    if (r) drawRect(ctx, r);
+    ctx.drawImage(currentCropPage.pageCanvas, 0, 0, cv.width, cv.height);
+    if (r) drawCropRect(ctx, r);
   }
 
-  // ── Mouse events on the preview canvas ────────────────────────────────────
-  function getPreviewXY(e) {
+  function getCropXY(e) {
     const rect_ = previewCanvasRef.current.getBoundingClientRect();
     return {
-      px: clamp(e.clientX - rect_.left, 0, previewCanvasRef.current.width  - 1),
-      py: clamp(e.clientY - rect_.top,  0, previewCanvasRef.current.height - 1),
+      px: clamp(e.clientX - rect_.left, 0, previewCanvasRef.current.width - 1),
+      py: clamp(e.clientY - rect_.top, 0, previewCanvasRef.current.height - 1),
     };
   }
 
-  function onPreviewMouseDown(e) {
+  function onCropMouseDown(e) {
     if (e.button !== 0) return;
     isDragging.current = true;
-    const { px, py } = getPreviewXY(e);
+    const { px, py } = getCropXY(e);
     dragStart.current = [px, py];
-    setRect(null);
-    repaint(null);
+    setCropRects(prev => ({ ...prev, [cropIdx]: null }));
+    repaintCrop(null);
   }
 
-  function onPreviewMouseMove(e) {
+  function onCropMouseMove(e) {
     if (!isDragging.current || !dragStart.current) return;
-    const { px, py } = getPreviewXY(e);
+    const { px, py } = getCropXY(e);
     const [sx, sy] = dragStart.current;
     const r = { x1: Math.min(sx, px), y1: Math.min(sy, py), x2: Math.max(sx, px), y2: Math.max(sy, py) };
-    setRect(r);
-    repaint(r);
-    // status
-    if (pageCanvas && prevScale > 0) {
-      const fx1 = Math.round(r.x1 / prevScale), fy1 = Math.round(r.y1 / prevScale);
-      const fx2 = Math.round(r.x2 / prevScale), fy2 = Math.round(r.y2 / prevScale);
-      setSelStatus(`Selection: (${fx1},${fy1}) → (${fx2},${fy2})  |  ${fx2-fx1} × ${fy2-fy1} px at ${PDF_RENDER_DPI} DPI`);
+    setCropRects(prev => ({ ...prev, [cropIdx]: r }));
+    repaintCrop(r);
+    if (currentCropPage && prevScale > 0) {
+      const fw = Math.round((r.x2 - r.x1) / prevScale), fh = Math.round((r.y2 - r.y1) / prevScale);
+      setCropStatus(`Crop: ${fw} × ${fh} px at ${PDF_RENDER_DPI} DPI  —  Page ${cropIdx + 1} of ${fullResPages.length}`);
     }
   }
 
-  function onPreviewMouseUp() { isDragging.current = false; }
+  function onCropMouseUp() { isDragging.current = false; }
 
-  // ── Confirm: crop the full-res pageCanvas and return it ───────────────────
-  function handleConfirm() {
-    if (!pageCanvas) return;
-    let fx1 = 0, fy1 = 0, fx2 = pageCanvas.width, fy2 = pageCanvas.height;
-    if (rect && prevScale > 0) {
-      fx1 = clamp(Math.round(rect.x1 / prevScale), 0, pageCanvas.width);
-      fy1 = clamp(Math.round(rect.y1 / prevScale), 0, pageCanvas.height);
-      fx2 = clamp(Math.round(rect.x2 / prevScale), 0, pageCanvas.width);
-      fy2 = clamp(Math.round(rect.y2 / prevScale), 0, pageCanvas.height);
-    }
-    const cropW = fx2 - fx1, cropH = fy2 - fy1;
-    if (cropW < 4 || cropH < 4) { setSelStatus("Selection too small — use Full Page."); return; }
-    const out = document.createElement("canvas");
-    out.width = cropW; out.height = cropH;
-    out.getContext("2d").drawImage(pageCanvas, fx1, fy1, cropW, cropH, 0, 0, cropW, cropH);
-    onConfirm(out);
+  function clearCurrentCrop() {
+    setCropRects(prev => { const next = { ...prev }; delete next[cropIdx]; return next; });
+    repaintCrop(null);
+    setCropStatus(`Crop cleared — will use full page. Page ${cropIdx + 1} of ${fullResPages.length}`);
   }
 
-  function handleFullPage() {
-    if (!pageCanvas) return;
-    onConfirm(pageCanvas);
+  function markFullPageAll() {
+    setCropRects({});
+    setCropStatus("All pages set to full page.");
+  }
+
+  // ── Final confirm: apply crops and return canvases ────────────────────────
+  function handleFinalConfirm() {
+    const results = fullResPages.map((fp, idx) => {
+      const pc = fp.pageCanvas;
+      const r = cropRects[idx];
+      let outCanvas;
+      if (r && prevScale > 0) {
+        const fx1 = clamp(Math.round(r.x1 / prevScale), 0, pc.width);
+        const fy1 = clamp(Math.round(r.y1 / prevScale), 0, pc.height);
+        const fx2 = clamp(Math.round(r.x2 / prevScale), 0, pc.width);
+        const fy2 = clamp(Math.round(r.y2 / prevScale), 0, pc.height);
+        const cw = fx2 - fx1, ch = fy2 - fy1;
+        if (cw >= 4 && ch >= 4) {
+          outCanvas = document.createElement("canvas");
+          outCanvas.width = cw;
+          outCanvas.height = ch;
+          outCanvas.getContext("2d").drawImage(pc, fx1, fy1, cw, ch, 0, 0, cw, ch);
+        } else {
+          outCanvas = pc; // crop too small, use full
+        }
+      } else {
+        outCanvas = pc;
+      }
+      return { pageIndex: idx, canvas: outCanvas };
+    });
+
+    if (results.length === 1) {
+      onConfirmSingle(results[0].canvas);
+    } else {
+      onConfirmMulti(results);
+    }
   }
 
   // ── UI ────────────────────────────────────────────────────────────────────
@@ -742,52 +805,166 @@ function PdfRegionSelector({ pdfData, onConfirm, onCancel }) {
     <div style={pdfStyles.overlay}>
       <div style={pdfStyles.modal}>
         <div style={pdfStyles.header}>
-          <span style={pdfStyles.title}>📄 PDF REGION SELECTOR</span>
+          <span style={pdfStyles.title}>📄 PDF IMPORT</span>
           <span style={pdfStyles.subtitle}>
-            Drag a rectangle to select a region for inference, or use the full page.
+            {step === 1
+              ? (totalPages > 0 ? `Step 1 — Select pages (${totalPages} found)` : 'Loading PDF…')
+              : `Step 2 — Crop regions  (${fullResPages.length} page${fullResPages.length !== 1 ? 's' : ''})`}
           </span>
         </div>
 
-        {pageCount > 1 && (
-          <div style={pdfStyles.pageRow}>
-            <span style={pdfStyles.pageLabel}>Page:</span>
-            <button onClick={() => setPageIndex(i => Math.max(0, i - 1))} style={pdfStyles.pageBtn} disabled={pageIndex === 0}>◀</button>
-            <span style={pdfStyles.pageNum}>{pageIndex + 1} / {pageCount}</span>
-            <button onClick={() => setPageIndex(i => Math.min(pageCount - 1, i + 1))} style={pdfStyles.pageBtn} disabled={pageIndex === pageCount - 1}>▶</button>
+        {/* ── Error ── */}
+        {loadError && (
+          <div style={{ padding: 24, color: "#e05555", fontFamily: "monospace", fontSize: 12, textAlign: "center", lineHeight: 1.6 }}>
+            Could not render this PDF.<br />
+            <span style={{ fontSize: 10, color: "#7a4a4a" }}>{loadError}</span><br /><br />
+            <span style={{ fontSize: 11, color: "#5a7a9a" }}>
+              Try exporting the drawing as a PNG or TIFF from your CAD software and use Load Image instead.
+            </span>
           </div>
         )}
 
-        <div style={pdfStyles.canvasWrap}>
-          {!pageCanvas && !loadError && (
-            <div style={pdfStyles.loading}>⟳ Rendering page…</div>
-          )}
-          {loadError && (
-            <div style={{ ...pdfStyles.loading, color: "#e05555", maxWidth: 480, textAlign: "center", lineHeight: 1.6 }}>
-              ✕ Could not render this PDF.<br />
-              <span style={{ fontSize: 10, color: "#7a4a4a" }}>{loadError}</span><br /><br />
-              <span style={{ fontSize: 11, color: "#5a7a9a" }}>
-                Try exporting the drawing as a PNG or TIFF from your CAD software and use Load Image instead.
+        {/* ════════════════  STEP 1 — page selection  ════════════════ */}
+        {step === 1 && !loadError && (
+          <>
+            {thumbnails.length === 0 && (
+              <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#3a5c7a", fontFamily: "monospace", fontSize: 13 }}>
+                ⟳ Loading pages…
+              </div>
+            )}
+
+            {thumbnails.length > 0 && (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 14px", borderBottom: "1px solid #141e30" }}>
+                  <span style={{ color: "#5a7a9a", fontSize: 11, fontFamily: "monospace" }}>
+                    {selectedPages.size} of {totalPages} selected
+                  </span>
+                  <button onClick={selectAll} style={pdfStyles.pageBtn}>Select All</button>
+                  <button onClick={selectNone} style={pdfStyles.pageBtn}>Select None</button>
+                </div>
+                <div style={pdfStyles.thumbGrid}>
+                  {thumbnails.map(({ pageIndex, dataUrl }) => {
+                    const isSelected = selectedPages.has(pageIndex);
+                    return (
+                      <div
+                        key={pageIndex}
+                        onClick={() => togglePage(pageIndex)}
+                        style={{
+                          cursor: "pointer",
+                          border: isSelected ? "2px solid #4af" : "2px solid #1a2a40",
+                          borderRadius: 4,
+                          padding: 4,
+                          background: isSelected ? "#0c1e3a" : "#080e18",
+                          textAlign: "center",
+                          minWidth: 100,
+                          maxWidth: 160,
+                          transition: "border-color 0.15s, background 0.15s",
+                        }}
+                      >
+                        {dataUrl ? (
+                          <img src={dataUrl} alt={`Page ${pageIndex + 1}`} style={{ width: "100%", height: "auto", borderRadius: 2, opacity: isSelected ? 1 : 0.5 }} />
+                        ) : (
+                          <div style={{ width: 100, height: 130, background: "#0a1020", display: "flex", alignItems: "center", justifyContent: "center", color: "#3a5a7a", fontSize: 10 }}>Error</div>
+                        )}
+                        <div style={{ marginTop: 4, fontSize: 10, fontFamily: "monospace", color: isSelected ? "#8cf" : "#4a6a7a" }}>
+                          Page {pageIndex + 1}
+                        </div>
+                        <div style={{
+                          marginTop: 2, width: 14, height: 14, borderRadius: 3,
+                          border: isSelected ? "1px solid #4af" : "1px solid #2a3a50",
+                          background: isSelected ? "#1e5a9a" : "transparent",
+                          display: "inline-flex", alignItems: "center", justifyContent: "center",
+                          fontSize: 10, color: "#fff",
+                        }}>
+                          {isSelected ? "✓" : ""}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            {rendering && (
+              <div style={{ padding: "10px 14px", color: "#4af", fontFamily: "monospace", fontSize: 11, borderTop: "1px solid #141e30" }}>
+                ⟳ {renderProgress}
+              </div>
+            )}
+
+            <div style={pdfStyles.btnRow}>
+              <button
+                onClick={goToCropStep}
+                disabled={selectedPages.size === 0 || rendering || thumbnails.length === 0}
+                style={{
+                  ...pdfStyles.confirmBtn,
+                  opacity: (selectedPages.size === 0 || rendering) ? 0.5 : 1,
+                  cursor: (selectedPages.size === 0 || rendering) ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {rendering ? `⟳ ${renderProgress}` : `Next → Crop (${selectedPages.size} page${selectedPages.size !== 1 ? 's' : ''})`}
+              </button>
+              <button onClick={onCancel} disabled={rendering} style={pdfStyles.cancelBtn}>✕ Cancel</button>
+            </div>
+          </>
+        )}
+
+        {/* ════════════════  STEP 2 — per-page crop  ════════════════ */}
+        {step === 2 && (
+          <>
+            {/* Page navigation row */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 14px", borderBottom: "1px solid #141e30" }}>
+              <button
+                onClick={() => setCropIdx(i => Math.max(0, i - 1))}
+                disabled={cropIdx === 0}
+                style={{ ...pdfStyles.pageBtn, opacity: cropIdx === 0 ? 0.35 : 1 }}
+              >◀ Prev</button>
+              <span style={{ color: "#8ab", fontSize: 12, fontFamily: "monospace", minWidth: 80, textAlign: "center" }}>
+                Page {cropIdx + 1} / {fullResPages.length}
+              </span>
+              <button
+                onClick={() => setCropIdx(i => Math.min(fullResPages.length - 1, i + 1))}
+                disabled={cropIdx === fullResPages.length - 1}
+                style={{ ...pdfStyles.pageBtn, opacity: cropIdx === fullResPages.length - 1 ? 0.35 : 1 }}
+              >Next ▶</button>
+              <div style={{ flex: 1 }} />
+              <span style={{ fontSize: 10, fontFamily: "monospace", color: cropRects[cropIdx] ? "#f93" : "#3a8a5a" }}>
+                {cropRects[cropIdx] ? "⬜ Cropped" : "⬜ Full page"}
               </span>
             </div>
-          )}
-          <canvas
-            ref={previewCanvasRef}
-            style={{ display: pageCanvas ? "block" : "none", cursor: "crosshair", maxWidth: "100%", maxHeight: "100%" }}
-            onMouseDown={onPreviewMouseDown}
-            onMouseMove={onPreviewMouseMove}
-            onMouseUp={onPreviewMouseUp}
-            onMouseLeave={onPreviewMouseUp}
-          />
-        </div>
 
-        <div style={pdfStyles.statusRow}>{selStatus}</div>
+            {/* Canvas */}
+            <div style={pdfStyles.canvasWrap}>
+              <canvas
+                ref={previewCanvasRef}
+                style={{ display: currentCropPage ? "block" : "none", cursor: "crosshair", maxWidth: "100%", maxHeight: "100%" }}
+                onMouseDown={onCropMouseDown}
+                onMouseMove={onCropMouseMove}
+                onMouseUp={onCropMouseUp}
+                onMouseLeave={onCropMouseUp}
+              />
+              {!currentCropPage && (
+                <div style={{ color: "#3a5c7a", fontFamily: "monospace", fontSize: 13, padding: 24 }}>No page to display.</div>
+              )}
+            </div>
 
-        <div style={pdfStyles.btnRow}>
-          <button onClick={handleConfirm} disabled={!pageCanvas} style={pdfStyles.confirmBtn}>✓ Confirm Selection</button>
-          <button onClick={handleFullPage} disabled={!pageCanvas} style={pdfStyles.fullBtn}>⬜ Use Full Page</button>
-          <button onClick={() => { setRect(null); if (pageCanvas) repaint(null); setSelStatus("Rectangle cleared."); }} style={pdfStyles.clearBtn}>Clear Rect</button>
-          <button onClick={onCancel} style={pdfStyles.cancelBtn}>✕ Cancel</button>
-        </div>
+            {/* Status */}
+            <div style={{ padding: "5px 14px", color: "#5a9a7a", fontSize: 10, fontFamily: "monospace", borderTop: "1px solid #141e30", minHeight: 22 }}>
+              {cropStatus}
+            </div>
+
+            {/* Action buttons */}
+            <div style={pdfStyles.btnRow}>
+              <button onClick={clearCurrentCrop} style={pdfStyles.clearBtn}>Clear Crop</button>
+              <button onClick={markFullPageAll} style={pdfStyles.fullBtn}>Full Page (All)</button>
+              <button onClick={() => setStep(1)} style={pdfStyles.pageBtn}>◀ Back</button>
+              <div style={{ flex: 1 }} />
+              <button onClick={handleFinalConfirm} style={pdfStyles.confirmBtn}>
+                ✓ Import {fullResPages.length} Page{fullResPages.length !== 1 ? 's' : ''}
+              </button>
+              <button onClick={onCancel} style={pdfStyles.cancelBtn}>✕ Cancel</button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -799,14 +976,10 @@ const pdfStyles = {
   header: { padding: "10px 14px 6px", borderBottom: "1px solid #1a2a40", display: "flex", flexDirection: "column", gap: 2 },
   title: { color: "#4af", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, fontSize: 13, letterSpacing: 2 },
   subtitle: { color: "#5a7a9a", fontFamily: "'IBM Plex Mono', monospace", fontSize: 11 },
-  pageRow: { display: "flex", alignItems: "center", gap: 8, padding: "6px 14px", borderBottom: "1px solid #141e30" },
-  pageLabel: { color: "#5a7a9a", fontSize: 11, fontFamily: "monospace" },
-  pageNum: { color: "#8ab", fontSize: 12, fontFamily: "monospace", minWidth: 60, textAlign: "center" },
-  pageBtn: { background: "#152240", border: "1px solid #2a4070", borderRadius: 3, color: "#8ab", padding: "2px 8px", cursor: "pointer", fontSize: 12 },
+  thumbGrid: { flex: 1, overflow: "auto", display: "flex", flexWrap: "wrap", gap: 10, padding: 14, alignContent: "flex-start" },
   canvasWrap: { flex: 1, overflow: "auto", background: "#08101a", display: "flex", alignItems: "flex-start", justifyContent: "flex-start", padding: 8, position: "relative" },
-  loading: { color: "#3a5c7a", fontFamily: "monospace", fontSize: 13, padding: 24 },
-  statusRow: { padding: "5px 14px", color: "#5a9a7a", fontSize: 10, fontFamily: "monospace", borderTop: "1px solid #141e30", minHeight: 22 },
-  btnRow: { display: "flex", gap: 8, padding: "8px 14px", borderTop: "1px solid #1a2a40" },
+  pageBtn: { background: "#152240", border: "1px solid #2a4070", borderRadius: 3, color: "#8ab", padding: "2px 8px", cursor: "pointer", fontSize: 11, fontFamily: "monospace" },
+  btnRow: { display: "flex", gap: 8, padding: "8px 14px", borderTop: "1px solid #1a2a40", alignItems: "center" },
   confirmBtn: { background: "#0f3460", border: "1px solid #1e5a9a", borderRadius: 3, color: "#7af", padding: "5px 14px", cursor: "pointer", fontSize: 11, fontFamily: "monospace" },
   fullBtn: { background: "#0d3d2a", border: "1px solid #1a6644", borderRadius: 3, color: "#6da", padding: "5px 14px", cursor: "pointer", fontSize: 11, fontFamily: "monospace" },
   clearBtn: { background: "#1a1a2a", border: "1px solid #2a2a44", borderRadius: 3, color: "#7a8a9a", padding: "5px 12px", cursor: "pointer", fontSize: 11, fontFamily: "monospace" },
@@ -896,8 +1069,6 @@ export default function DetectionTool({ project, user, onBack }) {
   const lineDrawing = useRef(false);
   const lineStart = useRef(null);
   const mouseDown = useRef(false);
-  // Click-cycling: repeated clicks at the same spot cycle through overlapping shapes
-  const clickCycle = useRef({ ox: 0, oy: 0, order: [], pos: 0 });
   const dragAnnIdx = useRef(null);       // whole-shape move
   const dragStart = useRef(null);        // [ox,oy] image-coords where drag began
   const dragOrigPts = useRef(null);      // polygon: full points snapshot; box: [x1,y1,x2,y2]
@@ -966,6 +1137,19 @@ export default function DetectionTool({ project, user, onBack }) {
   const [newCustomClassName, setNewCustomClassName] = useState("");
   const [newCustomClassColor, setNewCustomClassColor] = useState("#FF6B6B");
 
+  // ─── Multi-page support ─────────────────────────────────────────────────────
+  // allPagesRef stores data for ALL pages. The currently active page's annotations/img
+  // live in the flat state above; allPagesRef keeps them synced on page switch & save.
+  const allPagesRef = useRef([]); // [{pageIndex, img, imgNaturalSize, annotations}]
+  const [currentPageIndex, setCurrentPageIndex] = useState(0);
+  const currentPageIndexRef = useRef(0); // always-fresh mirror for async callbacks
+  // Keep ref in sync with state
+  useEffect(() => { currentPageIndexRef.current = currentPageIndex; }, [currentPageIndex]);
+  const [pageCount, setPageCount] = useState(0);
+  // Track which page images have already been uploaded to S3 (avoid re-uploading)
+  const uploadedPageImages = useRef(new Set());
+  const pdfFileRef = useRef(null); // raw PDF File object for multi-page upload
+
   // File tracking & save state
   const [currentFile, setCurrentFile] = useState(null);
   const [saveStatus, setSaveStatus] = useState(null); // null | 'saving' | 'saved' | 'error'
@@ -985,13 +1169,69 @@ export default function DetectionTool({ project, user, onBack }) {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
 
+  const computeBaseScale = useCallback((imgW, imgH) => {
+    const cont = containerRef.current;
+    if (!cont) return 1;
+    const maxW = cont.clientWidth - 4;
+    const maxH = cont.clientHeight - 4;
+    return Math.min(maxW / imgW, maxH / imgH, 1.0);
+  }, []);
+
+  // ─── Page switching ────────────────────────────────────────────────────────
+  // Syncs current page state into allPagesRef (call before switching or saving)
+  const syncCurrentPageToRef = useCallback(() => {
+    if (allPagesRef.current.length === 0) return;
+    const idx = allPagesRef.current.findIndex(p => p.pageIndex === currentPageIndex);
+    if (idx >= 0) {
+      allPagesRef.current[idx] = {
+        ...allPagesRef.current[idx],
+        annotations,
+        imgNaturalSize,
+      };
+    }
+  }, [currentPageIndex, annotations, imgNaturalSize]);
+
+  const switchPage = useCallback((newIdx) => {
+    if (newIdx === currentPageIndex) return;
+    // Save current page data to ref
+    syncCurrentPageToRef();
+    // Load new page from ref
+    const newPage = allPagesRef.current.find(p => p.pageIndex === newIdx);
+    if (!newPage) return;
+    setOriginalImg(newPage.img || null);
+    setImgNaturalSize(newPage.imgNaturalSize || { w: 0, h: 0 });
+    setAnnotations(newPage.annotations || []);
+    setLastMeasureLine(null);
+    setLastLineIsMeasure(false);
+    setCurrentPageIndex(newIdx);
+    // Reset transient state
+    setSelectedIdx(null);
+    setSelectedIndices(new Set());
+    setHoverIdx(null);
+    setTempBox(null);
+    setTempPolyPts([]);
+    setTempPolyMouse(null);
+    setTempLine(null);
+    setTempLineShape(null);
+    setTempCircle(null);
+    setDrawMode("select");
+    setHistory([]);
+    setFuture([]);
+    // Recompute base scale for new page dimensions
+    const nSize = newPage.imgNaturalSize || { w: 0, h: 0 };
+    if (nSize.w > 0 && nSize.h > 0) {
+      const bs = computeBaseScale(nSize.w, nSize.h);
+      setBaseScale(bs);
+    }
+    setZoom(1.0);
+    setStatus(`Page ${newIdx + 1} of ${pageCount}`);
+  }, [currentPageIndex, pageCount, syncCurrentPageToRef, computeBaseScale]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ─── PDF upload ──────────────────────────────────────────────────────────────
   const handlePdfChange = (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    // Don't track the raw PDF as currentFile here — we'll save the rendered PNG
-    // canvas instead (set in handlePdfConfirm) so re-opening the project restores
-    // the image directly without going through the region selector again.
+    pdfFileRef.current = file; // keep raw PDF for multi-page upload
     setStatus(`Opening PDF: ${file.name} …`);
     const reader = new FileReader();
     reader.onload = () => setPdfModalData(reader.result); // ArrayBuffer
@@ -1000,12 +1240,9 @@ export default function DetectionTool({ project, user, onBack }) {
     e.target.value = "";
   };
 
-  // Called when user confirms crop in the PDF modal
-  const handlePdfConfirm = (croppedCanvas) => {
+  // Called when user confirms crop in the OLD single-page PDF modal (PdfRegionSelector)
+  const handlePdfConfirmSingle = (croppedCanvas) => {
     setPdfModalData(null);
-    // Convert the cropped/full-page canvas to a PNG File.  This PNG is what gets
-    // uploaded to S3 as "original.png", so re-opening the project restores the
-    // image directly (no PDF selector) — exactly like a regular image upload.
     croppedCanvas.toBlob((blob) => {
       if (blob) {
         const pngName = `${project?.name || 'pdf-page'}.png`;
@@ -1014,16 +1251,13 @@ export default function DetectionTool({ project, user, onBack }) {
         existingFileInfoRef.current = { ext: 'png', fileName: pngFile.name };
       }
     }, 'image/png');
-    loadImageFromCanvas(croppedCanvas, "PDF page");
-  };
-
-  // Load any HTMLCanvasElement as the working image
-  const loadImageFromCanvas = (srcCanvas, label = "canvas") => {
+    // Load as single page in allPagesRef
     const img = new Image();
     img.onload = () => {
+      const imgSize = { w: croppedCanvas.width, h: croppedCanvas.height };
       setOriginalImg(img);
-      setImgNaturalSize({ w: srcCanvas.width, h: srcCanvas.height });
-      const bs = computeBaseScale(srcCanvas.width, srcCanvas.height);
+      setImgNaturalSize(imgSize);
+      const bs = computeBaseScale(croppedCanvas.width, croppedCanvas.height);
       setBaseScale(bs);
       setZoom(1.0);
       setAnnotations([]);
@@ -1036,49 +1270,66 @@ export default function DetectionTool({ project, user, onBack }) {
       setTempLine(null);
       setLastMeasureLine(null);
       setLastMeasurePx("");
-      setStatus(`Loaded ${label}: ${srcCanvas.width}×${srcCanvas.height} px — click 'Run Tiled' to analyse.`);
+      allPagesRef.current = [{ pageIndex: 0, img, imgNaturalSize: imgSize, annotations: [] }];
+      setCurrentPageIndex(0);
+      setPageCount(1);
+      uploadedPageImages.current = new Set();
+      setStatus(`Loaded PDF page: ${croppedCanvas.width}×${croppedCanvas.height} px`);
     };
-    img.src = srcCanvas.toDataURL("image/png");
+    img.src = croppedCanvas.toDataURL("image/png");
   };
 
+  // Called when user confirms multi-page PDF import
+  const handlePdfConfirmMulti = (pagesData) => {
+    // pagesData = [{ pageIndex, canvas, blob }]
+    setPdfModalData(null);
+    if (!pagesData || pagesData.length === 0) return;
 
-  const computeBaseScale = useCallback((imgW, imgH) => {
-    const cont = containerRef.current;
-    if (!cont) return 1;
-    const maxW = cont.clientWidth - 4;
-    const maxH = cont.clientHeight - 4;
-    return Math.min(maxW / imgW, maxH / imgH, 1.0);
-  }, []);
-
-  // ─── Load image from presigned URL (restoring saved project) ─────────────────
-  const loadImageFromUrl = useCallback((url, ext) => {
-    // Projects saved before the PNG-canvas fix may still have ext === 'pdf'.
-    // Re-open the selector for those so the user can re-select the region once;
-    // after the next Save the file will be stored as a PNG and won't need this path.
-    if (ext === 'pdf') {
-      fetch(url)
-        .then((r) => r.arrayBuffer())
-        .then((buf) => {
-          // Copy before giving to PdfRegionSelector to avoid transfer-detach issues.
-          setPdfModalData(buf.slice(0));
-        })
-        .catch(() => setStatus("Failed to restore PDF from saved project."));
-      return;
+    // Store original PDF as the file to upload
+    if (pdfFileRef.current) {
+      setCurrentFile(pdfFileRef.current);
+      existingFileInfoRef.current = { ext: 'pdf', fileName: pdfFileRef.current.name };
     }
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => {
-      setOriginalImg(img);
-      setImgNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
-      const bs = computeBaseScale(img.naturalWidth, img.naturalHeight);
-      setBaseScale(bs);
-      setZoom(1.0);
-      setStatus(`Restored saved image: ${img.naturalWidth}×${img.naturalHeight} px`);
-    };
-    img.onerror = () => setStatus("Failed to restore image from saved project.");
-    setStatus("Opening file…");
-    img.src = url;
-  }, [computeBaseScale]);
+
+    const loadedPages = [];
+    let loadedCount = 0;
+
+    pagesData.forEach(({ pageIndex, canvas }) => {
+      const img = new Image();
+      img.onload = () => {
+        const imgSize = { w: canvas.width, h: canvas.height };
+        loadedPages.push({ pageIndex, img, imgNaturalSize: imgSize, annotations: [] });
+        loadedCount++;
+        if (loadedCount === pagesData.length) {
+          // All pages loaded — sort by pageIndex and set state
+          loadedPages.sort((a, b) => a.pageIndex - b.pageIndex);
+          allPagesRef.current = loadedPages;
+          setPageCount(loadedPages.length);
+          uploadedPageImages.current = new Set(); // all need uploading
+
+          // Show first page
+          const first = loadedPages[0];
+          setOriginalImg(first.img);
+          setImgNaturalSize(first.imgNaturalSize);
+          setAnnotations([]);
+          setCurrentPageIndex(first.pageIndex);
+          setSelectedIdx(null);
+          setSelectedIndices(new Set());
+          setHoverIdx(null);
+          setTempBox(null);
+          setTempPolyPts([]);
+          setTempPolyMouse(null);
+          setTempLine(null);
+          setLastMeasureLine(null);
+          const bs = computeBaseScale(first.imgNaturalSize.w, first.imgNaturalSize.h);
+          setBaseScale(bs);
+          setZoom(1.0);
+          setStatus(`Imported ${loadedPages.length} page(s) from PDF`);
+        }
+      };
+      img.src = canvas.toDataURL("image/png");
+    });
+  };
 
   // ─── Load project from S3 on mount ───────────────────────────────────────────
   useEffect(() => {
@@ -1095,63 +1346,170 @@ export default function DetectionTool({ project, user, onBack }) {
     setCustomClasses([]);
     setCurrentFile(null);
     setSaveStatus(null);
+    allPagesRef.current = [];
+    setCurrentPageIndex(0);
+    setPageCount(0);
+    uploadedPageImages.current = new Set();
 
     loadProject(project.id)
-      .then((data) => {
+      .then(async (data) => {
         if (cancelled || !data) return;
-        if (data.annotations?.length) setAnnotations(fillMissingNumIds(data.annotations));
-        if (data.customTags && Object.keys(data.customTags).length)
-          setZoneTags(data.customTags);
-        if (data.customClasses?.length) {
-          setCustomClasses(data.customClasses);
-          setVisibleClasses(prev => new Set([...prev, ...data.customClasses.map(c => c.name)]));
+
+        // ── Shared settings ──────────────────────────────────────────────
+        const s = data.settings || {};
+        if (s.customTags && Object.keys(s.customTags).length) setZoneTags(s.customTags);
+        if (s.customClasses?.length) {
+          setCustomClasses(s.customClasses);
+          setVisibleClasses(prev => new Set([...prev, ...s.customClasses.map(c => c.name)]));
         }
-        if (data.imageInfo?.w) setImgNaturalSize(data.imageInfo);
+        if (s.autoSimplifyDist != null) setAutoSimplifyDist(String(s.autoSimplifyDist));
+        if (s.areaTextColor)    setAreaTextColor(s.areaTextColor);
+        if (s.perimTextColor)   setPerimTextColor(s.perimTextColor);
+        if (s.measureTextColor) setMeasureTextColor(s.measureTextColor);
+        if (s.autoSave != null)          setAutoSave(Boolean(s.autoSave));
+        if (s.autoSaveInterval != null)  setAutoSaveInterval(String(s.autoSaveInterval));
+
+        // ── Scale (shared across pages) ──────────────────────────────────
         if (data.scale?.pixelToMeter != null) {
           setRatio(data.scale.pixelToMeter);
           setPixelLength(data.scale.pixelLength || "");
           setRealLength(data.scale.realLength || "");
         }
-        if (data.settings?.autoSimplifyDist != null) {
-          setAutoSimplifyDist(String(data.settings.autoSimplifyDist));
-        }
-        if (data.settings?.areaTextColor)    setAreaTextColor(data.settings.areaTextColor);
-        if (data.settings?.perimTextColor)   setPerimTextColor(data.settings.perimTextColor);
-        if (data.settings?.measureTextColor) setMeasureTextColor(data.settings.measureTextColor);
-        if (data.settings?.autoSave != null)          setAutoSave(Boolean(data.settings.autoSave));
-        if (data.settings?.autoSaveInterval != null)  setAutoSaveInterval(String(data.settings.autoSaveInterval));
+
         if (data.originalExt) {
           existingFileInfoRef.current = {
             ext: data.originalExt,
             fileName: data.metadata?.fileName || null,
           };
         }
-        if (data.originalFileUrl) {
-          loadImageFromUrl(data.originalFileUrl, data.originalExt);
+
+        // ── Load page images ─────────────────────────────────────────────
+        const pages = data.pages || [];
+        const pageImageUrls = data.pageImageUrls || {};
+
+        // If we have page-N.png URLs, load them
+        if (Object.keys(pageImageUrls).length > 0) {
+          const loadedPages = await Promise.all(pages.map(async (page) => {
+            const url = pageImageUrls[page.pageIndex];
+            if (!url) return { ...page, img: null };
+            return new Promise((resolve) => {
+              const img = new Image();
+              img.crossOrigin = "anonymous";
+              img.onload = () => resolve({ ...page, img, imgNaturalSize: { w: img.naturalWidth, h: img.naturalHeight } });
+              img.onerror = () => resolve({ ...page, img: null });
+              img.src = url;
+            });
+          }));
+
+          if (cancelled) return;
+          // Fill missing numIds
+          const normalizedPages = loadedPages.map(p => ({
+            ...p,
+            annotations: fillMissingNumIds(p.annotations || []),
+          }));
+
+          allPagesRef.current = normalizedPages;
+          setPageCount(normalizedPages.length);
+          uploadedPageImages.current = new Set(normalizedPages.map(p => p.pageIndex));
+
+          // Set first page as active
+          const first = normalizedPages[0];
+          if (first) {
+            setOriginalImg(first.img);
+            setImgNaturalSize(first.imgNaturalSize || { w: 0, h: 0 });
+            setAnnotations(first.annotations || []);
+            setCurrentPageIndex(0);
+            if (first.img) {
+              const bs = computeBaseScale(first.imgNaturalSize.w, first.imgNaturalSize.h);
+              setBaseScale(bs);
+              setZoom(1.0);
+            }
+            setStatus(`Loaded project: ${normalizedPages.length} page(s)`);
+          }
+        } else if (data.originalFileUrl) {
+          // Fallback: old v1 project with original.{ext}
+          const page0 = pages[0] || { pageIndex: 0, imageInfo: { w: 0, h: 0 }, annotations: [] };
+          if (data.originalExt === 'pdf') {
+            // Re-open PDF selector for old PDF projects
+            fetch(data.originalFileUrl)
+              .then((r) => r.arrayBuffer())
+              .then((buf) => { if (!cancelled) setPdfModalData(buf.slice(0)); })
+              .catch(() => setStatus("Failed to restore PDF from saved project."));
+          } else {
+            const img = new Image();
+            img.crossOrigin = "anonymous";
+            img.onload = () => {
+              if (cancelled) return;
+              const imgSize = { w: img.naturalWidth, h: img.naturalHeight };
+              allPagesRef.current = [{ pageIndex: 0, img, imgNaturalSize: imgSize, annotations: fillMissingNumIds(page0.annotations || []) }];
+              setPageCount(1);
+              setOriginalImg(img);
+              setImgNaturalSize(imgSize);
+              setAnnotations(fillMissingNumIds(page0.annotations || []));
+              setCurrentPageIndex(0);
+              const bs = computeBaseScale(imgSize.w, imgSize.h);
+              setBaseScale(bs);
+              setZoom(1.0);
+              setStatus(`Restored saved image: ${imgSize.w}×${imgSize.h} px`);
+            };
+            img.onerror = () => setStatus("Failed to restore image from saved project.");
+            img.src = data.originalFileUrl;
+          }
         }
       })
       .catch((err) => console.error('[DetectionTool] loadProject failed:', err));
 
     return () => { cancelled = true; };
-  }, [project?.id, loadImageFromUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [project?.id, computeBaseScale]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Save project to S3 ───────────────────────────────────────────────────────
   const handleSave = async () => {
     if (!project?.id) return;
     setSaveStatus('saving');
     try {
+      // Sync current page annotations/size into allPagesRef before saving
+      syncCurrentPageToRef();
+
+      // Build v2 pages array from allPagesRef
+      const pagesToSave = allPagesRef.current.map(p => ({
+        pageIndex: p.pageIndex,
+        imageInfo: p.imgNaturalSize || { w: 0, h: 0 },
+        annotations: p.annotations || [],
+      }));
+
+      // Build pageImages for pages not yet uploaded to S3
+      const pageImages = [];
+      for (const p of allPagesRef.current) {
+        if (!uploadedPageImages.current.has(p.pageIndex) && p.img) {
+          // Convert img to PNG blob
+          const canvas = document.createElement('canvas');
+          canvas.width = p.imgNaturalSize?.w || p.img.naturalWidth;
+          canvas.height = p.imgNaturalSize?.h || p.img.naturalHeight;
+          canvas.getContext('2d').drawImage(p.img, 0, 0);
+          const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+          if (blob) pageImages.push({ pageIndex: p.pageIndex, blob });
+        }
+      }
+
       await saveProject(project.id, {
         name: project.name,
-        annotations,
+        pages: pagesToSave,
         scale: { pixelToMeter: ratio, pixelLength, realLength },
-        settings: { autoSimplifyDist, areaTextColor, perimTextColor, measureTextColor, autoSave, autoSaveInterval },
-        customTags: zoneTags,
-        customClasses,
-        imageInfo: imgNaturalSize,
+        settings: {
+          autoSimplifyDist, areaTextColor, perimTextColor, measureTextColor,
+          autoSave, autoSaveInterval,
+          customTags: zoneTags,
+          customClasses,
+        },
         file: currentFile,
+        pageImages: pageImages.length > 0 ? pageImages : null,
         existingExt: existingFileInfoRef.current.ext,
         existingFileName: existingFileInfoRef.current.fileName,
       });
+
+      // Mark newly uploaded pages so we don't re-upload them
+      for (const pi of pageImages) uploadedPageImages.current.add(pi.pageIndex);
+
       setSaveStatus('saved');
       setLastSaveTime(new Date());
       setStatus("Save complete.");
@@ -1225,8 +1583,9 @@ export default function DetectionTool({ project, user, onBack }) {
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
+      const imgSize = { w: img.naturalWidth, h: img.naturalHeight };
       setOriginalImg(img);
-      setImgNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
+      setImgNaturalSize(imgSize);
       const bs = computeBaseScale(img.naturalWidth, img.naturalHeight);
       setBaseScale(bs);
       setZoom(1.0);
@@ -1240,6 +1599,11 @@ export default function DetectionTool({ project, user, onBack }) {
       setTempLine(null);
       setLastMeasureLine(null);
       setLastMeasurePx("");
+      // Populate allPagesRef with single page
+      allPagesRef.current = [{ pageIndex: 0, img, imgNaturalSize: imgSize, annotations: [] }];
+      setCurrentPageIndex(0);
+      setPageCount(1);
+      uploadedPageImages.current = new Set(); // new image, needs uploading
       setStatus(`Loaded: ${file.name} (${img.naturalWidth}×${img.naturalHeight})`);
     };
     img.src = url;
@@ -1299,6 +1663,44 @@ export default function DetectionTool({ project, user, onBack }) {
     if (Math.hypot(cx - ann.x1 * scale, cy - ann.y1 * scale) <= 10) return 0;
     if (Math.hypot(cx - ann.x2 * scale, cy - ann.y2 * scale) <= 10) return 1;
     return null;
+  };
+
+  // Distance from point to a line segment [ax,ay]→[bx,by]
+  const distToSegment = (x, y, ax, ay, bx, by) => {
+    const edx = bx - ax, edy = by - ay;
+    const lenSq = edx * edx + edy * edy;
+    if (lenSq < 1) return Math.hypot(x - ax, y - ay);
+    const t = Math.max(0, Math.min(1, ((x - ax) * edx + (y - ay) * edy) / lenSq));
+    return Math.hypot(x - (ax + t * edx), y - (ay + t * edy));
+  };
+
+  // Returns the minimum distance from point (x,y) to the shape boundary (works for both interior & exterior)
+  const distToBoundary = (ann, x, y) => {
+    if (ann.shapeType === "box") {
+      const [bx1, by1, bx2, by2] = [ann.x1, ann.y1, ann.x2, ann.y2];
+      // 4 edge segments of the box
+      return Math.min(
+        distToSegment(x, y, bx1, by1, bx2, by1), // top
+        distToSegment(x, y, bx1, by2, bx2, by2), // bottom
+        distToSegment(x, y, bx1, by1, bx1, by2), // left
+        distToSegment(x, y, bx2, by1, bx2, by2), // right
+      );
+    }
+    if (ann.shapeType === "line") {
+      return distToSegment(x, y, ann.x1, ann.y1, ann.x2, ann.y2);
+    }
+    if (ann.points && ann.points.length >= 2) {
+      let minD = Infinity;
+      const pts = ann.points;
+      for (let i = 0; i < pts.length; i++) {
+        const [ax, ay] = pts[i];
+        const [bx, by] = pts[(i + 1) % pts.length];
+        const d = distToSegment(x, y, ax, ay, bx, by);
+        if (d < minD) minD = d;
+      }
+      return minD;
+    }
+    return Infinity;
   };
 
   const applyHandleDrag = (ann, hi, orig, dx, dy) => {
@@ -1432,31 +1834,29 @@ export default function DetectionTool({ project, user, onBack }) {
 
     // ── 4. Select / whole-shape move ─────────────────────────────────────────
     } else if (drawMode === "select") {
+      const SELECT_NEAR = 8; // image-px — shapes this close to cursor are selectable even if cursor is outside
       const visIdxs = annotations.map((a, i) => visibleClasses.has(a.clsName) ? i : -1).filter(i => i >= 0);
-      const candidates = visIdxs
+
+      // Phase 1: shapes that contain the cursor — sorted by area (smallest = tightest fit first)
+      const insideCandidates = visIdxs
         .filter(i => annotationContains(annotations[i], ox, oy))
-        .map(i => [Math.max(1, annotationAreaPx(annotations[i])), i]);
-      candidates.sort((a, b) => a[0] - b[0]);
+        .map(i => [annotationAreaPx(annotations[i]), i]);
+      insideCandidates.sort((a, b) => a[0] - b[0]);
+
+      // Phase 2: shapes whose boundary is close to cursor (but don't contain it)
+      let proximityCandidates = [];
+      if (insideCandidates.length === 0) {
+        proximityCandidates = visIdxs
+          .filter(i => !annotationContains(annotations[i], ox, oy))
+          .map(i => [distToBoundary(annotations[i], ox, oy), i])
+          .filter(([d]) => d <= SELECT_NEAR);
+        proximityCandidates.sort((a, b) => a[0] - b[0]);
+      }
+
+      const candidates = insideCandidates.length > 0 ? insideCandidates : proximityCandidates;
 
       if (candidates.length > 0) {
-        // Click-cycling: if clicking near the same spot with multiple overlapping shapes,
-        // cycle to the next shape instead of always picking the smallest.
-        const cc = clickCycle.current;
-        const NEAR = 6; // image-coord proximity to consider "same spot"
-        const order = candidates.map(c => c[1]);
-        let idx;
-        if (order.length > 1 && Math.abs(ox - cc.ox) < NEAR && Math.abs(oy - cc.oy) < NEAR
-            && JSON.stringify(order) === JSON.stringify(cc.order)) {
-          // Same spot, same set of overlapping shapes — advance to next
-          const nextPos = (cc.pos + 1) % order.length;
-          idx = order[nextPos];
-          clickCycle.current = { ox, oy, order, pos: nextPos };
-        } else {
-          // New location or different set — start fresh at first (smallest)
-          idx = order[0];
-          clickCycle.current = { ox, oy, order, pos: 0 };
-        }
-
+        const idx = candidates[0][1];
         if (e.ctrlKey || e.metaKey) {
           setSelectedIndices(prev => {
             const s = new Set(prev); s.has(idx) ? s.delete(idx) : s.add(idx); return s;
@@ -1482,7 +1882,6 @@ export default function DetectionTool({ project, user, onBack }) {
       } else {
         if (!e.ctrlKey && !e.metaKey) { setSelectedIdx(null); setSelectedIndices(new Set()); }
         dragAnnIdx.current = null;
-        clickCycle.current = { ox: 0, oy: 0, order: [], pos: 0 };
       }
     }
   };
@@ -1574,12 +1973,21 @@ export default function DetectionTool({ project, user, onBack }) {
 
     // ── Hover highlight ──────────────────────────────────────────────────────
     if (drawMode === "select") {
+      const HOVER_NEAR = 8;
       const visIdxs = annotations.map((a, i) => visibleClasses.has(a.clsName) ? i : -1).filter(i => i >= 0);
-      const candidates = visIdxs
+      const inside = visIdxs
         .filter(i => annotationContains(annotations[i], ox, oy))
-        .map(i => [Math.max(1, annotationAreaPx(annotations[i])), i]);
-      candidates.sort((a, b) => a[0] - b[0]);
-      setHoverIdx(candidates.length > 0 ? candidates[0][1] : null);
+        .map(i => [annotationAreaPx(annotations[i]), i]);
+      inside.sort((a, b) => a[0] - b[0]);
+      if (inside.length > 0) {
+        setHoverIdx(inside[0][1]);
+      } else {
+        const near = visIdxs
+          .map(i => [distToBoundary(annotations[i], ox, oy), i])
+          .filter(([d]) => d <= HOVER_NEAR);
+        near.sort((a, b) => a[0] - b[0]);
+        setHoverIdx(near.length > 0 ? near[0][1] : null);
+      }
     }
   };
 
@@ -1776,8 +2184,43 @@ export default function DetectionTool({ project, user, onBack }) {
   };
 
   // ─── Inference ───────────────────────────────────────────────────────────────
+  // Helper: apply inference results to the correct page.
+  // Uses currentPageIndexRef (not state) so the check is never stale
+  // even when called from an async function that started on a different render.
+  const applyInferenceResults = (targetPageIndex, newAnns) => {
+    const mergeAnns = (prev) => {
+      const kept = prev.filter(a => a.sourceModel === 'manual');
+      let next = nextNumId(kept);
+      const withIds = newAnns.map(a => ({ ...a, numId: next++ }));
+      return [...kept, ...withIds];
+    };
+
+    const livePageIdx = currentPageIndexRef.current;
+    if (livePageIdx === targetPageIndex) {
+      // Still on the same page — update live state
+      setAnnotations(prev => {
+        pushHistory(prev);
+        return mergeAnns(prev);
+      });
+    } else {
+      // User switched pages — write into the ref for that page
+      const refIdx = allPagesRef.current.findIndex(p => p.pageIndex === targetPageIndex);
+      if (refIdx >= 0) {
+        const oldAnns = allPagesRef.current[refIdx].annotations || [];
+        allPagesRef.current[refIdx] = {
+          ...allPagesRef.current[refIdx],
+          annotations: mergeAnns(oldAnns),
+        };
+      }
+      setStatus(`Inference results applied to page ${targetPageIndex + 1} (background).`);
+    }
+  };
+
   const runInference = async (tiled = false) => {
     if (!originalImg) { setStatus("Load an image first."); return; }
+    // Capture which page we're running inference on
+    const targetPageIndex = currentPageIndexRef.current;
+
     // Re-encode canvas to blob
     const tempCanvas = document.createElement("canvas");
     tempCanvas.width = imgNaturalSize.w;
@@ -1792,7 +2235,7 @@ export default function DetectionTool({ project, user, onBack }) {
     const zoneSegModelData = useConf ? { ...ZONE_SEG_MODEL_DATA, conf: confVal } : ZONE_SEG_MODEL_DATA;
 
     setInferring(true);
-    setStatus(tiled ? "Running tiled inference…" : "Running inference…");
+    setStatus(tiled ? `Running tiled inference on page ${targetPageIndex + 1}…` : `Running inference on page ${targetPageIndex + 1}…`);
 
     try {
       const blob = await new Promise((res) => tempCanvas.toBlob(res, "image/jpeg", 0.95));
@@ -1800,41 +2243,28 @@ export default function DetectionTool({ project, user, onBack }) {
       const autoEps = (() => { const v = parseInt(autoSimplifyDist, 10); return !isNaN(v) && v > 0 ? v : 0; })();
       if (tiled && (imgNaturalSize.w > TILE_SIZE || imgNaturalSize.h > TILE_SIZE)) {
         const allAnns = await runTiledInference(tempCanvas, blob, wallModelData, zoneModelData, zoneSegModelData, autoEps);
-        // Keep manually drawn shapes; replace all AI detections with fresh results
-        setAnnotations(prev => {
-          pushHistory(prev);
-          const kept = prev.filter(a => a.sourceModel === 'manual');
-          let next = nextNumId(kept);
-          const withIds = allAnns.map(a => ({ ...a, numId: next++ }));
-          return [...kept, ...withIds];
-        });
-        setStatus(`Tiled inference complete — ${allAnns.length} detections.`);
+        applyInferenceResults(targetPageIndex, allAnns);
+        setStatus(`Tiled inference complete (page ${targetPageIndex + 1}) — ${allAnns.length} detections.`);
       } else {
         const [wallRes, doorWinRes, zoneSegRes] = await Promise.all([
           postInference(blob, WALL_MODEL_URL, WALL_MODEL_HEADERS, wallModelData),
           postInference(blob, ZONE_MODEL_URL, ZONE_MODEL_HEADERS, zoneModelData),
           postInference(blob, ZONE_SEG_MODEL_URL, ZONE_SEG_MODEL_HEADERS, zoneSegModelData),
         ]);
-        const autoEps = (() => { const v = parseInt(autoSimplifyDist, 10); return !isNaN(v) && v > 0 ? v : 0; })();
+        const autoEps2 = (() => { const v = parseInt(autoSimplifyDist, 10); return !isNaN(v) && v > 0 ? v : 0; })();
         const wallAnns    = parseModelResponse(wallRes, "wall_model");
-        // Old zone model: keep doors and windows only
         const doorWinAnns = parseModelResponse(doorWinRes, "zone_door_window_model")
           .filter(a => a.clsName === "door" || a.clsName === "window");
-        // New seg model: zones as polygons (auto-simplified if setting > 0)
-        const zoneSegAnns = parseSegmentationResponse(zoneSegRes, "zone_seg_model", autoEps);
+        const zoneSegAnns = parseSegmentationResponse(zoneSegRes, "zone_seg_model", autoEps2);
         const allAnns = [...wallAnns, ...doorWinAnns, ...zoneSegAnns];
-        // Keep manually drawn shapes; replace all AI detections with fresh results
-        setAnnotations(prev => {
-          pushHistory(prev);
-          const kept = prev.filter(a => a.sourceModel === 'manual');
-          let next = nextNumId(kept);
-          const withIds = allAnns.map(a => ({ ...a, numId: next++ }));
-          return [...kept, ...withIds];
-        });
-        setStatus(`Inference complete — ${allAnns.length} detections.`);
+        applyInferenceResults(targetPageIndex, allAnns);
+        setStatus(`Inference complete (page ${targetPageIndex + 1}) — ${allAnns.length} detections.`);
       }
-      setSelectedIdx(null);
-      setSelectedIndices(new Set());
+      // Only clear selection if still on the target page
+      if (currentPageIndexRef.current === targetPageIndex) {
+        setSelectedIdx(null);
+        setSelectedIndices(new Set());
+      }
     } catch (err) {
       setStatus(`Inference failed: ${err.message}`);
     } finally {
@@ -2007,29 +2437,37 @@ export default function DetectionTool({ project, user, onBack }) {
 
   // ─── Export ──────────────────────────────────────────────────────────────────
   const exportJSON = () => {
+    // JSON export: current page only
     const data = annotations.map(ann => {
       const [x1, y1, x2, y2] = annotationBbox(ann);
       const areaPx = annotationAreaPx(ann);
       const areaM2 = ratio ? areaPx * ratio * ratio : null;
       const perimPx = (ann.shapeType === "polygon" || ann.shapeType === "line" || ann.clsName === "zone") ? annotationPerimeterPx(ann) : null;
       const perimM = ratio && perimPx != null ? perimPx * ratio : null;
-      return { num_id: ann.numId ?? null, shape_type: ann.shapeType, class: ann.clsName, x1, y1, x2, y2, polygon_points: ann.points, confidence: ann.confidence, source_model: ann.sourceModel, zone_tag: ann.zoneTag, area_pixels2: areaPx, area_m2: areaM2, perimeter_pixels: perimPx, perimeter_m: perimM };
+      return { page: currentPageIndex + 1, num_id: ann.numId ?? null, shape_type: ann.shapeType, class: ann.clsName, x1, y1, x2, y2, polygon_points: ann.points, confidence: ann.confidence, source_model: ann.sourceModel, zone_tag: ann.zoneTag, area_pixels2: areaPx, area_m2: areaM2, perimeter_pixels: perimPx, perimeter_m: perimM };
     });
+    const pageSuffix = pageCount > 1 ? `_page${currentPageIndex + 1}` : '';
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = url; a.download = "annotations.json"; a.click();
+    const a = document.createElement("a"); a.href = url; a.download = `annotations${pageSuffix}.json`; a.click();
   };
 
   const exportCSV = () => {
-    const headers = ["num_id","shape_type","class","x1","y1","x2","y2","polygon_points","confidence","source_model","zone_tag","area_pixels2","area_m2","perimeter_pixels","perimeter_m"];
-    const rows = annotations.map(ann => {
-      const [x1, y1, x2, y2] = annotationBbox(ann);
-      const areaPx = annotationAreaPx(ann);
-      const areaM2 = ratio ? areaPx * ratio * ratio : "";
-      const perimPx = (ann.shapeType === "polygon" || ann.shapeType === "line" || ann.clsName === "zone") ? annotationPerimeterPx(ann) : "";
-      const perimM = ratio && perimPx !== "" ? perimPx * ratio : "";
-      return [ann.numId ?? "", ann.shapeType, ann.clsName, x1, y1, x2, y2, ann.points ? JSON.stringify(ann.points) : "", ann.confidence ?? "", ann.sourceModel ?? "", ann.zoneTag ?? "", areaPx, areaM2, perimPx, perimM];
-    });
+    syncCurrentPageToRef();
+    const allPages = allPagesRef.current.length > 0 ? allPagesRef.current : [{ pageIndex: currentPageIndex, annotations }];
+    const headers = ["page","num_id","shape_type","class","x1","y1","x2","y2","polygon_points","confidence","source_model","zone_tag","area_pixels2","area_m2","perimeter_pixels","perimeter_m"];
+    const rows = [];
+    for (const page of allPages) {
+      const pageAnns = page.annotations || [];
+      for (const ann of pageAnns) {
+        const [x1, y1, x2, y2] = annotationBbox(ann);
+        const areaPx = annotationAreaPx(ann);
+        const areaM2 = ratio ? areaPx * ratio * ratio : "";
+        const perimPx = (ann.shapeType === "polygon" || ann.shapeType === "line" || ann.clsName === "zone") ? annotationPerimeterPx(ann) : "";
+        const perimM = ratio && perimPx !== "" ? perimPx * ratio : "";
+        rows.push([page.pageIndex + 1, ann.numId ?? "", ann.shapeType, ann.clsName, x1, y1, x2, y2, ann.points ? JSON.stringify(ann.points) : "", ann.confidence ?? "", ann.sourceModel ?? "", ann.zoneTag ?? "", areaPx, areaM2, perimPx, perimM]);
+      }
+    }
     const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
@@ -2079,6 +2517,15 @@ export default function DetectionTool({ project, user, onBack }) {
         setSelectedIndices(allIdxs);
         setSelectedIdx(visibleIdxs.length > 0 ? visibleIdxs[visibleIdxs.length - 1] : null);
       }
+      // Page navigation: PageUp / PageDown
+      if (e.key === "PageUp" && pageCount > 1) {
+        e.preventDefault();
+        switchPage(Math.max(0, currentPageIndex - 1));
+      }
+      if (e.key === "PageDown" && pageCount > 1) {
+        e.preventDefault();
+        switchPage(Math.min(pageCount - 1, currentPageIndex + 1));
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -2094,11 +2541,12 @@ export default function DetectionTool({ project, user, onBack }) {
 
   return (
     <div style={styles.app}>
-      {/* PDF Region Selector Modal */}
+      {/* PDF Page Import Modal */}
       {pdfModalData && (
-        <PdfRegionSelector
+        <PdfPageImportModal
           pdfData={pdfModalData}
-          onConfirm={handlePdfConfirm}
+          onConfirmSingle={handlePdfConfirmSingle}
+          onConfirmMulti={handlePdfConfirmMulti}
           onCancel={() => { setPdfModalData(null); setStatus("PDF import cancelled."); }}
         />
       )}
@@ -2279,6 +2727,43 @@ export default function DetectionTool({ project, user, onBack }) {
             <button onClick={() => setZoom(z => clamp(z / 1.2, 0.1, 8))} style={styles.toolBtn}>－</button>
             <span style={styles.zoomLabel}>{(scale * 100).toFixed(0)}%</span>
           </div>
+
+          {/* ── Page switcher bar (multi-page only) ── */}
+          {pageCount > 1 && (
+            <div style={styles.pageSwitcher}>
+              <button
+                onClick={() => switchPage(Math.max(0, currentPageIndex - 1))}
+                disabled={currentPageIndex === 0}
+                style={{ ...styles.pageNavBtn, opacity: currentPageIndex === 0 ? 0.35 : 1 }}
+              >◀</button>
+              {allPagesRef.current.map((p) => {
+                const annCount = p.pageIndex === currentPageIndex ? annotations.length : (p.annotations || []).length;
+                const isActive = p.pageIndex === currentPageIndex;
+                return (
+                  <button
+                    key={p.pageIndex}
+                    onClick={() => switchPage(p.pageIndex)}
+                    style={{
+                      ...styles.pageTabBtn,
+                      background: isActive ? "#1e3a6a" : "#0c1428",
+                      borderColor: isActive ? "#3a6ab0" : "#1a2a40",
+                      color: isActive ? "#8cf" : "#5a7a9a",
+                    }}
+                  >
+                    Page {p.pageIndex + 1}
+                    {annCount > 0 && (
+                      <span style={styles.pageBadge}>{annCount}</span>
+                    )}
+                  </button>
+                );
+              })}
+              <button
+                onClick={() => switchPage(Math.min(pageCount - 1, currentPageIndex + 1))}
+                disabled={currentPageIndex === pageCount - 1}
+                style={{ ...styles.pageNavBtn, opacity: currentPageIndex === pageCount - 1 ? 0.35 : 1 }}
+              >▶</button>
+            </div>
+          )}
 
           <div ref={containerRef} style={styles.canvasContainer} onWheel={onWheel}>
             {!originalImg && (
@@ -2576,4 +3061,8 @@ const styles = {
   annRow: { padding: "4px 6px", cursor: "pointer", borderRadius: 2, marginBottom: 1, paddingLeft: 6 },
   settingsOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 9000, display: "flex", alignItems: "flex-start", justifyContent: "flex-end" },
   settingsModal: { marginTop: 48, marginRight: 14, background: "#0e1728", border: "1px solid #2a4070", borderRadius: 8, padding: "16px 18px", minWidth: 300, boxShadow: "0 8px 32px rgba(0,0,0,0.7)", zIndex: 9001 },
+  pageSwitcher: { display: "flex", alignItems: "center", gap: 4, padding: "3px 8px", background: "#0a1018", borderBottom: "1px solid #141e30", overflowX: "auto" },
+  pageNavBtn: { background: "#152240", border: "1px solid #2a4070", borderRadius: 3, color: "#8ab", padding: "2px 8px", cursor: "pointer", fontSize: 12, flexShrink: 0 },
+  pageTabBtn: { background: "#0c1428", border: "1px solid #1a2a40", borderRadius: 3, color: "#5a7a9a", padding: "3px 10px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", flexShrink: 0, display: "flex", alignItems: "center", gap: 5 },
+  pageBadge: { background: "#1a3060", color: "#6af", borderRadius: 8, padding: "0 5px", fontSize: 9, fontWeight: 700, lineHeight: "16px" },
 };
