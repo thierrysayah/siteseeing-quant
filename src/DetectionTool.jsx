@@ -896,6 +896,8 @@ export default function DetectionTool({ project, user, onBack }) {
   const lineDrawing = useRef(false);
   const lineStart = useRef(null);
   const mouseDown = useRef(false);
+  // Click-cycling: repeated clicks at the same spot cycle through overlapping shapes
+  const clickCycle = useRef({ ox: 0, oy: 0, order: [], pos: 0 });
   const dragAnnIdx = useRef(null);       // whole-shape move
   const dragStart = useRef(null);        // [ox,oy] image-coords where drag began
   const dragOrigPts = useRef(null);      // polygon: full points snapshot; box: [x1,y1,x2,y2]
@@ -1437,7 +1439,24 @@ export default function DetectionTool({ project, user, onBack }) {
       candidates.sort((a, b) => a[0] - b[0]);
 
       if (candidates.length > 0) {
-        const idx = candidates[0][1];
+        // Click-cycling: if clicking near the same spot with multiple overlapping shapes,
+        // cycle to the next shape instead of always picking the smallest.
+        const cc = clickCycle.current;
+        const NEAR = 6; // image-coord proximity to consider "same spot"
+        const order = candidates.map(c => c[1]);
+        let idx;
+        if (order.length > 1 && Math.abs(ox - cc.ox) < NEAR && Math.abs(oy - cc.oy) < NEAR
+            && JSON.stringify(order) === JSON.stringify(cc.order)) {
+          // Same spot, same set of overlapping shapes — advance to next
+          const nextPos = (cc.pos + 1) % order.length;
+          idx = order[nextPos];
+          clickCycle.current = { ox, oy, order, pos: nextPos };
+        } else {
+          // New location or different set — start fresh at first (smallest)
+          idx = order[0];
+          clickCycle.current = { ox, oy, order, pos: 0 };
+        }
+
         if (e.ctrlKey || e.metaKey) {
           setSelectedIndices(prev => {
             const s = new Set(prev); s.has(idx) ? s.delete(idx) : s.add(idx); return s;
@@ -1463,6 +1482,7 @@ export default function DetectionTool({ project, user, onBack }) {
       } else {
         if (!e.ctrlKey && !e.metaKey) { setSelectedIdx(null); setSelectedIndices(new Set()); }
         dragAnnIdx.current = null;
+        clickCycle.current = { ox: 0, oy: 0, order: [], pos: 0 };
       }
     }
   };
