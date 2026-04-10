@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { loadProject, saveProject } from "./services/projectStorage";
+import { loadProject, saveProject, getOriginalFileUrl } from "./services/projectStorage";
+import Drawing from "dxf-writer";
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const WALL_MODEL_URL = "https://predict-69b7f2f29e8ba20d1c3c-dproatj77a-lm.a.run.app/predict";
@@ -63,6 +64,102 @@ function loadPdfJs() {
     document.head.appendChild(script);
   });
   return _pdfJsPromise;
+}
+
+// ─── AUTO DXF: PDF vector extraction helpers ─────────────────────────────────
+function _bezierPts(p0, p1, p2, p3, n = 16) {
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n, mt = 1 - t;
+    pts.push([
+      mt**3*p0[0]+3*mt**2*t*p1[0]+3*mt*t**2*p2[0]+t**3*p3[0],
+      mt**3*p0[1]+3*mt**2*t*p1[1]+3*mt*t**2*p2[1]+t**3*p3[1],
+    ]);
+  }
+  return pts;
+}
+
+function _detectHatches(lines, angleTol=2, spacingTol=3, minLines=5, maxSpacing=20) {
+  if (!lines || !lines.length) return { hatches: [], remaining: lines || [] };
+  const ann = [];
+  for (const ln of lines) {
+    const dx = ln.end[0]-ln.start[0], dy = ln.end[1]-ln.start[1];
+    const len = Math.sqrt(dx*dx+dy*dy);
+    if (len < 0.5) continue;
+    const angle = ((Math.atan2(dy, dx)*180/Math.PI)%180+180)%180;
+    ann.push({ ...ln, _a: angle, _m: [(ln.start[0]+ln.end[0])/2, (ln.start[1]+ln.end[1])/2] });
+  }
+  const groups = {};
+  for (const it of ann) { const b = Math.round(it._a/angleTol)*angleTol; (groups[b]||(groups[b]=[])).push(it); }
+  const hatches = [], remaining = [];
+  for (const [bucket, grp] of Object.entries(groups)) {
+    if (grp.length < minLines) { remaining.push(...grp); continue; }
+    const rad = parseFloat(bucket)*Math.PI/180, px = -Math.sin(rad), py = Math.cos(rad);
+    const projs = grp.map(it => it._m[0]*px+it._m[1]*py).sort((a,b)=>a-b);
+    const sp = []; for (let i=0;i<projs.length-1;i++) sp.push(projs[i+1]-projs[i]);
+    if (!sp.length) { remaining.push(...grp); continue; }
+    const med = [...sp].sort((a,b)=>a-b)[Math.floor(sp.length/2)];
+    const reg = sp.filter(s => Math.abs(s-med)<spacingTol).length;
+    if (reg > sp.length*0.6 && med < maxSpacing) hatches.push({ angle: Math.round(parseFloat(bucket)*10)/10, spacing: Math.round(med*100)/100, lines: grp });
+    else remaining.push(...grp);
+  }
+  return { hatches, remaining: remaining.map(({_a,_m,...r})=>r) };
+}
+
+async function _extractPdfVectors(pdfDoc, pageNum, region) {
+  const page = await pdfDoc.getPage(pageNum); // 1-based
+  const vp = page.getViewport({ scale: 1.0 });
+  const opList = await page.getOperatorList();
+  const OPS = window.pdfjsLib.OPS;
+  const stStack = [];
+  let ctm=[1,0,0,1,0,0], lw=1, sC=[0,0,0], fC=null;
+  let pts=[], pStart=null, closed=false, cx=0, cy=0;
+  const lines=[], curves=[], rects=[], polys=[];
+  const mm=(a,b)=>[a[0]*b[0]+a[2]*b[1],a[1]*b[0]+a[3]*b[1],a[0]*b[2]+a[2]*b[3],a[1]*b[2]+a[3]*b[3],a[0]*b[4]+a[2]*b[5]+a[4],a[1]*b[4]+a[3]*b[5]+a[5]];
+  const tp=(x,y)=>[ctm[0]*x+ctm[2]*y+ctm[4],ctm[1]*x+ctm[3]*y+ctm[5]];
+  const r3=v=>Math.round(v*1000)/1000;
+  const inR=(x,y)=>!region||(x>=region[0]&&x<=region[2]&&y>=region[1]&&y<=region[3]);
+  function emit(){
+    if(pts.length<2){pts=[];pStart=null;closed=false;return;}
+    if(closed&&pts.length>=4){
+      const pp=pts.map(([x,y])=>[r3(x),r3(y)]);
+      if(!region||pp.some(([x,y])=>inR(x,y))) polys.push({points:pp,color:[...sC],fill:fC?[...fC]:null,width:lw});
+    } else {
+      for(let j=0;j<pts.length-1;j++){
+        const s=[r3(pts[j][0]),r3(pts[j][1])],e=[r3(pts[j+1][0]),r3(pts[j+1][1])];
+        if(!region||inR(s[0],s[1])||inR(e[0],e[1])) lines.push({start:s,end:e,color:[...sC],width:lw});
+      }
+    }
+    pts=[];pStart=null;closed=false;
+  }
+  for(let i=0;i<opList.fnArray.length;i++){
+    const fn=opList.fnArray[i],args=opList.argsArray[i];
+    if(fn===OPS.save) stStack.push({ctm:[...ctm],lw,sC:[...sC],fC:fC?[...fC]:null});
+    else if(fn===OPS.restore&&stStack.length){const s=stStack.pop();ctm=s.ctm;lw=s.lw;sC=s.sC;fC=s.fC;}
+    else if(fn===OPS.transform) ctm=mm(ctm,[args[0],args[1],args[2],args[3],args[4],args[5]]);
+    else if(fn===OPS.setLineWidth) lw=args[0];
+    else if(fn===OPS.setStrokeRGBColor) sC=[Math.round(args[0]*255),Math.round(args[1]*255),Math.round(args[2]*255)];
+    else if(fn===OPS.setFillRGBColor) fC=[Math.round(args[0]*255),Math.round(args[1]*255),Math.round(args[2]*255)];
+    else if(fn===OPS.setStrokeGray){const v=Math.round(args[0]*255);sC=[v,v,v];}
+    else if(fn===OPS.setFillGray){const v=Math.round(args[0]*255);fC=[v,v,v];}
+    else if(fn===OPS.constructPath){
+      const sOps=args[0],sArgs=args[1];let j=0;
+      for(let k=0;k<sOps.length;k++){
+        const op=sOps[k];
+        if(op===OPS.moveTo){if(pts.length>=2)emit();const[px,py]=tp(sArgs[j],sArgs[j+1]);j+=2;pStart=[px,py];pts=[[px,py]];cx=px;cy=py;closed=false;}
+        else if(op===OPS.lineTo){const[px,py]=tp(sArgs[j],sArgs[j+1]);j+=2;pts.push([px,py]);cx=px;cy=py;}
+        else if(op===OPS.curveTo){const[c1x,c1y]=tp(sArgs[j],sArgs[j+1]),[c2x,c2y]=tp(sArgs[j+2],sArgs[j+3]),[ex,ey]=tp(sArgs[j+4],sArgs[j+5]);j+=6;const sp=pts.length?pts[pts.length-1]:[cx,cy];curves.push({p0:[r3(sp[0]),r3(sp[1])],p1:[r3(c1x),r3(c1y)],p2:[r3(c2x),r3(c2y)],p3:[r3(ex),r3(ey)],color:[...sC],width:lw});pts.push([ex,ey]);cx=ex;cy=ey;}
+        else if(op===OPS.curveTo2){const[c2x,c2y]=tp(sArgs[j],sArgs[j+1]),[ex,ey]=tp(sArgs[j+2],sArgs[j+3]);j+=4;const sp=pts.length?pts[pts.length-1]:[cx,cy];curves.push({p0:[r3(sp[0]),r3(sp[1])],p1:[r3(sp[0]),r3(sp[1])],p2:[r3(c2x),r3(c2y)],p3:[r3(ex),r3(ey)],color:[...sC],width:lw});pts.push([ex,ey]);cx=ex;cy=ey;}
+        else if(op===OPS.curveTo3){const[c1x,c1y]=tp(sArgs[j],sArgs[j+1]),[ex,ey]=tp(sArgs[j+2],sArgs[j+3]);j+=4;const sp=pts.length?pts[pts.length-1]:[cx,cy];curves.push({p0:[r3(sp[0]),r3(sp[1])],p1:[r3(c1x),r3(c1y)],p2:[r3(ex),r3(ey)],p3:[r3(ex),r3(ey)],color:[...sC],width:lw});pts.push([ex,ey]);cx=ex;cy=ey;}
+        else if(op===OPS.rectangle){const x=sArgs[j],y=sArgs[j+1],w=sArgs[j+2],h=sArgs[j+3];j+=4;const[rx0,ry0]=tp(x,y),[rx1,ry1]=tp(x+w,y+h);const mn=[Math.min(rx0,rx1),Math.min(ry0,ry1)],mx=[Math.max(rx0,rx1),Math.max(ry0,ry1)];if(inR((mn[0]+mx[0])/2,(mn[1]+mx[1])/2))rects.push({x0:r3(mn[0]),y0:r3(mn[1]),x1:r3(mx[0]),y1:r3(mx[1]),color:[...sC],fill:fC?[...fC]:null,width:lw});}
+        else if(op===OPS.closePath){closed=true;if(pStart)pts.push([...pStart]);}
+      }
+    }
+    else if(fn===OPS.stroke||fn===OPS.closeStroke){if(fn===OPS.closeStroke&&pStart&&!closed){closed=true;pts.push([...pStart]);}emit();}
+    else if(fn===OPS.fill||fn===OPS.eoFill||fn===OPS.fillStroke||fn===OPS.eoFillStroke||fn===OPS.closeFillStroke){if(pStart&&!closed){closed=true;pts.push([...pStart]);}emit();}
+    else if(fn===OPS.endPath){pts=[];pStart=null;closed=false;}
+  }
+  return {pageWidth:vp.width,pageHeight:vp.height,lines,curves,rects,closedPolys:polys};
 }
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
@@ -970,6 +1067,171 @@ function PdfPageImportModal({ pdfData, onConfirmSingle, onConfirmMulti, onCancel
   );
 }
 
+// ─── AUTO DXF MODAL ──────────────────────────────────────────────────────────
+function AutoDxfModal({ pdfData, initialPage, scaleRatio, onClose }) {
+  const cvRef = useRef(null);
+  const [pdfDoc, setPdfDoc] = useState(null);
+  const [totalPages, setTotalPages] = useState(0);
+  const [pageIdx, setPageIdx] = useState(initialPage || 0); // 0-based
+  const [pageCanvas, setPageCanvas] = useState(null);
+  const [ps, setPs] = useState(1); // preview scale
+  const [rect, setRect] = useState(null);
+  const [statusMsg, setStatusMsg] = useState("Drag a rectangle to select a region, or export the full page.");
+  const [extracting, setExtracting] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+  const dragRef = useRef(null);
+  const dragging = useRef(false);
+
+  // Load PDF
+  useEffect(() => {
+    let c = false;
+    loadPdfJs().then(async (lib) => {
+      const doc = await lib.getDocument({ data: new Uint8Array(pdfData.slice(0)) }).promise;
+      if (c) return;
+      setPdfDoc(doc);
+      setTotalPages(doc.numPages);
+    }).catch(e => { if (!c) setLoadError(e?.message || 'Failed to parse PDF.'); });
+    return () => { c = true; };
+  }, [pdfData]);
+
+  // Render page
+  useEffect(() => {
+    if (!pdfDoc) return;
+    let c = false;
+    (async () => {
+      const page = await pdfDoc.getPage(pageIdx + 1);
+      const viewport = page.getViewport({ scale: PDF_SCALE });
+      const off = document.createElement("canvas");
+      off.width = Math.round(viewport.width);
+      off.height = Math.round(viewport.height);
+      await page.render({ canvasContext: off.getContext("2d"), viewport }).promise;
+      if (c) return;
+      setPageCanvas(off);
+      setRect(null);
+    })().catch(e => { if (!c) setLoadError(e?.message); });
+    return () => { c = true; };
+  }, [pdfDoc, pageIdx]);
+
+  // Draw preview
+  useEffect(() => {
+    if (!pageCanvas || !cvRef.current) return;
+    const container = cvRef.current.parentElement;
+    const mw = container.clientWidth - 4, mh = container.clientHeight - 4;
+    const s = Math.min(mw / pageCanvas.width, mh / pageCanvas.height, 1.0);
+    setPs(s);
+    const pw = Math.round(pageCanvas.width * s), ph = Math.round(pageCanvas.height * s);
+    const cv = cvRef.current;
+    cv.width = pw; cv.height = ph;
+    const ctx = cv.getContext("2d");
+    ctx.drawImage(pageCanvas, 0, 0, pw, ph);
+    if (rect) { ctx.strokeStyle = "#FF3300"; ctx.lineWidth = 2; ctx.strokeRect(rect.x1, rect.y1, rect.x2 - rect.x1, rect.y2 - rect.y1); ctx.fillStyle = "rgba(255,51,0,0.18)"; ctx.fillRect(rect.x1, rect.y1, rect.x2 - rect.x1, rect.y2 - rect.y1); }
+  }, [pageCanvas, rect]);
+
+  function getXY(e) { const r = cvRef.current.getBoundingClientRect(); return { px: clamp(e.clientX - r.left, 0, cvRef.current.width - 1), py: clamp(e.clientY - r.top, 0, cvRef.current.height - 1) }; }
+  function onDown(e) { if (e.button !== 0) return; dragging.current = true; const { px, py } = getXY(e); dragRef.current = [px, py]; setRect(null); }
+  function onMove(e) { if (!dragging.current || !dragRef.current) return; const { px, py } = getXY(e); const [sx, sy] = dragRef.current; setRect({ x1: Math.min(sx, px), y1: Math.min(sy, py), x2: Math.max(sx, px), y2: Math.max(sy, py) }); }
+  function onUp() { dragging.current = false; }
+
+  // Extract & generate DXF
+  const doExport = async () => {
+    if (!pdfDoc || !pageCanvas) return;
+    setExtracting(true);
+    setStatusMsg("Extracting vector geometry…");
+    try {
+      // Convert region from preview coords → PDF user-space coords (bottom-left, Y up)
+      const pageVp = (await pdfDoc.getPage(pageIdx + 1)).getViewport({ scale: 1.0 });
+      const pgW = pageVp.width, pgH = pageVp.height;
+      let pdfRegion = null;
+      if (rect && ps > 0) {
+        const cx1 = rect.x1 / (PDF_SCALE * ps), cy1 = rect.y1 / (PDF_SCALE * ps);
+        const cx2 = rect.x2 / (PDF_SCALE * ps), cy2 = rect.y2 / (PDF_SCALE * ps);
+        // Preview Y goes down, PDF Y goes up
+        pdfRegion = [cx1, pgH - cy2, cx2, pgH - cy1];
+      }
+
+      const geo = await _extractPdfVectors(pdfDoc, pageIdx + 1, pdfRegion);
+      const total = geo.lines.length + geo.curves.length + geo.rects.length + geo.closedPolys.length;
+      if (total === 0) { setStatusMsg("No vector geometry found in this region."); setExtracting(false); return; }
+
+      // Scale factor: PDF points → meters (if scale calibrated)
+      const sf = scaleRatio ? (PDF_RENDER_DPI / 72) * scaleRatio : 1;
+
+      // Generate DXF
+      const d = new Drawing();
+      d.setUnits(scaleRatio ? "Meters" : "Unitless");
+      d.addLayer("LINES", 7, "CONTINUOUS");
+      d.addLayer("CURVES", 3, "CONTINUOUS");
+      d.addLayer("RECTS", 5, "CONTINUOUS");
+      d.addLayer("POLYGONS", 1, "CONTINUOUS");
+      d.addLayer("HATCHES", 8, "CONTINUOUS");
+
+      const tx = x => x * sf, ty = y => y * sf; // PDF Y-up matches DXF Y-up
+
+      const hatch = _detectHatches(geo.lines);
+      d.setActiveLayer("LINES");
+      for (const ln of hatch.remaining) d.drawLine(tx(ln.start[0]), ty(ln.start[1]), tx(ln.end[0]), ty(ln.end[1]));
+      d.setActiveLayer("CURVES");
+      for (const crv of geo.curves) { const pts = _bezierPts(crv.p0, crv.p1, crv.p2, crv.p3, 16).map(([x,y])=>[tx(x),ty(y)]); if (pts.length >= 2) d.drawPolyline(pts); }
+      d.setActiveLayer("RECTS");
+      for (const r of geo.rects) d.drawRect(tx(r.x0), ty(r.y0), tx(r.x1), ty(r.y1));
+      d.setActiveLayer("POLYGONS");
+      for (const p of geo.closedPolys) { if (p.points.length >= 3) d.drawPolyline(p.points.map(([x,y])=>[tx(x),ty(y)]), true); }
+      d.setActiveLayer("HATCHES");
+      for (const hg of hatch.hatches) for (const ln of hg.lines) d.drawLine(tx(ln.start[0]), ty(ln.start[1]), tx(ln.end[0]), ty(ln.end[1]));
+
+      const blob = new Blob([d.toDxfString()], { type: "application/dxf" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = `auto_page${pageIdx + 1}.dxf`; a.click();
+
+      const hatchInfo = _detectHatches(geo.lines);
+      setStatusMsg(`Exported ${total} entities (${hatch.remaining.length} lines, ${geo.curves.length} curves, ${geo.rects.length} rects, ${geo.closedPolys.length} polys, ${hatchInfo.hatches.reduce((s,h)=>s+h.lines.length,0)} hatch lines)`);
+    } catch (err) {
+      console.error("[AutoDxf]", err);
+      setStatusMsg(`Export failed: ${err.message}`);
+    } finally {
+      setExtracting(false);
+    }
+  };
+
+  return (
+    <div style={pdfStyles.overlay}>
+      <div style={pdfStyles.modal}>
+        <div style={pdfStyles.header}>
+          <span style={pdfStyles.title}>📐 AUTO DXF EXPORT</span>
+          <span style={pdfStyles.subtitle}>Extracts vector geometry directly from the PDF. Select a region or use the full page.</span>
+        </div>
+
+        {totalPages > 1 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 14px", borderBottom: "1px solid #141e30" }}>
+            <button onClick={() => { setPageIdx(i => Math.max(0, i - 1)); }} disabled={pageIdx === 0} style={{ ...pdfStyles.pageBtn, opacity: pageIdx === 0 ? 0.35 : 1 }}>◀ Prev</button>
+            <span style={{ color: "#8ab", fontSize: 12, fontFamily: "monospace", minWidth: 80, textAlign: "center" }}>Page {pageIdx + 1} / {totalPages}</span>
+            <button onClick={() => { setPageIdx(i => Math.min(totalPages - 1, i + 1)); }} disabled={pageIdx === totalPages - 1} style={{ ...pdfStyles.pageBtn, opacity: pageIdx === totalPages - 1 ? 0.35 : 1 }}>Next ▶</button>
+          </div>
+        )}
+
+        {loadError && <div style={{ padding: 24, color: "#e05555", fontFamily: "monospace", fontSize: 12 }}>Error: {loadError}</div>}
+
+        <div style={pdfStyles.canvasWrap}>
+          {!pageCanvas && !loadError && <div style={{ color: "#3a5c7a", fontFamily: "monospace", fontSize: 13, padding: 24 }}>⟳ Rendering page…</div>}
+          <canvas ref={cvRef} style={{ display: pageCanvas ? "block" : "none", cursor: "crosshair", maxWidth: "100%", maxHeight: "100%" }}
+            onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp} />
+        </div>
+
+        <div style={{ padding: "5px 14px", color: "#5a9a7a", fontSize: 10, fontFamily: "monospace", borderTop: "1px solid #141e30", minHeight: 22 }}>{statusMsg}</div>
+
+        <div style={pdfStyles.btnRow}>
+          <button onClick={() => { setRect(null); setStatusMsg("Region cleared — will export full page."); }} style={pdfStyles.clearBtn}>Clear Region</button>
+          <div style={{ flex: 1 }} />
+          <button onClick={doExport} disabled={extracting || !pageCanvas} style={{ ...pdfStyles.confirmBtn, background: "#2a1a4a", borderColor: "#4a2a7a", color: "#b88adf", opacity: (extracting || !pageCanvas) ? 0.5 : 1 }}>
+            {extracting ? "⟳ Extracting…" : "📐 Extract & Export DXF"}
+          </button>
+          <button onClick={onClose} disabled={extracting} style={pdfStyles.cancelBtn}>✕ Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const pdfStyles = {
   overlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.82)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" },
   modal: { background: "#0c1020", border: "1px solid #1e3050", borderRadius: 6, display: "flex", flexDirection: "column", width: "92vw", height: "90vh", overflow: "hidden", boxShadow: "0 8px 40px rgba(0,0,0,0.7)" },
@@ -1116,12 +1378,12 @@ export default function DetectionTool({ project, user, onBack }) {
   // Settings
   const [showSettings,      setShowSettings]      = useState(false);
   const [showConfidence,    setShowConfidence]    = useState(false);
-  const [autoSimplifyDist,  setAutoSimplifyDist]  = useState("0"); // 0 = off
+  const [autoSimplifyDist,  setAutoSimplifyDist]  = useState("20"); // px, applied after inference
   const [areaTextColor,     setAreaTextColor]     = useState("#c0c0c0");
   const [perimTextColor,    setPerimTextColor]    = useState("#c0c0c0");
   const [measureTextColor,  setMeasureTextColor]  = useState("#00FFFF");
-  const [autoSave,          setAutoSave]          = useState(false);
-  const [autoSaveInterval,  setAutoSaveInterval]  = useState("30"); // seconds
+  const [autoSave,          setAutoSave]          = useState(true);
+  const [autoSaveInterval,  setAutoSaveInterval]  = useState("60"); // seconds
   const handleSaveRef = useRef(null); // always points to latest handleSave (avoids stale closure)
   const isDirty = useRef(false);      // true when annotations have changed since last save
 
@@ -1130,6 +1392,10 @@ export default function DetectionTool({ project, user, onBack }) {
 
   // Measure tool result
   const [lastLineIsMeasure, setLastLineIsMeasure] = useState(false); // true = measure tool, false = scale cal
+
+  // Right panel resize
+  const [rightPanelWidth, setRightPanelWidth] = useState(320);
+  const panelDragRef = useRef(null); // {startX, startWidth}
 
   // Custom classes
   const [customClasses, setCustomClasses] = useState([]);
@@ -1149,6 +1415,9 @@ export default function DetectionTool({ project, user, onBack }) {
   // Track which page images have already been uploaded to S3 (avoid re-uploading)
   const uploadedPageImages = useRef(new Set());
   const pdfFileRef = useRef(null); // raw PDF File object for multi-page upload
+  const pdfBytesRef = useRef(null); // PDF ArrayBuffer — kept for auto DXF export
+  const [showAutoDxf, setShowAutoDxf] = useState(false);
+  const [fetchingPdf, setFetchingPdf] = useState(false); // loading indicator for on-demand PDF fetch
 
   // File tracking & save state
   const [currentFile, setCurrentFile] = useState(null);
@@ -1231,12 +1500,15 @@ export default function DetectionTool({ project, user, onBack }) {
   const handlePdfChange = (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    pdfFileRef.current = file; // keep raw PDF for multi-page upload
+    pdfFileRef.current = file;
     setStatus(`Opening PDF: ${file.name} …`);
     const reader = new FileReader();
-    reader.onload = () => setPdfModalData(reader.result); // ArrayBuffer
+    reader.onload = () => {
+      const buf = reader.result;
+      pdfBytesRef.current = buf.slice(0); // persist for auto DXF
+      setPdfModalData(buf);
+    };
     reader.readAsArrayBuffer(file);
-    // reset input so same file can be re-uploaded
     e.target.value = "";
   };
 
@@ -1381,6 +1653,14 @@ export default function DetectionTool({ project, user, onBack }) {
             ext: data.originalExt,
             fileName: data.metadata?.fileName || null,
           };
+        }
+
+        // ── Fetch original PDF for auto DXF (background, non-blocking) ──
+        if (data.originalExt === 'pdf' && data.originalFileUrl) {
+          fetch(data.originalFileUrl)
+            .then(r => r.arrayBuffer())
+            .then(buf => { if (!cancelled) pdfBytesRef.current = buf.slice(0); })
+            .catch(() => {}); // silent — auto DXF just won't be available
         }
 
         // ── Load page images ─────────────────────────────────────────────
@@ -2474,6 +2754,105 @@ export default function DetectionTool({ project, user, onBack }) {
     const a = document.createElement("a"); a.href = url; a.download = "annotations.csv"; a.click();
   };
 
+  const exportDXF = () => {
+    // DXF export: current page only, one layer per class
+    const d = new Drawing();
+    d.setUnits(ratio ? "Meters" : "Unitless");
+
+    // Map hex color → closest AutoCAD Color Index (ACI)
+    const ACI_MAP = {
+      "#00B050": 3,   // Internal_Wall → green
+      "#0070C0": 5,   // External_Wall → blue
+      "#C00000": 1,   // zone → red
+      "#7030A0": 6,   // door → magenta
+      "#ED7D31": 30,  // window → orange
+      "#667799": 8,   // Unassigned → grey
+    };
+    const hexToAci = (hex) => ACI_MAP[hex] || 7; // default white
+
+    // Collect unique class names from annotations and create a layer for each
+    const classSet = new Set(annotations.map(a => a.clsName));
+    for (const cls of classSet) {
+      const hex = allClassColors[cls] || DEFAULT_COLOR;
+      d.addLayer(cls, hexToAci(hex), "CONTINUOUS");
+    }
+
+    const imgH = imgNaturalSize.h;
+    // Coordinate transform: flip Y, optionally convert px → meters
+    const tx = (x) => ratio ? x * ratio : x;
+    const ty = (y) => ratio ? (imgH - y) * ratio : (imgH - y);
+
+    for (const ann of annotations) {
+      d.setActiveLayer(ann.clsName);
+
+      if (ann.shapeType === "box") {
+        d.drawRect(tx(ann.x1), ty(ann.y2), tx(ann.x2), ty(ann.y1));
+      } else if (ann.shapeType === "line") {
+        d.drawLine(tx(ann.x1), ty(ann.y1), tx(ann.x2), ty(ann.y2));
+      } else if (ann.shapeType === "polygon" && ann.points && ann.points.length >= 3) {
+        const pts = ann.points.map(([px, py]) => [tx(px), ty(py)]);
+        d.drawPolyline(pts, true);
+      } else if (ann.shapeType === "circle" && ann.points && ann.points.length >= 3) {
+        // Circle stored as polygon points — compute center and radius
+        const xs = ann.points.map(p => p[0]), ys = ann.points.map(p => p[1]);
+        const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+        const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+        const r = Math.max(...xs) - cx;
+        d.drawCircle(tx(cx), ty(cy), ratio ? r * ratio : r);
+      }
+    }
+
+    const dxfString = d.toDxfString();
+    const pageSuffix = pageCount > 1 ? `_page${currentPageIndex + 1}` : '';
+    const blob = new Blob([dxfString], { type: "application/dxf" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = `annotations${pageSuffix}.dxf`; a.click();
+  };
+
+  // ─── On-demand PDF fetch for Auto DXF ──────────────────────────────────────
+  const handleAutoDxfClick = async () => {
+    // Already have the PDF bytes cached — open modal immediately
+    if (pdfBytesRef.current) {
+      setShowAutoDxf(true);
+      return;
+    }
+
+    // Need to fetch from S3
+    setFetchingPdf(true);
+    try {
+      const ext = existingFileInfoRef.current.ext;
+      const url = await getOriginalFileUrl(project.id, ext);
+      if (!url) throw new Error('Original PDF not found in storage');
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buf = await res.arrayBuffer();
+      pdfBytesRef.current = buf.slice(0); // cache for future use
+      setShowAutoDxf(true);
+    } catch (err) {
+      console.error('[handleAutoDxfClick] Failed to fetch PDF:', err);
+      alert('Could not fetch the original PDF from storage. Please try again.');
+    } finally {
+      setFetchingPdf(false);
+    }
+  };
+
+  // ─── Right panel drag-to-resize ──────────────────────────────────────────────
+  const onPanelDragStart = useCallback((e) => {
+    e.preventDefault();
+    panelDragRef.current = { startX: e.clientX, startWidth: rightPanelWidth };
+    const onMove = (ev) => {
+      const dx = panelDragRef.current.startX - ev.clientX; // dragging left = wider
+      setRightPanelWidth(Math.max(200, Math.min(600, panelDragRef.current.startWidth + dx)));
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      panelDragRef.current = null;
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, [rightPanelWidth]);
+
   // ─── Zone area summary ───────────────────────────────────────────────────────
   const zoneSummary = (() => {
     if (!ratio) return null;
@@ -2548,6 +2927,16 @@ export default function DetectionTool({ project, user, onBack }) {
           onConfirmSingle={handlePdfConfirmSingle}
           onConfirmMulti={handlePdfConfirmMulti}
           onCancel={() => { setPdfModalData(null); setStatus("PDF import cancelled."); }}
+        />
+      )}
+
+      {/* Auto DXF Modal */}
+      {showAutoDxf && (
+        <AutoDxfModal
+          pdfData={pdfBytesRef.current}
+          initialPage={currentPageIndex}
+          scaleRatio={ratio}
+          onClose={() => setShowAutoDxf(false)}
         />
       )}
 
@@ -2808,8 +3197,15 @@ export default function DetectionTool({ project, user, onBack }) {
           </div>
         </div>
 
+        {/* ── Right panel resize handle ── */}
+        <div
+          onMouseDown={onPanelDragStart}
+          style={{ width: 5, cursor: "col-resize", background: "transparent", flexShrink: 0, zIndex: 10 }}
+          onMouseEnter={e => e.currentTarget.style.background = "#2a4a7a"}
+          onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+        />
         {/* ── Right panel ── */}
-        <div style={styles.rightPanel}>
+        <div style={{ ...styles.rightPanel, width: rightPanelWidth }}>
           {/* Class visibility */}
           <div style={styles.section}>
             <div style={styles.sectionTitle}>VISIBILITY</div>
@@ -2876,7 +3272,7 @@ export default function DetectionTool({ project, user, onBack }) {
             </div>
             <button onClick={deleteSelected} style={{ ...styles.smallBtn, background: "#5c1010", width: "100%", marginTop: 4 }}>🗑 Delete Selected</button>
             <div style={{ ...styles.row, marginTop: 6 }}>
-              <span style={styles.label} title="RDP tolerance in image pixels">ε px:</span>
+              <span style={styles.label} title="RDP tolerance in image pixels">Shape Simplification (px):</span>
               <input
                 value={simplifyEpsilon}
                 onChange={e => setSimplifyEpsilon(e.target.value)}
@@ -2994,7 +3390,19 @@ export default function DetectionTool({ project, user, onBack }) {
           <div style={styles.section}>
             <div style={styles.sectionTitle}>EXPORT</div>
             <button onClick={exportJSON} style={{ ...styles.smallBtn, width: "100%", marginBottom: 4 }}>⬇ JSON</button>
-            <button onClick={exportCSV} style={{ ...styles.smallBtn, width: "100%", background: "#0d3d2a" }}>⬇ CSV</button>
+            <button onClick={exportCSV} style={{ ...styles.smallBtn, width: "100%", marginBottom: 4, background: "#0d3d2a" }}>⬇ CSV</button>
+            <button onClick={exportDXF} style={{ ...styles.smallBtn, width: "100%", marginBottom: 4, background: "#2a1a4a", borderColor: "#4a2a7a", color: "#b88adf" }}>⬇ DXF (Manual)</button>
+            {(() => {
+              const isPdf = existingFileInfoRef.current.ext === 'pdf' || pdfBytesRef.current;
+              return (
+                <button
+                  onClick={handleAutoDxfClick}
+                  disabled={!isPdf || fetchingPdf}
+                  title={isPdf ? "Extract vector geometry from the source PDF" : "Only available for PDF imports"}
+                  style={{ ...styles.smallBtn, width: "100%", background: isPdf ? "#1a2a4a" : "#111820", borderColor: isPdf ? "#2a4a7a" : "#1a2030", color: isPdf ? "#7ab8df" : "#3a4a5a", cursor: isPdf && !fetchingPdf ? "pointer" : "not-allowed" }}
+                >{fetchingPdf ? "⏳ Loading PDF…" : "⬇ DXF (Auto)"}</button>
+              );
+            })()}
           </div>
 
           {/* Annotation list */}

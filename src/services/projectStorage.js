@@ -297,15 +297,18 @@ export async function loadProject(projectId) {
     }
   }));
 
-  // Fallback: if no page-0.png but original.{ext} exists (old v1 projects)
+  // Generate presigned URL for original file if it exists in S3
+  // (always needed — used both as image fallback and to fetch the PDF for auto DXF)
   let originalFileUrl = null;
-  if (Object.keys(pageImageUrls).length === 0 && metadata?.originalExt) {
-    try {
-      const fileKey = await userPath(projectId, `original.${metadata.originalExt}`);
-      const urlResult = await getUrl({ path: fileKey });
-      originalFileUrl = urlResult.url.toString();
-    } catch (err) {
-      console.error('[loadProject] Failed to generate presigned URL:', err);
+  if (metadata?.originalExt) {
+    const originalKey = allPaths.find(p => p.endsWith(`/original.${metadata.originalExt}`));
+    if (originalKey) {
+      try {
+        const urlResult = await getUrl({ path: originalKey, options: { expiresIn: 120 } });
+        originalFileUrl = urlResult.url.toString();
+      } catch (err) {
+        console.error('[loadProject] Failed to generate presigned URL:', err);
+      }
     }
   }
 
@@ -318,6 +321,25 @@ export async function loadProject(projectId) {
     originalFileUrl,
     originalExt: metadata?.originalExt || null,
   };
+}
+
+// ─── GET ORIGINAL FILE URL ────────────────────────────────────────────────────
+// Returns a fresh presigned URL for the project's original file (PDF/image).
+// Useful for on-demand fetching (e.g. DXF auto export after session refresh).
+export async function getOriginalFileUrl(projectId, originalExt) {
+  if (!originalExt) return null;
+  const prefix = await userPrefix(projectId);
+  const allFiles = await list({ path: prefix });
+  const allPaths = (allFiles.items || []).map(item => item.path);
+  const originalKey = allPaths.find(p => p.endsWith(`/original.${originalExt}`));
+  if (!originalKey) return null;
+  try {
+    const urlResult = await getUrl({ path: originalKey, options: { expiresIn: 120 } });
+    return urlResult.url.toString();
+  } catch (err) {
+    console.error('[getOriginalFileUrl] Failed:', err);
+    return null;
+  }
 }
 
 // ─── DELETE PROJECT ───────────────────────────────────────────────────────────
