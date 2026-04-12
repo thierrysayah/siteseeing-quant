@@ -1,6 +1,20 @@
 import { uploadData, list, remove, getUrl } from 'aws-amplify/storage';
 import { getCurrentUser } from 'aws-amplify/auth';
 
+// ─── PAGE SLUG ────────────────────────────────────────────────────────────────
+// Turns a user page label into a stable, filesystem-safe S3 key segment.
+// Falls back to "page-{pageIndex}" when no label is set.
+export function pageSlugify(label, pageIndex) {
+  if (label && label.trim()) {
+    const slug = label.trim()
+      .replace(/[^a-zA-Z0-9_-]/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_|_$/g, '');
+    if (slug) return slug;
+  }
+  return `page-${pageIndex}`;
+}
+
 // ─── PATH HELPER ──────────────────────────────────────────────────────────────
 // Uses the Cognito User Pool sub (userId) — stable, user-specific, human-traceable
 // via Cognito User Pool console. Path: private/{sub}/projects/...
@@ -97,8 +111,9 @@ export async function createProject(id, name, owner) {
 }
 
 // ─── SAVE PROJECT ─────────────────────────────────────────────────────────────
-// Each page gets its own annotations file: annotations-page-0.json, annotations-page-1.json, …
-// Shared settings/scale go into a separate settings.json file.
+// Each page gets its own annotation file named after the user's page label:
+//   annotations-{slug}.json  and  page-{slug}.png
+// Stale files left by renamed pages are deleted after each save.
 export async function saveProject(
   projectId,
   { name, pages, scale, settings, file, pageImages, existingExt, existingFileName }
@@ -148,17 +163,21 @@ export async function saveProject(
     }).result,
   ];
 
-  // ── Per-page annotation files ─────────────────────────────────────────────
+  // ── Per-page annotation files — named after the page label slug ───────────
+  const currentSlugs = new Set(); // track valid slugs for cleanup later
   if (pages && pages.length > 0) {
     for (const p of pages) {
+      const slug = pageSlugify(p.label, p.pageIndex);
+      currentSlugs.add(slug);
       const pageAnnotPayload = {
         pageIndex: p.pageIndex,
+        pageSlug: slug,
         pdfPageNumber: p.pdfPageNumber ?? null,
         label: p.label ?? null,
         imageInfo: p.imageInfo || { w: 0, h: 0 },
         annotations: p.annotations || [],
       };
-      const pageAnnotKey = await userPath(projectId, `annotations-page-${p.pageIndex}.json`);
+      const pageAnnotKey = await userPath(projectId, `annotations-${slug}.json`);
       uploads.push(
         uploadData({
           path: pageAnnotKey,
@@ -181,10 +200,11 @@ export async function saveProject(
     );
   }
 
-  // Upload page images (PNG blobs) — only provided on initial import
+  // Upload page images — named after the page label slug
   if (pageImages && pageImages.length > 0) {
     for (const pi of pageImages) {
-      const pageKey = await userPath(projectId, `page-${pi.pageIndex}.png`);
+      const slug = pi.slug || pageSlugify(pi.label, pi.pageIndex);
+      const pageKey = await userPath(projectId, `page-${slug}.png`);
       uploads.push(
         uploadData({
           path: pageKey,
@@ -196,6 +216,33 @@ export async function saveProject(
   }
 
   await Promise.all(uploads);
+
+  // ── Cleanup: delete stale annotation files and page images from renamed pages
+  // Any annotations-*.json or page-*.png whose slug is not in currentSlugs is orphaned.
+  if (currentSlugs.size > 0) {
+    try {
+      const prefix = await userPrefix(projectId);
+      const existingFiles = await list({ path: prefix });
+      const toDelete = [];
+      for (const item of (existingFiles.items || [])) {
+        const p = item.path;
+        const annotMatch = p.match(/\/annotations-([^/]+)\.json$/);
+        if (annotMatch && !currentSlugs.has(annotMatch[1])) {
+          toDelete.push(p); // stale annotation file
+        }
+        const imageMatch = p.match(/\/page-([^/]+)\.png$/);
+        if (imageMatch && !currentSlugs.has(imageMatch[1])) {
+          toDelete.push(p); // stale page image
+        }
+      }
+      if (toDelete.length > 0) {
+        await Promise.all(toDelete.map(path => remove({ path })));
+      }
+    } catch (err) {
+      console.warn('[saveProject] Cleanup of stale files failed:', err);
+    }
+  }
+
   return metadata;
 }
 
@@ -217,11 +264,12 @@ export async function loadProject(projectId) {
   }
 
   // ── Detect schema version ──────────────────────────────────────────────
-  // v3: has settings.json + annotations-page-N.json files
+  // v3: has settings.json + per-page annotation files (annotations-{slug}.json)
   // v2: has single annotations.json with pages array
   // v1: has single annotations.json with flat annotations array
   const hasSettingsJson = allPaths.some(p => p.endsWith('/settings.json'));
-  const perPageFiles = allPaths.filter(p => /annotations-page-\d+\.json$/.test(p));
+  // Match any annotations-{anything}.json — covers both old (page-0) and new (label slug) naming
+  const perPageFiles = allPaths.filter(p => /\/annotations-[^/]+\.json$/.test(p));
   const hasOldAnnotations = allPaths.some(p => p.endsWith('/annotations.json'));
 
   let pages = [];
@@ -286,16 +334,17 @@ export async function loadProject(projectId) {
     return null;
   }
 
-  // ── Build presigned URLs for page images ──────────────────────────────
-  const pageImageUrls = {};
-  const pageFiles = allPaths.filter(p => /page-\d+\.png$/.test(p));
+  // ── Build presigned URLs for page images — keyed by slug ─────────────
+  // Supports both new naming (page-{slug}.png) and legacy (page-0.png)
+  const pageImageUrls = {}; // { slug: url }
+  const pageFiles = allPaths.filter(p => /\/page-[^/]+\.png$/.test(p));
 
   await Promise.all(pageFiles.map(async (filePath) => {
-    const match = filePath.match(/page-(\d+)\.png$/);
+    const match = filePath.match(/\/page-([^/]+)\.png$/);
     if (match) {
-      const idx = parseInt(match[1], 10);
+      const slug = match[1]; // may be a number string for legacy projects
       const urlResult = await getUrl({ path: filePath, options: { expiresIn: 120 } });
-      pageImageUrls[idx] = urlResult.url.toString();
+      pageImageUrls[slug] = urlResult.url.toString();
     }
   }));
 

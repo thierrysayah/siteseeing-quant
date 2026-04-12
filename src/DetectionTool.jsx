@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { loadProject, saveProject, getOriginalFileUrl } from "./services/projectStorage";
+import { loadProject, saveProject, getOriginalFileUrl, pageSlugify } from "./services/projectStorage";
 import Drawing from "dxf-writer";
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
@@ -1682,10 +1682,12 @@ export default function DetectionTool({ project, user, onBack }) {
         const pages = data.pages || [];
         const pageImageUrls = data.pageImageUrls || {};
 
-        // If we have page-N.png URLs, load them
+        // If we have page images in S3, load them (keyed by slug)
         if (Object.keys(pageImageUrls).length > 0) {
           const loadedPages = await Promise.all(pages.map(async (page) => {
-            const url = pageImageUrls[page.pageIndex];
+            // Try slug key first (new naming), fallback to legacy numeric key
+            const slug = page.pageSlug || pageSlugify(page.label, page.pageIndex);
+            const url = pageImageUrls[slug] || pageImageUrls[String(page.pageIndex)];
             if (!url) return { ...page, img: null };
             return new Promise((resolve) => {
               const img = new Image();
@@ -1705,7 +1707,10 @@ export default function DetectionTool({ project, user, onBack }) {
 
           allPagesRef.current = normalizedPages;
           setPageCount(normalizedPages.length);
-          uploadedPageImages.current = new Set(normalizedPages.map(p => p.pageIndex));
+          // Track uploaded slugs so we don't re-upload unchanged images
+          uploadedPageImages.current = new Set(
+            normalizedPages.map(p => p.pageSlug || pageSlugify(p.label, p.pageIndex))
+          );
 
           // Set first page as active
           const first = normalizedPages[0];
@@ -1774,17 +1779,18 @@ export default function DetectionTool({ project, user, onBack }) {
         annotations: p.annotations || [],
       }));
 
-      // Build pageImages for pages not yet uploaded to S3
+      // Build pageImages for pages not yet uploaded (or renamed) — tracked by slug
       const pageImages = [];
       for (const p of allPagesRef.current) {
-        if (!uploadedPageImages.current.has(p.pageIndex) && p.img) {
+        const slug = pageSlugify(p.label, p.pageIndex);
+        if (!uploadedPageImages.current.has(slug) && p.img) {
           // Convert img to PNG blob
           const canvas = document.createElement('canvas');
           canvas.width = p.imgNaturalSize?.w || p.img.naturalWidth;
           canvas.height = p.imgNaturalSize?.h || p.img.naturalHeight;
           canvas.getContext('2d').drawImage(p.img, 0, 0);
           const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-          if (blob) pageImages.push({ pageIndex: p.pageIndex, blob });
+          if (blob) pageImages.push({ pageIndex: p.pageIndex, label: p.label, slug, blob });
         }
       }
 
@@ -1804,8 +1810,8 @@ export default function DetectionTool({ project, user, onBack }) {
         existingFileName: existingFileInfoRef.current.fileName,
       });
 
-      // Mark newly uploaded pages so we don't re-upload them
-      for (const pi of pageImages) uploadedPageImages.current.add(pi.pageIndex);
+      // Mark newly uploaded slugs so we don't re-upload unchanged images
+      for (const pi of pageImages) uploadedPageImages.current.add(pi.slug);
 
       setSaveStatus('saved');
       setLastSaveTime(new Date());
