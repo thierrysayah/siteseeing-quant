@@ -153,6 +153,8 @@ export async function saveProject(
     for (const p of pages) {
       const pageAnnotPayload = {
         pageIndex: p.pageIndex,
+        pdfPageNumber: p.pdfPageNumber ?? null,
+        label: p.label ?? null,
         imageInfo: p.imageInfo || { w: 0, h: 0 },
         annotations: p.annotations || [],
       };

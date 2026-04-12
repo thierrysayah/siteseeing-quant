@@ -687,6 +687,7 @@ function PdfPageImportModal({ pdfData, onConfirmSingle, onConfirmMulti, onCancel
   const [totalPages, setTotalPages] = useState(0);
   const [thumbnails, setThumbnails] = useState([]); // [{pageIndex, dataUrl}]
   const [selectedPages, setSelectedPages] = useState(new Set());
+  const [pageLabels, setPageLabels] = useState({}); // { pdfPageIndex0based: string }
   const [loadError, setLoadError] = useState(null);
 
   // Step 2 — crop state
@@ -731,7 +732,13 @@ function PdfPageImportModal({ pdfData, onConfirmSingle, onConfirmMulti, onCancel
           thumbs.push({ pageIndex: i, dataUrl: null });
         }
       }
-      if (!cancelled) setThumbnails(thumbs);
+      if (!cancelled) {
+        setThumbnails(thumbs);
+        // Default label: "Page N" using 1-based PDF page number
+        const defaults = {};
+        thumbs.forEach(t => { defaults[t.pageIndex] = `Page ${t.pageIndex + 1}`; });
+        setPageLabels(defaults);
+      }
     }).catch((err) => {
       console.error('[PdfPageImportModal] Failed to load PDF:', err);
       if (!cancelled) setLoadError(err?.message || 'Failed to parse PDF.');
@@ -887,7 +894,12 @@ function PdfPageImportModal({ pdfData, onConfirmSingle, onConfirmMulti, onCancel
       } else {
         outCanvas = pc;
       }
-      return { pageIndex: idx, canvas: outCanvas };
+      return {
+        pageIndex: idx,
+        pdfPageNumber: fp.origPageIndex + 1, // 1-based PDF page number
+        label: pageLabels[fp.origPageIndex] || `Page ${fp.origPageIndex + 1}`,
+        canvas: outCanvas,
+      };
     });
 
     if (results.length === 1) {
@@ -963,9 +975,12 @@ function PdfPageImportModal({ pdfData, onConfirmSingle, onConfirmMulti, onCancel
                         ) : (
                           <div style={{ width: 100, height: 130, background: "#0a1020", display: "flex", alignItems: "center", justifyContent: "center", color: "#3a5a7a", fontSize: 10 }}>Error</div>
                         )}
-                        <div style={{ marginTop: 4, fontSize: 10, fontFamily: "monospace", color: isSelected ? "#8cf" : "#4a6a7a" }}>
-                          Page {pageIndex + 1}
-                        </div>
+                        <input
+                          value={pageLabels[pageIndex] || `Page ${pageIndex + 1}`}
+                          onChange={e => { e.stopPropagation(); setPageLabels(prev => ({ ...prev, [pageIndex]: e.target.value })); }}
+                          onClick={e => e.stopPropagation()}
+                          style={{ marginTop: 4, width: "90%", fontSize: 10, fontFamily: "monospace", background: "#0a1828", border: "1px solid #1a3050", borderRadius: 3, color: isSelected ? "#8cf" : "#4a6a7a", padding: "2px 4px", textAlign: "center", outline: "none" }}
+                        />
                         <div style={{
                           marginTop: 2, width: 14, height: 14, borderRadius: 3,
                           border: isSelected ? "1px solid #4af" : "1px solid #2a3a50",
@@ -1016,7 +1031,7 @@ function PdfPageImportModal({ pdfData, onConfirmSingle, onConfirmMulti, onCancel
                 style={{ ...pdfStyles.pageBtn, opacity: cropIdx === 0 ? 0.35 : 1 }}
               >◀ Prev</button>
               <span style={{ color: "#8ab", fontSize: 12, fontFamily: "monospace", minWidth: 80, textAlign: "center" }}>
-                Page {cropIdx + 1} / {fullResPages.length}
+                {pageLabels[fullResPages[cropIdx]?.origPageIndex] || `Page ${(fullResPages[cropIdx]?.origPageIndex ?? cropIdx) + 1}`} ({cropIdx + 1}/{fullResPages.length})
               </span>
               <button
                 onClick={() => setCropIdx(i => Math.min(fullResPages.length - 1, i + 1))}
@@ -1566,11 +1581,11 @@ export default function DetectionTool({ project, user, onBack }) {
     const loadedPages = [];
     let loadedCount = 0;
 
-    pagesData.forEach(({ pageIndex, canvas }) => {
+    pagesData.forEach(({ pageIndex, pdfPageNumber, label, canvas }) => {
       const img = new Image();
       img.onload = () => {
         const imgSize = { w: canvas.width, h: canvas.height };
-        loadedPages.push({ pageIndex, img, imgNaturalSize: imgSize, annotations: [] });
+        loadedPages.push({ pageIndex, pdfPageNumber, label, img, imgNaturalSize: imgSize, annotations: [] });
         loadedCount++;
         if (loadedCount === pagesData.length) {
           // All pages loaded — sort by pageIndex and set state
@@ -1753,6 +1768,8 @@ export default function DetectionTool({ project, user, onBack }) {
       // Build v2 pages array from allPagesRef
       const pagesToSave = allPagesRef.current.map(p => ({
         pageIndex: p.pageIndex,
+        pdfPageNumber: p.pdfPageNumber ?? null,
+        label: p.label ?? null,
         imageInfo: p.imgNaturalSize || { w: 0, h: 0 },
         annotations: p.annotations || [],
       }));
@@ -2716,6 +2733,14 @@ export default function DetectionTool({ project, user, onBack }) {
   };
 
   // ─── Export ──────────────────────────────────────────────────────────────────
+  // Returns the label for the current page, or a fallback string
+  const currentPageLabel = () => {
+    const p = allPagesRef.current.find(pg => pg.pageIndex === currentPageIndex);
+    return p?.label || (p?.pdfPageNumber != null ? `Page ${p.pdfPageNumber}` : `Page ${currentPageIndex + 1}`);
+  };
+  // Sanitize label for use in filenames
+  const labelToSlug = (lbl) => lbl.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+
   const exportJSON = () => {
     // JSON export: current page only
     const data = annotations.map(ann => {
@@ -2724,9 +2749,9 @@ export default function DetectionTool({ project, user, onBack }) {
       const areaM2 = ratio ? areaPx * ratio * ratio : null;
       const perimPx = (ann.shapeType === "polygon" || ann.shapeType === "line" || ann.clsName === "zone") ? annotationPerimeterPx(ann) : null;
       const perimM = ratio && perimPx != null ? perimPx * ratio : null;
-      return { page: currentPageIndex + 1, num_id: ann.numId ?? null, shape_type: ann.shapeType, class: ann.clsName, x1, y1, x2, y2, polygon_points: ann.points, confidence: ann.confidence, source_model: ann.sourceModel, zone_tag: ann.zoneTag, area_pixels2: areaPx, area_m2: areaM2, perimeter_pixels: perimPx, perimeter_m: perimM };
+      return { page: currentPageLabel(), num_id: ann.numId ?? null, shape_type: ann.shapeType, class: ann.clsName, x1, y1, x2, y2, polygon_points: ann.points, confidence: ann.confidence, source_model: ann.sourceModel, zone_tag: ann.zoneTag, area_pixels2: areaPx, area_m2: areaM2, perimeter_pixels: perimPx, perimeter_m: perimM };
     });
-    const pageSuffix = pageCount > 1 ? `_page${currentPageIndex + 1}` : '';
+    const pageSuffix = pageCount > 1 ? `_${labelToSlug(currentPageLabel())}` : '';
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = `annotations${pageSuffix}.json`; a.click();
@@ -2745,7 +2770,8 @@ export default function DetectionTool({ project, user, onBack }) {
         const areaM2 = ratio ? areaPx * ratio * ratio : "";
         const perimPx = (ann.shapeType === "polygon" || ann.shapeType === "line" || ann.clsName === "zone") ? annotationPerimeterPx(ann) : "";
         const perimM = ratio && perimPx !== "" ? perimPx * ratio : "";
-        rows.push([page.pageIndex + 1, ann.numId ?? "", ann.shapeType, ann.clsName, x1, y1, x2, y2, ann.points ? JSON.stringify(ann.points) : "", ann.confidence ?? "", ann.sourceModel ?? "", ann.zoneTag ?? "", areaPx, areaM2, perimPx, perimM]);
+        const pageLabel = page.label || (page.pdfPageNumber != null ? `Page ${page.pdfPageNumber}` : `Page ${page.pageIndex + 1}`);
+        rows.push([pageLabel, ann.numId ?? "", ann.shapeType, ann.clsName, x1, y1, x2, y2, ann.points ? JSON.stringify(ann.points) : "", ann.confidence ?? "", ann.sourceModel ?? "", ann.zoneTag ?? "", areaPx, areaM2, perimPx, perimM]);
       }
     }
     const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
@@ -2803,7 +2829,7 @@ export default function DetectionTool({ project, user, onBack }) {
     }
 
     const dxfString = d.toDxfString();
-    const pageSuffix = pageCount > 1 ? `_page${currentPageIndex + 1}` : '';
+    const pageSuffix = pageCount > 1 ? `_${labelToSlug(currentPageLabel())}` : '';
     const blob = new Blob([dxfString], { type: "application/dxf" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = `annotations${pageSuffix}.dxf`; a.click();
@@ -3139,7 +3165,7 @@ export default function DetectionTool({ project, user, onBack }) {
                       color: isActive ? "#8cf" : "#5a7a9a",
                     }}
                   >
-                    Page {p.pageIndex + 1}
+                    {p.label || (p.pdfPageNumber != null ? `Page ${p.pdfPageNumber}` : `Page ${p.pageIndex + 1}`)}
                     {annCount > 0 && (
                       <span style={styles.pageBadge}>{annCount}</span>
                     )}
@@ -3370,7 +3396,7 @@ export default function DetectionTool({ project, user, onBack }) {
                 value={realLength}
                 onChange={e => { const v = e.target.value; if (v === '' || /^\d+$/.test(v)) setRealLength(v); }}
                 style={{ ...styles.smallInput, width: 48 }}
-                placeholder="1"
+                placeholder=""
                 title="Real-world length"
               />
               <span style={{ color: "#5a7a9a", fontSize: 12 }}>:</span>
@@ -3383,7 +3409,7 @@ export default function DetectionTool({ project, user, onBack }) {
               />
             </div>
             <button onClick={calculateRatio} style={{ ...styles.smallBtn, width: "100%" }}>Set Scale</button>
-            {ratio != null && <div style={styles.ratioDisplay}>1 px = {ratio.toFixed(6)} m</div>}
+            {ratio != null && <div style={styles.ratioDisplay}>px = {ratio.toFixed(6)} m</div>}
           </div>
 
           {/* Export */}
