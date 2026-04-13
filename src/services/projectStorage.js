@@ -1,5 +1,6 @@
 import { uploadData, list, remove, getUrl } from 'aws-amplify/storage';
 import { getCurrentUser } from 'aws-amplify/auth';
+import { fetchAuthSession } from 'aws-amplify/auth';
 
 // ─── PAGE SLUG ────────────────────────────────────────────────────────────────
 // Turns a user page label into a stable, filesystem-safe S3 key segment.
@@ -16,23 +17,28 @@ export function pageSlugify(label, pageIndex) {
 }
 
 // ─── PATH HELPER ──────────────────────────────────────────────────────────────
-// Uses the Cognito User Pool sub (userId) — stable, user-specific, human-traceable
-// via Cognito User Pool console. Path: private/{sub}/projects/...
-async function getUserSub() {
+// For Individual/Pro: private/{cognito-sub}/projects/...
+// For Enterprise:     private/org-{orgId}/projects/...  (shared across the org)
+async function getBasePrefix() {
   const { userId } = await getCurrentUser();
-  return userId;
+  try {
+    const session = await fetchAuthSession();
+    const orgId = session?.tokens?.idToken?.payload?.['custom:orgId'];
+    if (orgId) return `private/org-${orgId}/projects/`;
+  } catch {
+    // fall through to personal prefix
+  }
+  return `private/${userId}/projects/`;
 }
 
 async function userPath(projectId, filename) {
-  const sub = await getUserSub();
-  return `private/${sub}/projects/${projectId}/${filename}`;
+  const base = await getBasePrefix();
+  return `${base}${projectId}/${filename}`;
 }
 
 async function userPrefix(projectId) {
-  const sub = await getUserSub();
-  return projectId
-    ? `private/${sub}/projects/${projectId}/`
-    : `private/${sub}/projects/`;
+  const base = await getBasePrefix();
+  return projectId ? `${base}${projectId}/` : base;
 }
 
 // ─── CACHE-SAFE DOWNLOAD ──────────────────────────────────────────────────────

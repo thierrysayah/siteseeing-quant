@@ -11,6 +11,7 @@ import './App.css';
 
 import DetectionTool from './DetectionTool';
 import ProjectsPage from './pages/ProjectsPage';
+import { getUserTier, getLimits, tierLabel, tierColor } from './services/userService';
 
 function LoginScreen() {
   return (
@@ -56,9 +57,11 @@ function MainApp() {
   const [currentPage, setCurrentPage] = useState('projects');
   const [selectedProject, setSelectedProject] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [userTierInfo, setUserTierInfo] = useState({ tier: 'individual', role: null });
 
   // Reset to projects page whenever a new sign-in happens (user transitions
   // from null → non-null), so the editor never persists across sessions.
+  // Also fetch the user's tier on login.
   const prevUserRef = useRef(user);
   useEffect(() => {
     const prev = prevUserRef.current;
@@ -67,8 +70,15 @@ function MainApp() {
       setCurrentPage('projects');
       setSelectedProject(null);
       setRefreshKey((k) => k + 1);
+      getUserTier().then(setUserTierInfo).catch(() => {});
     }
   }, [user]);
+
+  // Also load tier on first render if user is already logged in
+  useEffect(() => {
+    if (user) getUserTier().then(setUserTierInfo).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (!user) {
     return <LoginScreen />;
@@ -94,6 +104,22 @@ function MainApp() {
         </span>
 
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+          {/* Tier badge */}
+          <span style={{
+            fontFamily: 'monospace',
+            fontSize: 10,
+            fontWeight: 700,
+            letterSpacing: '1.5px',
+            textTransform: 'uppercase',
+            color: tierColor(userTierInfo.tier, userTierInfo.role),
+            border: `1px solid ${tierColor(userTierInfo.tier, userTierInfo.role)}`,
+            borderRadius: 4,
+            padding: '2px 8px',
+            opacity: 0.85,
+          }}>
+            {tierLabel(userTierInfo.tier, userTierInfo.role)}
+          </span>
+
           {currentPage === 'editor' && (
             <button className="signout-btn" onClick={handleBackToProjects}>
               Back to Projects
@@ -111,12 +137,14 @@ function MainApp() {
           onOpenProject={handleOpenProject}
           user={user}
           refreshKey={refreshKey}
+          userTierInfo={userTierInfo}
         />
       ) : (
         <DetectionTool
           project={selectedProject}
           user={user}
           onBack={handleBackToProjects}
+          userTierInfo={userTierInfo}
         />
       )}
     </div>

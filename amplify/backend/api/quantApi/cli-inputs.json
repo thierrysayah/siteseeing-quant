@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "paths": {
+    "/user/profile": {
+      "name": "/user/profile",
+      "lambdaFunction": "getUserProfile",
+      "permissions": {
+        "setting": "private",
+        "auth": [
+          "read"
+        ]
+      }
+    },
+    "/org/grant-access": {
+      "name": "/org/grant-access",
+      "lambdaFunction": "grantProjectAccess",
+      "permissions": {
+        "setting": "private",
+        "auth": [
+          "create",
+          "update"
+        ]
+      }
+    }
+  }
+}

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import ProjectCard from "./ProjectCard";
 import NewProjectModal from "./NewProjectModal";
 import { listProjects, createProject, deleteProject } from "../services/projectStorage";
+import { getLimits } from "../services/userService";
 import "./ProjectsPage.css";
 
 function formatDate(isoString) {
@@ -23,11 +24,14 @@ function generateId(name) {
   return `${slug}-${suffix}`;
 }
 
-export default function ProjectsPage({ onOpenProject, user, refreshKey }) {
+export default function ProjectsPage({ onOpenProject, user, refreshKey, userTierInfo = { tier: 'individual', role: null } }) {
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [showModal, setShowModal] = useState(false);
+
+  const limits = getLimits(userTierInfo.tier, userTierInfo.role);
+  const atLimit = limits.maxProjects !== Infinity && projects.length >= limits.maxProjects;
 
   useEffect(() => {
     let cancelled = false;
@@ -89,12 +93,23 @@ export default function ProjectsPage({ onOpenProject, user, refreshKey }) {
         <div className="pp-header-right">
           {!loading && (
             <span className="pp-project-count">
-              {projects.length} project{projects.length !== 1 ? "s" : ""}
+              {projects.length}
+              {limits.maxProjects !== Infinity ? ` / ${limits.maxProjects}` : ""} project{projects.length !== 1 ? "s" : ""}
             </span>
           )}
-          <button className="pp-btn-primary" onClick={() => setShowModal(true)}>
+          <button
+            className="pp-btn-primary"
+            onClick={() => atLimit ? null : setShowModal(true)}
+            disabled={atLimit}
+            title={atLimit ? `Upgrade your plan to create more than ${limits.maxProjects} project${limits.maxProjects !== 1 ? 's' : ''}` : ''}
+          >
             + New Project
           </button>
+          {atLimit && (
+            <span className="pp-upgrade-hint">
+              ↑ Upgrade to add more
+            </span>
+          )}
         </div>
       </header>
 

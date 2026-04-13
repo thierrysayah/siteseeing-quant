@@ -1,4 +1,28 @@
 {
+  "api": {
+    "quantApi": {
+      "dependsOn": [
+        {
+          "attributes": [
+            "Name",
+            "Arn"
+          ],
+          "category": "function",
+          "resourceName": "getUserProfile"
+        },
+        {
+          "attributes": [
+            "Name",
+            "Arn"
+          ],
+          "category": "function",
+          "resourceName": "grantProjectAccess"
+        }
+      ],
+      "providerPlugin": "awscloudformation",
+      "service": "API Gateway"
+    }
+  },
   "auth": {
     "estimationplatformece78c7f": {
       "customAuth": false,
@@ -25,6 +49,20 @@
       "service": "Cognito"
     }
   },
+  "function": {
+    "getUserProfile": {
+      "build": true,
+      "dependsOn": [],
+      "providerPlugin": "awscloudformation",
+      "service": "Lambda"
+    },
+    "grantProjectAccess": {
+      "build": true,
+      "dependsOn": [],
+      "providerPlugin": "awscloudformation",
+      "service": "Lambda"
+    }
+  },
   "hosting": {
     "amplifyhosting": {
       "providerPlugin": "awscloudformation",
@@ -33,6 +71,38 @@
     }
   },
   "parameters": {
+    "AMPLIFY_function_getUserProfile_deploymentBucketName": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "getUserProfile"
+        }
+      ]
+    },
+    "AMPLIFY_function_getUserProfile_s3Key": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "getUserProfile"
+        }
+      ]
+    },
+    "AMPLIFY_function_grantProjectAccess_deploymentBucketName": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "grantProjectAccess"
+        }
+      ]
+    },
+    "AMPLIFY_function_grantProjectAccess_s3Key": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "grantProjectAccess"
+        }
+      ]
+    },
     "AMPLIFY_hosting_amplifyhosting_appId": {
       "usedBy": [
         {

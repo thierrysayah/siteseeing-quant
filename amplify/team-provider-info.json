@@ -9,7 +9,8 @@
       "UnauthRoleName": "amplify-estimationplatform-dev-20748-unauthRole",
       "StackName": "amplify-estimationplatform-dev-20748",
       "StackId": "arn:aws:cloudformation:eu-west-3:851725386383:stack/amplify-estimationplatform-dev-20748/bbfd4000-2633-11f1-ae76-06b1c15126d7",
-      "AmplifyAppId": "d28h0kazpkiv4s"
+      "AmplifyAppId": "d28h0kazpkiv4s",
+      "APIGatewayAuthURL": "https://s3.amazonaws.com/amplify-estimationplatform-dev-20748-deployment/amplify-cfn-templates/api/APIGatewayAuthStack.json"
     },
     "categories": {
       "hosting": {
@@ -26,6 +27,19 @@
           "bucketName": "estimation-platform-user-data",
           "region": "eu-west-3"
         }
+      },
+      "function": {
+        "getUserProfile": {
+          "deploymentBucketName": "amplify-estimationplatform-dev-20748-deployment",
+          "s3Key": "amplify-builds/getUserProfile-46525178667a2b61366c-build.zip"
+        },
+        "grantProjectAccess": {
+          "deploymentBucketName": "amplify-estimationplatform-dev-20748-deployment",
+          "s3Key": "amplify-builds/grantProjectAccess-61726b484f3437415474-build.zip"
+        }
+      },
+      "api": {
+        "quantApi": {}
       }
     }
   }

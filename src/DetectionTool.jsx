@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { loadProject, saveProject, getOriginalFileUrl, pageSlugify } from "./services/projectStorage";
+import { getLimits, tierLabel, tierColor } from "./services/userService";
 import Drawing from "dxf-writer";
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
@@ -1264,7 +1265,13 @@ const pdfStyles = {
 };
 
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
-export default function DetectionTool({ project, user, onBack }) {
+export default function DetectionTool({ project, user, onBack, userTierInfo = { tier: 'individual', role: null } }) {
+  // ─── Tier / permissions ─────────────────────────────────────────────────────
+  const tierLimits = getLimits(userTierInfo.tier, userTierInfo.role);
+  const isReadOnly = tierLimits.isReadOnly; // Enterprise Manager
+  const canExportDXF = tierLimits.canExportDXF;
+  const canUseCustomClasses = tierLimits.canUseCustomClasses;
+
   // Image state
   const [originalImg, setOriginalImg] = useState(null); // HTMLImageElement
   const [imgNaturalSize, setImgNaturalSize] = useState({ w: 0, h: 0 });
@@ -1830,9 +1837,9 @@ export default function DetectionTool({ project, user, onBack }) {
   // Mark dirty whenever annotations change
   useEffect(() => { isDirty.current = true; }, [annotations]);
 
-  // Auto-save interval — only saves if something changed since last save
+  // Auto-save interval — only saves if something changed since last save (disabled for read-only)
   useEffect(() => {
-    if (!autoSave || !project?.id) return;
+    if (!autoSave || !project?.id || isReadOnly) return;
     const secs = parseInt(autoSaveInterval, 10);
     if (isNaN(secs) || secs < 10) return;
     const id = setInterval(() => {
@@ -3057,19 +3064,28 @@ export default function DetectionTool({ project, user, onBack }) {
         </div>
       )}
 
+      {/* View Only banner for Enterprise Managers */}
+      {isReadOnly && (
+        <div style={{ background: "#1a1000", borderBottom: "1px solid #5a4010", padding: "6px 16px", display: "flex", alignItems: "center", gap: 10, fontFamily: "monospace", fontSize: 11 }}>
+          <span style={{ color: "#c0a040", fontWeight: 700, letterSpacing: 1 }}>👁 VIEW ONLY</span>
+          <span style={{ color: "#7a6030" }}>You have read-only access to this project. Editing and saving are disabled.</span>
+          <span style={{ marginLeft: "auto", color: tierColor(userTierInfo.tier, userTierInfo.role), fontWeight: 600 }}>{tierLabel(userTierInfo.tier, userTierInfo.role)}</span>
+        </div>
+      )}
+
       {/* Header */}
       <div style={styles.header}>
         <span style={styles.logo}>⬡ QUANT 1.0 </span>
         <span style={styles.statusBar}>{status}</span>
-        <label style={styles.uploadBtn}>
+        {!isReadOnly && <label style={styles.uploadBtn}>
           📂 Load Image
           <input type="file" accept="image/*" onChange={handleFileChange} style={{ display: "none" }} />
-        </label>
-        <label style={{ ...styles.uploadBtn, background: "#0d2e4a", borderColor: "#1a5070", color: "#6cf" }}>
+        </label>}
+        {!isReadOnly && <label style={{ ...styles.uploadBtn, background: "#0d2e4a", borderColor: "#1a5070", color: "#6cf" }}>
           📄 Import PDF
           <input type="file" accept="application/pdf,.pdf" onChange={handlePdfChange} style={{ display: "none" }} />
-        </label>
-        {project?.id && (
+        </label>}
+        {project?.id && !isReadOnly && (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
             <button
               onClick={handleSave}
@@ -3202,11 +3218,11 @@ export default function DetectionTool({ project, user, onBack }) {
             )}
             <canvas
               ref={canvasRef}
-              style={{ display: originalImg ? "block" : "none", cursor: drawMode === "select" ? "default" : "crosshair" }}
-              onMouseDown={onMouseDown}
-              onMouseMove={onMouseMove}
-              onMouseUp={onMouseUp}
-              onDoubleClick={onDoubleClick}
+              style={{ display: originalImg ? "block" : "none", cursor: isReadOnly ? "default" : drawMode === "select" ? "default" : "crosshair", pointerEvents: isReadOnly ? "none" : "auto" }}
+              onMouseDown={isReadOnly ? undefined : onMouseDown}
+              onMouseMove={isReadOnly ? undefined : onMouseMove}
+              onMouseUp={isReadOnly ? undefined : onMouseUp}
+              onDoubleClick={isReadOnly ? undefined : onDoubleClick}
             />
           </div>
 
@@ -3218,7 +3234,7 @@ export default function DetectionTool({ project, user, onBack }) {
             <button onClick={() => runInference(false)} disabled={inferring || !originalImg} style={styles.inferBtn}>
               {inferring ? "⟳ Running…" : "▶ ⊞ Run Inference"}
             </button> */}
-            <button onClick={() => runInference(true)} disabled={inferring || !originalImg} style={{ ...styles.inferBtn, background: "#0e4d6e" }}>
+            <button onClick={() => runInference(true)} disabled={inferring || !originalImg || isReadOnly} style={{ ...styles.inferBtn, background: "#0e4d6e", opacity: isReadOnly ? 0.4 : 1, cursor: isReadOnly ? "not-allowed" : "pointer" }}>
               ▶ Run Analysis
             </button>
             <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", color: "#5a7a9a", fontSize: 11, userSelect: "none" }}>
@@ -3343,10 +3359,13 @@ export default function DetectionTool({ project, user, onBack }) {
           {/* Custom class manager */}
           <div style={styles.section}>
             <div style={{ ...styles.sectionTitle, display: "flex", justifyContent: "space-between" }}>
-              CUSTOM CLASSES
-              <button onClick={() => setShowClassManager(v => !v)} style={styles.tinyBtn}>{showClassManager ? "▲" : "▼"}</button>
+              CUSTOM CLASSES{!canUseCustomClasses && <span style={{ fontSize: 9, color: "#c0a040", letterSpacing: 0 }}>🔒 Pro</span>}
+              {canUseCustomClasses && <button onClick={() => setShowClassManager(v => !v)} style={styles.tinyBtn}>{showClassManager ? "▲" : "▼"}</button>}
             </div>
-            {showClassManager && (
+            {!canUseCustomClasses && (
+              <div style={{ fontSize: 10, color: "#4a6a7a", fontStyle: "italic" }}>Upgrade to Pro to add custom classes.</div>
+            )}
+            {canUseCustomClasses && showClassManager && (
               <div>
                 {customClasses.length === 0 && (
                   <div style={{ color: "#3a5070", fontSize: 10, marginBottom: 4 }}>No custom classes yet.</div>
@@ -3423,16 +3442,26 @@ export default function DetectionTool({ project, user, onBack }) {
             <div style={styles.sectionTitle}>EXPORT</div>
             <button onClick={exportJSON} style={{ ...styles.smallBtn, width: "100%", marginBottom: 4 }}>⬇ JSON</button>
             <button onClick={exportCSV} style={{ ...styles.smallBtn, width: "100%", marginBottom: 4, background: "#0d3d2a" }}>⬇ CSV</button>
-            <button onClick={exportDXF} style={{ ...styles.smallBtn, width: "100%", marginBottom: 4, background: "#2a1a4a", borderColor: "#4a2a7a", color: "#b88adf" }}>⬇ DXF (Manual)</button>
+            <button
+              onClick={canExportDXF ? exportDXF : undefined}
+              disabled={!canExportDXF}
+              title={canExportDXF ? undefined : "Upgrade to Pro or Enterprise to export DXF"}
+              style={{ ...styles.smallBtn, width: "100%", marginBottom: 4, background: canExportDXF ? "#2a1a4a" : "#111820", borderColor: canExportDXF ? "#4a2a7a" : "#1a2030", color: canExportDXF ? "#b88adf" : "#3a4a5a", cursor: canExportDXF ? "pointer" : "not-allowed" }}
+            >⬇ DXF (Manual){!canExportDXF && " 🔒"}</button>
             {(() => {
               const isPdf = existingFileInfoRef.current.ext === 'pdf' || pdfBytesRef.current;
+              const enabled = canExportDXF && isPdf && !fetchingPdf;
+              const title = !canExportDXF
+                ? "Upgrade to Pro or Enterprise to export DXF"
+                : !isPdf ? "Only available for PDF imports"
+                : "Extract vector geometry from the source PDF";
               return (
                 <button
-                  onClick={handleAutoDxfClick}
-                  disabled={!isPdf || fetchingPdf}
-                  title={isPdf ? "Extract vector geometry from the source PDF" : "Only available for PDF imports"}
-                  style={{ ...styles.smallBtn, width: "100%", background: isPdf ? "#1a2a4a" : "#111820", borderColor: isPdf ? "#2a4a7a" : "#1a2030", color: isPdf ? "#7ab8df" : "#3a4a5a", cursor: isPdf && !fetchingPdf ? "pointer" : "not-allowed" }}
-                >{fetchingPdf ? "⏳ Loading PDF…" : "⬇ DXF (Auto)"}</button>
+                  onClick={canExportDXF ? handleAutoDxfClick : undefined}
+                  disabled={!enabled}
+                  title={title}
+                  style={{ ...styles.smallBtn, width: "100%", background: enabled ? "#1a2a4a" : "#111820", borderColor: enabled ? "#2a4a7a" : "#1a2030", color: enabled ? "#7ab8df" : "#3a4a5a", cursor: enabled ? "pointer" : "not-allowed" }}
+                >{fetchingPdf ? "⏳ Loading PDF…" : `⬇ DXF (Auto)${!canExportDXF ? " 🔒" : ""}`}</button>
               );
             })()}
           </div>

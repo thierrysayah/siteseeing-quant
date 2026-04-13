@@ -101,6 +101,18 @@
   letter-spacing: 1px;
 }
 
+.pp-upgrade-hint {
+  font-family: var(--pp-mono);
+  font-size: 10px;
+  color: #c0a040;
+  letter-spacing: 0.5px;
+  border: 1px solid #5a4a10;
+  border-radius: 4px;
+  padding: 3px 8px;
+  background: rgba(192, 160, 64, 0.08);
+  white-space: nowrap;
+}
+
 /* ── Main Content ──────────────────────────────────────────────────────────── */
 .pp-main {
   flex: 1;
