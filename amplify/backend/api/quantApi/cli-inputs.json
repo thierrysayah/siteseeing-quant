@@ -17,8 +17,10 @@
       "permissions": {
         "setting": "private",
         "auth": [
+          "read",
           "create",
-          "update"
+          "update",
+          "delete"
         ]
       }
     }

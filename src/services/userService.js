@@ -1,5 +1,7 @@
 import { fetchAuthSession } from 'aws-amplify/auth';
 
+const API_URL = 'https://ed5boc93x2.execute-api.eu-west-3.amazonaws.com/dev';
+
 // ─── TIER DEFINITIONS ────────────────────────────────────────────────────────
 // Maps Cognito group names → tier/role.
 // Groups must exist in the Cognito User Pool:
@@ -85,4 +87,22 @@ export function tierColor(tier, role) {
   if (tier === 'enterprise') return '#40a0c0';
   if (tier === 'pro') return '#7060e0';
   return '#4a7a9a';
+}
+
+// ─── FETCH USER PROFILE FROM LAMBDA ──────────────────────────────────────────
+// Returns { tier, role, orgId, projectGrants } from DynamoDB via API Gateway.
+// Falls back to JWT-only tier if the Lambda call fails.
+export async function fetchUserProfile() {
+  try {
+    const session = await fetchAuthSession();
+    const idToken = session?.tokens?.idToken?.toString();
+    if (!idToken) return null;
+    const res = await fetch(`${API_URL}/user/profile`, {
+      headers: { Authorization: idToken },
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
 }

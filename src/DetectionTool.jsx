@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { loadProject, saveProject, getOriginalFileUrl, pageSlugify } from "./services/projectStorage";
+import { loadProject, saveProject, getOriginalFileUrl, pageSlugify, grantProjectAccess, getProjectGrants, revokeProjectAccess } from "./services/projectStorage";
 import { getLimits, tierLabel, tierColor } from "./services/userService";
 import Drawing from "dxf-writer";
 
@@ -1419,6 +1419,14 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
   const [rightPanelWidth, setRightPanelWidth] = useState(320);
   const panelDragRef = useRef(null); // {startX, startWidth}
 
+  // Share panel (Enterprise QS only)
+  const [showSharePanel, setShowSharePanel] = useState(false);
+  const [shareEmail, setShareEmail] = useState('');
+  const [shareGrants, setShareGrants] = useState([]); // [{managerId, managerEmail, managerName}]
+  const [shareLoading, setShareLoading] = useState(false);
+  const [shareError, setShareError] = useState(null);
+  const [shareSuccess, setShareSuccess] = useState(null);
+
   // Custom classes
   const [customClasses, setCustomClasses] = useState([]);
   const [showClassManager, setShowClassManager] = useState(false);
@@ -1645,7 +1653,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
     setPageCount(0);
     uploadedPageImages.current = new Set();
 
-    loadProject(project.id)
+    loadProject(project.id, project.ownerSub || null)
       .then(async (data) => {
         if (cancelled || !data) return;
 
@@ -2860,7 +2868,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
     setFetchingPdf(true);
     try {
       const ext = existingFileInfoRef.current.ext;
-      const url = await getOriginalFileUrl(project.id, ext);
+      const url = await getOriginalFileUrl(project.id, ext, project.ownerSub || null);
       if (!url) throw new Error('Original PDF not found in storage');
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -3064,6 +3072,69 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         </div>
       )}
 
+      {/* Share panel — Enterprise QS only */}
+      {showSharePanel && project?.id && (
+        <div style={{ background: "#0d1f0d", borderBottom: "1px solid #2a5a2a", padding: "12px 20px", fontFamily: "monospace", fontSize: 12 }}>
+          <div style={{ color: "#6caa6c", fontWeight: 700, marginBottom: 10 }}>🔗 Share project with a Manager</div>
+
+          {/* Current grants */}
+          {shareGrants.length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ color: "#4a7a4a", fontSize: 10, marginBottom: 6 }}>Currently shared with:</div>
+              {shareGrants.map(g => (
+                <div key={g.managerId} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  <span style={{ color: "#8abb8a" }}>{g.managerName || g.managerEmail}</span>
+                  <span style={{ color: "#4a7a4a", fontSize: 10 }}>{g.managerEmail}</span>
+                  <button
+                    onClick={async () => {
+                      try {
+                        await revokeProjectAccess(project.id, g.managerId);
+                        setShareGrants(prev => prev.filter(x => x.managerId !== g.managerId));
+                      } catch (e) { setShareError(e.message); }
+                    }}
+                    style={{ marginLeft: "auto", background: "none", border: "1px solid #5a2a2a", color: "#c06060", borderRadius: 4, padding: "1px 8px", cursor: "pointer", fontSize: 10 }}
+                  >Revoke</button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Add manager */}
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input
+              type="email"
+              placeholder="Manager's email address"
+              value={shareEmail}
+              onChange={e => { setShareEmail(e.target.value); setShareError(null); setShareSuccess(null); }}
+              style={{ flex: 1, background: "#0a1a0a", border: "1px solid #2a5a2a", borderRadius: 4, padding: "5px 10px", color: "#b0d0b0", fontSize: 12, fontFamily: "monospace" }}
+            />
+            <button
+              disabled={shareLoading || !shareEmail.trim()}
+              onClick={async () => {
+                setShareLoading(true);
+                setShareError(null);
+                setShareSuccess(null);
+                try {
+                  const result = await grantProjectAccess(project.id, shareEmail.trim());
+                  setShareSuccess(`Access granted to ${result.managerName || shareEmail}`);
+                  setShareEmail('');
+                  const grants = await getProjectGrants(project.id);
+                  setShareGrants(grants);
+                } catch (e) {
+                  setShareError(e.message || 'Failed to grant access');
+                } finally {
+                  setShareLoading(false);
+                }
+              }}
+              style={{ background: "#1a4a1a", border: "1px solid #3a7a3a", color: "#6caa6c", borderRadius: 4, padding: "5px 14px", cursor: "pointer", fontSize: 12, fontFamily: "monospace" }}
+            >{shareLoading ? "…" : "Grant Access"}</button>
+          </div>
+
+          {shareError && <div style={{ color: "#c06060", fontSize: 11, marginTop: 6 }}>✕ {shareError}</div>}
+          {shareSuccess && <div style={{ color: "#6caa6c", fontSize: 11, marginTop: 6 }}>✓ {shareSuccess}</div>}
+        </div>
+      )}
+
       {/* View Only banner for Enterprise Managers */}
       {isReadOnly && (
         <div style={{ background: "#1a1000", borderBottom: "1px solid #5a4010", padding: "6px 16px", display: "flex", alignItems: "center", gap: 10, fontFamily: "monospace", fontSize: 11 }}>
@@ -3106,6 +3177,24 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
               </span>
             )}
           </div>
+        )}
+        {/* Share button — Enterprise QS only */}
+        {project?.id && userTierInfo.tier === 'enterprise' && userTierInfo.role === 'qs' && (
+          <button
+            onClick={async () => {
+              setShowSharePanel(v => !v);
+              if (!showSharePanel) {
+                setShareError(null);
+                setShareSuccess(null);
+                try {
+                  const grants = await getProjectGrants(project.id);
+                  setShareGrants(grants);
+                } catch { setShareGrants([]); }
+              }
+            }}
+            title="Share with Manager"
+            style={{ ...styles.uploadBtn, background: showSharePanel ? '#1a2f1a' : '#0f2010', borderColor: showSharePanel ? '#3a7a3a' : '#1a4a1a', color: '#6caa6c' }}
+          >🔗 Share</button>
         )}
         <button
           onClick={() => setShowSettings(v => !v)}

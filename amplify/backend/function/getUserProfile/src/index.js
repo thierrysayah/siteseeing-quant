@@ -3,17 +3,15 @@
 	REGION
 Amplify Params - DO NOT EDIT */
 
-/**
- * @type {import('@types/aws-lambda').APIGatewayProxyHandler}
- */
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
-const { DynamoDBDocumentClient, GetCommand } = require("@aws-sdk/lib-dynamodb");
+const { DynamoDBDocumentClient, GetCommand, QueryCommand } = require("@aws-sdk/lib-dynamodb");
 
 const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 exports.handler = async (event) => {
-  // Cognito sub comes from the JWT (API Gateway authorizer injects it)
   const userId = event.requestContext.authorizer.claims.sub;
+  const groups = (event.requestContext.authorizer.claims["cognito:groups"] || "").split(",");
+  const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*" };
 
   // Fetch user profile from DynamoDB
   const { Item: profile } = await client.send(new GetCommand({
@@ -21,43 +19,43 @@ exports.handler = async (event) => {
     Key: { userId },
   }));
 
-  if (!profile) {
-    return { statusCode: 200, body: JSON.stringify({ tier: "individual", role: null, orgId: null }) };
-  }
-
-  // If user belongs to an org, fetch their role
   let orgRole = null;
-  let orgMembers = [];
-  if (profile.orgId) {
+  let orgId = profile?.orgId || null;
+  let projectGrants = []; // only for managers
+
+  if (orgId) {
     const { Item: membership } = await client.send(new GetCommand({
       TableName: "OrgMemberships",
-      Key: { orgId: profile.orgId, userId },
+      Key: { orgId, userId },
     }));
     orgRole = membership?.role || null;
 
-    // If manager, also return the list of QS users they oversee
+    // Managers: fetch the list of projects they've been granted access to
     if (orgRole === "manager") {
-      const { DynamoDBDocumentClient, QueryCommand } = require("@aws-sdk/lib-dynamodb");
       const { Items } = await client.send(new QueryCommand({
-        TableName: "OrgMemberships",
-        KeyConditionExpression: "orgId = :org",
-        FilterExpression: "#r = :qs",
-        ExpressionAttributeNames: { "#r": "role" },
-        ExpressionAttributeValues: { ":org": profile.orgId, ":qs": "qs" },
+        TableName: "ProjectGrants",
+        IndexName: "managerId-index",
+        KeyConditionExpression: "managerId = :mid",
+        ExpressionAttributeValues: { ":mid": userId },
       }));
-      orgMembers = (Items || []).map(m => ({ userId: m.userId, name: m.displayName }));
+      projectGrants = (Items || []).map(g => ({
+        projectId: g.projectId,
+        ownerSub: g.ownerSub,
+        orgId: g.orgId,
+        grantedAt: g.grantedAt,
+      }));
     }
   }
 
   return {
     statusCode: 200,
-    headers: { "Access-Control-Allow-Origin": "*" },
+    headers: CORS,
     body: JSON.stringify({
-      tier: profile.tier,
+      tier: profile?.tier || "individual",
       role: orgRole,
-      orgId: profile.orgId || null,
-      projectCount: profile.projectCount || 0,
-      orgMembers, // only populated for managers
+      orgId,
+      projectCount: profile?.projectCount || 0,
+      projectGrants, // [] for non-managers
     }),
   };
 };
