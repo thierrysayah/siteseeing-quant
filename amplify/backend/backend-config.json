@@ -50,6 +50,11 @@
     }
   },
   "function": {
+    "assignDefaultGroup": {
+      "build": true,
+      "providerPlugin": "awscloudformation",
+      "service": "Lambda"
+    },
     "getUserProfile": {
       "build": true,
       "dependsOn": [],
@@ -71,6 +76,22 @@
     }
   },
   "parameters": {
+    "AMPLIFY_function_assignDefaultGroup_deploymentBucketName": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "assignDefaultGroup"
+        }
+      ]
+    },
+    "AMPLIFY_function_assignDefaultGroup_s3Key": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "assignDefaultGroup"
+        }
+      ]
+    },
     "AMPLIFY_function_getUserProfile_deploymentBucketName": {
       "usedBy": [
         {

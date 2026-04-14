@@ -6,13 +6,132 @@ import {
   Text,
   useAuthenticator,
 } from '@aws-amplify/ui-react';
+import { signUp } from 'aws-amplify/auth';
 import '@aws-amplify/ui-react/styles.css';
 import './App.css';
 
 import DetectionTool from './DetectionTool';
 import ProjectsPage from './pages/ProjectsPage';
-import { getUserTier, getLimits, tierLabel, tierColor } from './services/userService';
+import { getUserTier, tierLabel, tierColor } from './services/userService';
 
+// ─── Module-level plan selection ──────────────────────────────────────────────
+// Stored outside React state so authComponents / authServices stay stable
+// (never remount the Authenticator when user toggles between plans).
+const _planSel = { current: 'individual' };
+
+// ─── Plan card ────────────────────────────────────────────────────────────────
+const PLANS = {
+  individual: {
+    label: 'Individual',
+    price: 'Free',
+    features: ['2 projects', 'All annotation tools', 'AI inference', 'Multi-page PDF'],
+  },
+  pro: {
+    label: 'Pro',
+    price: 'Billing coming soon',
+    features: ['10 projects', 'DXF export', 'Custom classes', 'Priority support'],
+  },
+};
+
+function PlanCard({ plan, selected, onSelect }) {
+  const { label, price, features } = PLANS[plan];
+  return (
+    <div
+      onClick={onSelect}
+      style={{
+        flex: 1, padding: '10px 12px', borderRadius: 8, cursor: 'pointer',
+        border: selected ? '2px solid #0f8fb3' : '2px solid rgba(100,150,255,0.2)',
+        background: selected ? 'rgba(15,143,179,0.1)' : 'rgba(255,255,255,0.02)',
+        transition: 'border-color 0.15s, background 0.15s',
+        userSelect: 'none',
+      }}
+    >
+      <div style={{ fontWeight: 700, color: selected ? '#10b7e8' : '#8ab4d4', fontSize: 13, marginBottom: 2 }}>
+        {label}
+      </div>
+      <div style={{ color: '#5a8aaa', fontSize: 10, marginBottom: 6 }}>{price}</div>
+      <ul style={{ margin: 0, padding: '0 0 0 13px', color: '#6a9ab4', fontSize: 10, lineHeight: 1.75 }}>
+        {features.map(f => <li key={f}>{f}</li>)}
+      </ul>
+    </div>
+  );
+}
+
+// PlanCards manages its own display state but writes to the module-level ref
+function PlanCards() {
+  const [sel, setSel] = useState(_planSel.current);
+  return (
+    <View style={{ marginTop: 10, marginBottom: 2 }}>
+      <div style={{ color: 'rgba(235,243,255,0.75)', fontSize: 11, fontWeight: 600, marginBottom: 6 }}>
+        Choose your plan
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        {Object.keys(PLANS).map(plan => (
+          <PlanCard
+            key={plan}
+            plan={plan}
+            selected={sel === plan}
+            onSelect={() => { _planSel.current = plan; setSel(plan); }}
+          />
+        ))}
+      </div>
+    </View>
+  );
+}
+
+// ─── Auth header — adapts text and shows plan cards on sign-up tab ────────────
+function AuthHeader() {
+  const { route } = useAuthenticator((ctx) => [ctx.route]);
+  const isSignUp   = route === 'signUp';
+  const isConfirm  = route === 'confirmSignUp';
+  return (
+    <View style={{ paddingBottom: 14 }}>
+      <div style={{ textAlign: 'center' }}>
+        <Heading level={3} style={{ color: '#fff' }}>
+          {isSignUp ? 'Create an account' : isConfirm ? 'Verify your email' : 'Welcome back'}
+        </Heading>
+        <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 14 }}>
+          {isSignUp
+            ? 'Start your free trial — no credit card required'
+            : isConfirm
+            ? 'Enter the code we sent to your email'
+            : 'Sign in to continue'}
+        </Text>
+      </div>
+      {isSignUp && <PlanCards />}
+    </View>
+  );
+}
+
+// ─── Stable Authenticator config (defined once — never remounts) ──────────────
+const authFormFields = {
+  signUp: {
+    email:            { order: 1, label: 'Email',            placeholder: 'Enter your email' },
+    name:             { order: 2, label: 'Full Name',        placeholder: 'Your full name' },
+    password:         { order: 3, label: 'Password',         placeholder: 'Create a password' },
+    confirm_password: { order: 4, label: 'Confirm Password', placeholder: 'Repeat your password' },
+  },
+};
+
+const authComponents = { Header: AuthHeader };
+
+// Injects custom:plan into every sign-up request
+const authServices = {
+  async handleSignUp(input) {
+    return signUp({
+      ...input,
+      options: {
+        ...input.options,
+        userAttributes: {
+          ...input.options?.userAttributes,
+          'custom:plan': _planSel.current,
+        },
+      },
+    });
+  },
+};
+
+// ─── Login screen ─────────────────────────────────────────────────────────────
 function LoginScreen() {
   return (
     <div className="auth-page">
@@ -20,27 +139,16 @@ function LoginScreen() {
         <div className="auth-overlay">
           <div className="auth-copy">
             <h1>SiteSeeing Quant</h1>
-            <p>
-              Reliable AI-powered quantity takeoff for construction drawings and plans.
-            </p>
+            <p>Reliable AI-powered quantity takeoff for construction drawings and plans.</p>
           </div>
         </div>
       </div>
-
       <div className="auth-right">
         <div className="auth-card">
           <Authenticator
-            hideSignUp
-            components={{
-              Header() {
-                return (
-                  <View style={{ textAlign: 'center', paddingBottom: '14px' }}>
-                    <Heading level={3}>Welcome</Heading>
-                    <Text>Sign in to continue</Text>
-                  </View>
-                );
-              },
-            }}
+            formFields={authFormFields}
+            services={authServices}
+            components={authComponents}
           />
         </div>
       </div>
@@ -48,20 +156,15 @@ function LoginScreen() {
   );
 }
 
+// ─── Main app (authenticated) ─────────────────────────────────────────────────
 function MainApp() {
-  const { user, signOut } = useAuthenticator((context) => [
-    context.user,
-    context.signOut,
-  ]);
+  const { user, signOut } = useAuthenticator((context) => [context.user, context.signOut]);
 
   const [currentPage, setCurrentPage] = useState('projects');
   const [selectedProject, setSelectedProject] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [userTierInfo, setUserTierInfo] = useState({ tier: 'individual', role: null });
 
-  // Reset to projects page whenever a new sign-in happens (user transitions
-  // from null → non-null), so the editor never persists across sessions.
-  // Also fetch the user's tier on login.
   const prevUserRef = useRef(user);
   useEffect(() => {
     const prev = prevUserRef.current;
@@ -74,61 +177,36 @@ function MainApp() {
     }
   }, [user]);
 
-  // Also load tier on first render if user is already logged in
   useEffect(() => {
     if (user) getUserTier().then(setUserTierInfo).catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (!user) {
-    return <LoginScreen />;
-  }
+  if (!user) return <LoginScreen />;
 
-  const handleOpenProject = (project) => {
-    setSelectedProject(project);
-    setCurrentPage('editor');
-  };
-
-  const handleBackToProjects = () => {
-    setCurrentPage('projects');
-    setRefreshKey((k) => k + 1);
-  };
+  const handleOpenProject  = (project) => { setSelectedProject(project); setCurrentPage('editor'); };
+  const handleBackToProjects = () => { setCurrentPage('projects'); setRefreshKey((k) => k + 1); };
 
   return (
     <div>
       <div className="top-bar">
         <span className="username">
-          {currentPage === 'editor' && selectedProject?.name
-            ? selectedProject.name
-            : user?.username}
+          {currentPage === 'editor' && selectedProject?.name ? selectedProject.name : user?.username}
         </span>
-
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-          {/* Tier badge */}
           <span style={{
-            fontFamily: 'monospace',
-            fontSize: 10,
-            fontWeight: 700,
-            letterSpacing: '1.5px',
+            fontFamily: 'monospace', fontSize: 10, fontWeight: 700, letterSpacing: '1.5px',
             textTransform: 'uppercase',
             color: tierColor(userTierInfo.tier, userTierInfo.role),
             border: `1px solid ${tierColor(userTierInfo.tier, userTierInfo.role)}`,
-            borderRadius: 4,
-            padding: '2px 8px',
-            opacity: 0.85,
+            borderRadius: 4, padding: '2px 8px', opacity: 0.85,
           }}>
             {tierLabel(userTierInfo.tier, userTierInfo.role)}
           </span>
-
           {currentPage === 'editor' && (
-            <button className="signout-btn" onClick={handleBackToProjects}>
-              Back to Projects
-            </button>
+            <button className="signout-btn" onClick={handleBackToProjects}>Back to Projects</button>
           )}
-
-          <button className="signout-btn" onClick={signOut}>
-            Sign out
-          </button>
+          <button className="signout-btn" onClick={signOut}>Sign out</button>
         </div>
       </div>
 
