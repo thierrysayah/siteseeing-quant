@@ -1,6 +1,5 @@
 import { fetchAuthSession } from 'aws-amplify/auth';
-
-const API_URL = 'https://ed5boc93x2.execute-api.eu-west-3.amazonaws.com/dev';
+import { get } from 'aws-amplify/api';
 
 // ─── TIER DEFINITIONS ────────────────────────────────────────────────────────
 // Maps Cognito group names → tier/role.
@@ -94,14 +93,11 @@ export function tierColor(tier, role) {
 // Falls back to JWT-only tier if the Lambda call fails.
 export async function fetchUserProfile() {
   try {
-    const session = await fetchAuthSession();
-    const idToken = session?.tokens?.idToken?.toString();
-    if (!idToken) return null;
-    const res = await fetch(`${API_URL}/user/profile`, {
-      headers: { Authorization: idToken },
-    });
-    if (!res.ok) return null;
-    return await res.json();
+    const { body } = await get({
+      apiName: 'quantApi',
+      path: '/user/profile',
+    }).response;
+    return await body.json();
   } catch {
     return null;
   }

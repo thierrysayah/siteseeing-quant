@@ -1,7 +1,6 @@
 import { uploadData, list, remove, getUrl } from 'aws-amplify/storage';
 import { getCurrentUser, fetchAuthSession } from 'aws-amplify/auth';
-
-const API_URL = 'https://ed5boc93x2.execute-api.eu-west-3.amazonaws.com/dev';
+import { post, get, del } from 'aws-amplify/api';
 
 // ─── PAGE SLUG ────────────────────────────────────────────────────────────────
 export function pageSlugify(label, pageIndex) {
@@ -342,44 +341,38 @@ export async function deleteProject(projectId) {
 export async function grantProjectAccess(projectId, managerEmail) {
   const { userId: ownerSub } = await getCurrentUser();
   const orgId = await getOrgId();
-  const session = await fetchAuthSession();
-  const idToken = session?.tokens?.idToken?.toString();
 
-  const res = await fetch(`${API_URL}/org/grant-access`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: idToken },
-    body: JSON.stringify({ projectId, managerEmail, ownerSub, orgId }),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Failed to grant access');
+  const { body } = await post({
+    apiName: 'quantApi',
+    path: '/org/grant-access',
+    options: { body: { projectId, managerEmail, ownerSub, orgId } },
+  }).response;
+  const data = await body.json();
+  if (data.error) throw new Error(data.error);
   return data;
 }
 
 // ─── GET PROJECT GRANTS (list of managers for a project) ──────────────────────
 export async function getProjectGrants(projectId) {
-  const session = await fetchAuthSession();
-  const idToken = session?.tokens?.idToken?.toString();
-
-  const res = await fetch(`${API_URL}/org/grant-access?projectId=${encodeURIComponent(projectId)}`, {
-    headers: { Authorization: idToken },
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Failed to fetch grants');
+  const { body } = await get({
+    apiName: 'quantApi',
+    path: `/org/grant-access?projectId=${encodeURIComponent(projectId)}`,
+  }).response;
+  const data = await body.json();
+  if (data.error) throw new Error(data.error);
   return data.grants || [];
 }
 
 // ─── REVOKE PROJECT ACCESS ────────────────────────────────────────────────────
 export async function revokeProjectAccess(projectId, managerId) {
   const { userId: ownerSub } = await getCurrentUser();
-  const session = await fetchAuthSession();
-  const idToken = session?.tokens?.idToken?.toString();
 
-  const res = await fetch(`${API_URL}/org/grant-access`, {
-    method: 'DELETE',
-    headers: { 'Content-Type': 'application/json', Authorization: idToken },
-    body: JSON.stringify({ projectId, managerId, ownerSub }),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || 'Failed to revoke access');
+  const { body } = await del({
+    apiName: 'quantApi',
+    path: '/org/grant-access',
+    options: { body: { projectId, managerId, ownerSub } },
+  }).response;
+  const data = await body.json();
+  if (data.error) throw new Error(data.error);
   return data;
 }
