@@ -43,12 +43,16 @@ async function ownerBasePath(ownerSub) {
 }
 
 async function userPath(projectId, filename, ownerSub) {
-  const base = ownerSub ? await ownerBasePath(ownerSub) : await getBasePrefix();
+  const { userId } = await getCurrentUser();
+  const isOtherOwner = ownerSub && ownerSub !== userId;
+  const base = isOtherOwner ? await ownerBasePath(ownerSub) : await getBasePrefix();
   return `${base}${projectId}/${filename}`;
 }
 
 async function userPrefix(projectId, ownerSub) {
-  const base = ownerSub ? await ownerBasePath(ownerSub) : await getBasePrefix();
+  const { userId } = await getCurrentUser();
+  const isOtherOwner = ownerSub && ownerSub !== userId;
+  const base = isOtherOwner ? await ownerBasePath(ownerSub) : await getBasePrefix();
   return projectId ? `${base}${projectId}/` : base;
 }
 

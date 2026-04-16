@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { loadProject, saveProject, getOriginalFileUrl, pageSlugify, grantProjectAccess, getProjectGrants, revokeProjectAccess } from "./services/projectStorage";
+import { loadProject, saveProject, getOriginalFileUrl, pageSlugify, listProjects, grantProjectAccess, getProjectGrants, revokeProjectAccess } from "./services/projectStorage";
 import { getLimits, tierLabel, tierColor } from "./services/userService";
 import Drawing from "dxf-writer";
 
@@ -211,6 +211,18 @@ function annotationAreaPx(ann) {
     area += x1 * y2 - x2 * y1;
   }
   return Math.abs(area) / 2;
+}
+
+// Solve for wall length from area and perimeter of a rectangle:
+// area = a*b, perimeter = 2a+2b → quadratic: a² - (P/2)*a + area = 0
+// Returns the longer side (a >= b)
+function wallLengthFromAreaPerim(areaPx, perimPx) {
+  const halfP = perimPx / 2;
+  const disc = halfP * halfP - 4 * areaPx;
+  if (disc < 0) return halfP / 2; // fallback: square
+  const sqrtDisc = Math.sqrt(disc);
+  const a = (halfP + sqrtDisc) / 2;
+  return a;
 }
 
 function annotationPerimeterPx(ann) {
@@ -501,8 +513,8 @@ function drawAnnotations(ctx, anns, scale, {
       ctx.fillText(label, x1 * scale + 3, Math.max(12, y1 * scale - 4));
     }
 
-    // Area/perimeter overlay — all polygons + any box classed as "zone"
-    if ((ann.shapeType === "polygon" || ann.clsName === "zone") && ratio) {
+    // Area/perimeter overlay — only zones
+    if (ann.clsName === "zone" && ratio) {
       const areaPx = annotationAreaPx(ann);
       const areaM2 = areaPx * ratio * ratio;
       const perimPx = annotationPerimeterPx(ann);
@@ -2177,9 +2189,16 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         const idx = candidates[0][1];
         if (e.ctrlKey || e.metaKey) {
           setSelectedIndices(prev => {
-            const s = new Set(prev); s.has(idx) ? s.delete(idx) : s.add(idx); return s;
+            const s = new Set(prev);
+            if (s.has(idx)) {
+              s.delete(idx);
+              setSelectedIdx(s.size > 0 ? [...s][s.size - 1] : null);
+            } else {
+              s.add(idx);
+              setSelectedIdx(idx);
+            }
+            return s;
           });
-          setSelectedIdx(idx);
         } else {
           setSelectedIdx(idx);
           setSelectedIndices(new Set([idx]));
@@ -2745,6 +2764,143 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
     setHoverIdx(null);
   };
 
+  const duplicateSelected = () => {
+    if (selectedIdx == null) return;
+    const ann = annotations[selectedIdx];
+    if (!ann) return;
+    pushHistory(annotations);
+    const OFFSET = 20; // px offset so the copy is visible
+    const clone = {
+      ...ann,
+      id: Math.random().toString(36).slice(2),
+      x1: ann.x1 != null ? ann.x1 + OFFSET : null,
+      y1: ann.y1 != null ? ann.y1 + OFFSET : null,
+      x2: ann.x2 != null ? ann.x2 + OFFSET : null,
+      y2: ann.y2 != null ? ann.y2 + OFFSET : null,
+      points: ann.points ? ann.points.map(([x, y]) => [x + OFFSET, y + OFFSET]) : null,
+    };
+    setAnnotations(prev => {
+      const newIdx = prev.length;
+      const cloneWithId = { ...clone, numId: nextNumId(prev) };
+      setTimeout(() => { setSelectedIdx(newIdx); setSelectedIndices(new Set([newIdx])); setEditClass(cloneWithId.clsName); }, 0);
+      return [...prev, cloneWithId];
+    });
+  };
+
+  const [rotateAngle, setRotateAngle] = useState("0");
+
+  // Import annotations modal
+  const [showImportAnns, setShowImportAnns] = useState(false);
+  const [importProjects, setImportProjects] = useState([]);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importSelectedProject, setImportSelectedProject] = useState(null);
+  const [importProjectData, setImportProjectData] = useState(null);
+  const [importSelectedPage, setImportSelectedPage] = useState(null);
+
+  const rotateSelected = () => {
+    if (selectedIdx == null) return;
+    const ann = annotations[selectedIdx];
+    if (!ann) return;
+    const deg = parseFloat(rotateAngle);
+    if (isNaN(deg)) return;
+    const rad = (deg * Math.PI) / 180;
+    const cos = Math.cos(rad), sin = Math.sin(rad);
+    pushHistory(annotations);
+
+    // Find center of the annotation
+    let cx, cy;
+    if (ann.points && ann.points.length > 0) {
+      cx = ann.points.reduce((s, p) => s + p[0], 0) / ann.points.length;
+      cy = ann.points.reduce((s, p) => s + p[1], 0) / ann.points.length;
+    } else {
+      const [x1, y1, x2, y2] = annotationBbox(ann);
+      cx = (x1 + x2) / 2;
+      cy = (y1 + y2) / 2;
+    }
+
+    let rotated;
+    if (ann.points && ann.points.length > 0) {
+      const newPts = ann.points.map(([x, y]) => {
+        const dx = x - cx, dy = y - cy;
+        return [cx + dx * cos - dy * sin, cy + dx * sin + dy * cos];
+      });
+      // Recompute bounding box from rotated points
+      const xs = newPts.map(p => p[0]), ys = newPts.map(p => p[1]);
+      rotated = { ...ann, points: newPts, x1: Math.min(...xs), y1: Math.min(...ys), x2: Math.max(...xs), y2: Math.max(...ys) };
+    } else {
+      // Box: convert to polygon so the actual rotation is visible
+      const [x1, y1, x2, y2] = annotationBbox(ann);
+      const corners = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]];
+      const newPts = corners.map(([x, y]) => {
+        const dx = x - cx, dy = y - cy;
+        return [cx + dx * cos - dy * sin, cy + dx * sin + dy * cos];
+      });
+      const xs = newPts.map(p => p[0]), ys = newPts.map(p => p[1]);
+      rotated = { ...ann, shapeType: "polygon", points: newPts, x1: Math.min(...xs), y1: Math.min(...ys), x2: Math.max(...xs), y2: Math.max(...ys) };
+    }
+
+    setAnnotations(prev => prev.map((a, i) => i === selectedIdx ? rotated : a));
+  };
+
+  const flipSelected = (axis) => {
+    if (selectedIdx == null) return;
+    const ann = annotations[selectedIdx];
+    if (!ann || !ann.points || ann.points.length === 0) return;
+    pushHistory(annotations);
+    const cx = ann.points.reduce((s, p) => s + p[0], 0) / ann.points.length;
+    const cy = ann.points.reduce((s, p) => s + p[1], 0) / ann.points.length;
+    const newPts = ann.points.map(([x, y]) =>
+      axis === "h" ? [2 * cx - x, y] : [x, 2 * cy - y]
+    );
+    const xs = newPts.map(p => p[0]), ys = newPts.map(p => p[1]);
+    const flipped = { ...ann, points: newPts, x1: Math.min(...xs), y1: Math.min(...ys), x2: Math.max(...xs), y2: Math.max(...ys) };
+    setAnnotations(prev => prev.map((a, i) => i === selectedIdx ? flipped : a));
+  };
+
+  const openImportAnnotations = async () => {
+    setShowImportAnns(true);
+    setImportSelectedProject(null);
+    setImportProjectData(null);
+    setImportSelectedPage(null);
+    setImportLoading(true);
+    try {
+      const projects = await listProjects();
+      // Exclude current project
+      setImportProjects(projects.filter(p => p.id !== project?.id));
+    } catch { setImportProjects([]); }
+    setImportLoading(false);
+  };
+
+  const selectImportProject = async (proj) => {
+    setImportSelectedProject(proj);
+    setImportProjectData(null);
+    setImportSelectedPage(null);
+    setImportLoading(true);
+    try {
+      const data = await loadProject(proj.id, proj.ownerSub || null);
+      setImportProjectData(data);
+    } catch { setImportProjectData(null); }
+    setImportLoading(false);
+  };
+
+  const confirmImportAnnotations = () => {
+    if (!importProjectData || importSelectedPage == null) return;
+    const page = importProjectData.pages[importSelectedPage];
+    if (!page || !page.annotations || page.annotations.length === 0) return;
+    pushHistory(annotations);
+    const imported = page.annotations.map(a => ({
+      ...a,
+      id: Math.random().toString(36).slice(2),
+    }));
+    setAnnotations(prev => {
+      let nextId = nextNumId(prev);
+      const withIds = imported.map(a => ({ ...a, numId: nextId++ }));
+      return [...prev, ...withIds];
+    });
+    setShowImportAnns(false);
+    setStatus(`Imported ${imported.length} annotations from "${importSelectedProject.name}".`);
+  };
+
   const calculateRatio = () => {
     const px = parseFloat(pixelLength), rl = parseFloat(realLength);
     if (!px || !rl || px <= 0 || rl <= 0) { setStatus("Enter valid pixel and real lengths."); return; }
@@ -2770,9 +2926,10 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
       const areaM2 = ratio ? areaPx * ratio * ratio : null;
       const perimPx = (ann.shapeType === "polygon" || ann.shapeType === "line" || ann.clsName === "zone") ? annotationPerimeterPx(ann) : null;
       let perimM = ratio && perimPx != null ? perimPx * ratio : null;
-      if (ratio && (ann.clsName === "External_Wall" || ann.clsName === "Internal_Wall") && ann.shapeType === "box") {
-        const wallLenPx = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1));
-        perimM = wallLenPx * ratio;
+      if (ratio && (ann.clsName === "External_Wall" || ann.clsName === "Internal_Wall")) {
+        const wAreaPx = annotationAreaPx(ann);
+        const wPerimPx = annotationPerimeterPx(ann);
+        if (wPerimPx > 0) perimM = wallLengthFromAreaPerim(wAreaPx, wPerimPx) * ratio;
       }
       return { page: currentPageLabel(), num_id: ann.numId ?? null, shape_type: ann.shapeType, class: ann.clsName, x1, y1, x2, y2, polygon_points: ann.points, confidence: ann.confidence, source_model: ann.sourceModel, zone_tag: ann.zoneTag, area_pixels2: areaPx, area_m2: areaM2, perimeter_pixels: perimPx, perimeter_m: perimM };
     });
@@ -2795,10 +2952,11 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         const areaM2 = ratio ? areaPx * ratio * ratio : "";
         const perimPx = (ann.shapeType === "polygon" || ann.shapeType === "line" || ann.clsName === "zone") ? annotationPerimeterPx(ann) : "";
         let perimM = ratio && perimPx !== "" ? perimPx * ratio : "";
-        // Wall length = longer side of bounding box, converted to meters
-        if (ratio && (ann.clsName === "External_Wall" || ann.clsName === "Internal_Wall") && ann.shapeType === "box") {
-          const wallLenPx = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1));
-          perimM = wallLenPx * ratio;
+        // Wall length from area & perimeter (rotation-invariant)
+        if (ratio && (ann.clsName === "External_Wall" || ann.clsName === "Internal_Wall")) {
+          const wAreaPx = annotationAreaPx(ann);
+          const wPerimPx = annotationPerimeterPx(ann);
+          if (wPerimPx > 0) perimM = wallLengthFromAreaPerim(wAreaPx, wPerimPx) * ratio;
         }
         const pageLabel = page.label || (page.pdfPageNumber != null ? `Page ${page.pdfPageNumber}` : `Page ${page.pageIndex + 1}`);
         rows.push([pageLabel, ann.numId ?? "", ann.shapeType, ann.clsName, x1, y1, x2, y2, ann.points ? JSON.stringify(ann.points) : "", ann.confidence ?? "", ann.sourceModel ?? "", ann.zoneTag ?? "", areaPx, areaM2, perimPx, perimM]);
@@ -3081,6 +3239,77 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         </div>
       )}
 
+      {/* Import Annotations Modal */}
+      {showImportAnns && (
+        <div style={styles.settingsOverlay} onClick={() => setShowImportAnns(false)}>
+          <div style={{ ...styles.settingsModal, minWidth: 400, maxWidth: 500, maxHeight: "70vh", display: "flex", flexDirection: "column" }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <span style={{ color: "#cfaa6c", fontWeight: 700, fontSize: 13, letterSpacing: 2 }}>IMPORT ANNOTATIONS</span>
+              <button onClick={() => setShowImportAnns(false)} style={styles.tinyBtn}>✕</button>
+            </div>
+
+            {importLoading && <div style={{ color: "#7a9aaa", fontSize: 11 }}>Loading...</div>}
+
+            {/* Step 1: Project list */}
+            {!importSelectedProject && !importLoading && (
+              <div style={{ overflowY: "auto", flex: 1 }}>
+                {importProjects.length === 0 && <div style={{ color: "#4a6a7a", fontSize: 11 }}>No other projects found.</div>}
+                {importProjects.map(p => (
+                  <div
+                    key={p.id}
+                    onClick={() => selectImportProject(p)}
+                    style={{ padding: "8px 10px", marginBottom: 4, background: "#111e30", border: "1px solid #1e3050", borderRadius: 4, cursor: "pointer" }}
+                    onMouseEnter={e => e.currentTarget.style.borderColor = "#3a6ab0"}
+                    onMouseLeave={e => e.currentTarget.style.borderColor = "#1e3050"}
+                  >
+                    <div style={{ color: "#c8d0e0", fontSize: 12, fontWeight: 600 }}>{p.name}</div>
+                    <div style={{ color: "#5a7a9a", fontSize: 10 }}>
+                      {p.pageCount || 1} page{(p.pageCount || 1) > 1 ? "s" : ""} — {new Date(p.lastEdited).toLocaleDateString()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Step 2: Page list with annotation counts */}
+            {importSelectedProject && importProjectData && !importLoading && (
+              <div style={{ overflowY: "auto", flex: 1 }}>
+                <button onClick={() => { setImportSelectedProject(null); setImportProjectData(null); setImportSelectedPage(null); }} style={{ ...styles.tinyBtn, marginBottom: 10 }}>← Back to projects</button>
+                <div style={{ color: "#8aabbb", fontSize: 11, marginBottom: 8 }}>{importSelectedProject.name}</div>
+                {(importProjectData.pages || []).map((page, idx) => {
+                  const annCount = (page.annotations || []).length;
+                  const label = page.label || (page.pdfPageNumber != null ? `Page ${page.pdfPageNumber}` : `Page ${page.pageIndex + 1}`);
+                  const isSelected = importSelectedPage === idx;
+                  return (
+                    <div
+                      key={idx}
+                      onClick={() => annCount > 0 && setImportSelectedPage(idx)}
+                      style={{ padding: "8px 10px", marginBottom: 4, background: isSelected ? "#1a3056" : "#111e30", border: `1px solid ${isSelected ? "#3a6ab0" : "#1e3050"}`, borderRadius: 4, cursor: annCount > 0 ? "pointer" : "not-allowed", opacity: annCount > 0 ? 1 : 0.5 }}
+                    >
+                      <div style={{ color: "#c8d0e0", fontSize: 12 }}>{label}</div>
+                      <div style={{ color: "#5a7a9a", fontSize: 10 }}>
+                        {annCount} annotation{annCount !== 1 ? "s" : ""}
+                        {annCount > 0 && (() => {
+                          const classes = {};
+                          page.annotations.forEach(a => { classes[a.clsName] = (classes[a.clsName] || 0) + 1; });
+                          return " — " + Object.entries(classes).map(([c, n]) => `${n} ${c}`).join(", ");
+                        })()}
+                      </div>
+                    </div>
+                  );
+                })}
+                {importSelectedPage != null && (
+                  <button
+                    onClick={confirmImportAnnotations}
+                    style={{ ...styles.smallBtn, width: "100%", marginTop: 10, background: "#1a3a1a", borderColor: "#2a6a2a", color: "#6caa6c", fontWeight: 700 }}
+                  >Import {importProjectData.pages[importSelectedPage].annotations.length} annotations</button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Share panel — Enterprise QS only */}
       {showSharePanel && project?.id && (
         <div style={{ background: "#0d1f0d", borderBottom: "1px solid #2a5a2a", padding: "12px 20px", fontFamily: "monospace", fontSize: 12 }}>
@@ -3165,6 +3394,11 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
           📄 Import PDF
           <input type="file" accept="application/pdf,.pdf" onChange={handlePdfChange} style={{ display: "none" }} />
         </label>}
+        {!isReadOnly && (
+          <button onClick={openImportAnnotations} style={{ ...styles.uploadBtn, background: "#2a1a0d", borderColor: "#705a1a", color: "#cfaa6c" }}>
+            Import Annotations
+          </button>
+        )}
         {project?.id && !isReadOnly && (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
             <button
@@ -3245,6 +3479,46 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
               <button onClick={() => { setTempPolyPts([]); setTempPolyMouse(null); }} style={{ ...styles.toolBtn, background: "#660022" }}>✕ Cancel</button>
             )}
             <div style={{ flex: 1 }} />
+            <button
+              onClick={duplicateSelected}
+              disabled={selectedIdx == null}
+              title="Duplicate selected annotation"
+              style={{ ...styles.toolBtn, opacity: selectedIdx == null ? 0.35 : 1 }}
+            >Duplicate</button>
+            <button
+              onClick={rotateSelected}
+              disabled={selectedIdx == null}
+              title="Rotate selected annotation"
+              style={{ ...styles.toolBtn, opacity: selectedIdx == null ? 0.35 : 1 }}
+            >Rotate</button>
+            <input
+              type="number"
+              min="-180"
+              max="180"
+              value={rotateAngle}
+              onKeyDown={e => e.stopPropagation()}
+              onChange={e => {
+                const v = e.target.value;
+                if (v === "" || v === "-") { setRotateAngle(v); return; }
+                const n = parseFloat(v);
+                if (!isNaN(n) && n >= -180 && n <= 180) setRotateAngle(v);
+              }}
+              title="Rotation angle (-180 to 180)"
+              style={{ ...styles.smallInput, width: 56, fontSize: 11, textAlign: "center" }}
+            />
+            <button
+              onClick={() => flipSelected("h")}
+              disabled={selectedIdx == null || !annotations[selectedIdx]?.points}
+              title="Flip horizontal"
+              style={{ ...styles.toolBtn, opacity: (selectedIdx == null || !annotations[selectedIdx]?.points) ? 0.35 : 1 }}
+            >⇔</button>
+            <button
+              onClick={() => flipSelected("v")}
+              disabled={selectedIdx == null || !annotations[selectedIdx]?.points}
+              title="Flip vertical"
+              style={{ ...styles.toolBtn, opacity: (selectedIdx == null || !annotations[selectedIdx]?.points) ? 0.35 : 1 }}
+            >⇕</button>
+            <div style={{ width: 12 }} />
             <button
               onClick={undo}
               disabled={history.length === 0}
@@ -3416,7 +3690,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
               </select>
               <button onClick={applyTag} style={styles.smallBtn}>Set</button>
             </div>
-            <button onClick={deleteSelected} style={{ ...styles.smallBtn, background: "#5c1010", width: "100%", marginTop: 4 }}>🗑 Delete Selected</button>
+            <button onClick={deleteSelected} style={{ ...styles.smallBtn, background: "#5c1010", width: "100%", marginTop: 4 }}>Delete</button>
             <div style={{ ...styles.row, marginTop: 6 }}>
               <span style={styles.label} title="RDP tolerance in image pixels">Shape Simplification (px):</span>
               <input
@@ -3571,7 +3845,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                     <span style={{ color: getClassColor(ann.clsName), fontWeight: 600, fontSize: 12 }}>{ann.clsName}</span>
                     {ann.zoneTag && <span style={{ color: "#aaa", fontSize: 11 }}> :{ann.zoneTag}</span>}
                     {(ann.clsName === "External_Wall" || ann.clsName === "Internal_Wall") && ratio != null && (
-                      <><br /><span style={{ color: "#ffffff", fontSize: 11 }}>L: {(Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1)) * ratio).toFixed(2)} m</span></>
+                      <><br /><span style={{ color: "#ffffff", fontSize: 11 }}>L: {(wallLengthFromAreaPerim(annotationAreaPx(ann), annotationPerimeterPx(ann)) * ratio).toFixed(2)} m</span></>
                     )}
                     {ann.clsName === "zone" && (
                       <><br /><span style={{ color: "#ffffff", fontSize: 11 }}>
