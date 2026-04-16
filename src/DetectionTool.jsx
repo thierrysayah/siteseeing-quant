@@ -2796,6 +2796,8 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
   const [importSelectedProject, setImportSelectedProject] = useState(null);
   const [importProjectData, setImportProjectData] = useState(null);
   const [importSelectedPage, setImportSelectedPage] = useState(null);
+  const [importCurrentProjectPages, setImportCurrentProjectPages] = useState([]);
+  const [importCurrentSelectedPage, setImportCurrentSelectedPage] = useState(null);
 
   const rotateSelected = () => {
     if (selectedIdx == null) return;
@@ -2862,11 +2864,21 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
     setImportSelectedProject(null);
     setImportProjectData(null);
     setImportSelectedPage(null);
+    setImportCurrentSelectedPage(null);
+    setImportCurrentProjectPages([]);
     setImportLoading(true);
     try {
-      const projects = await listProjects();
-      // Exclude current project
+      const [projects, currentData] = await Promise.all([
+        listProjects(),
+        project?.id ? loadProject(project.id, project.ownerSub || null) : null,
+      ]);
       setImportProjects(projects.filter(p => p.id !== project?.id));
+      // Show saved pages from current project, excluding the active page
+      if (currentData?.pages) {
+        setImportCurrentProjectPages(
+          currentData.pages.filter(p => p.pageIndex !== currentPageIndex)
+        );
+      }
     } catch { setImportProjects([]); }
     setImportLoading(false);
   };
@@ -2883,12 +2895,10 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
     setImportLoading(false);
   };
 
-  const confirmImportAnnotations = () => {
-    if (!importProjectData || importSelectedPage == null) return;
-    const page = importProjectData.pages[importSelectedPage];
-    if (!page || !page.annotations || page.annotations.length === 0) return;
+  const doImport = (annsToImport, sourceName) => {
+    if (!annsToImport || annsToImport.length === 0) return;
     pushHistory(annotations);
-    const imported = page.annotations.map(a => ({
+    const imported = annsToImport.map(a => ({
       ...a,
       id: Math.random().toString(36).slice(2),
     }));
@@ -2898,7 +2908,22 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
       return [...prev, ...withIds];
     });
     setShowImportAnns(false);
-    setStatus(`Imported ${imported.length} annotations from "${importSelectedProject.name}".`);
+    setStatus(`Imported ${imported.length} annotations from "${sourceName}".`);
+  };
+
+  const confirmImportAnnotations = () => {
+    if (!importProjectData || importSelectedPage == null) return;
+    const page = importProjectData.pages[importSelectedPage];
+    if (!page || !page.annotations || page.annotations.length === 0) return;
+    doImport(page.annotations, importSelectedProject.name);
+  };
+
+  const confirmImportCurrentPage = () => {
+    if (importCurrentSelectedPage == null) return;
+    const page = importCurrentProjectPages[importCurrentSelectedPage];
+    if (!page || !page.annotations || page.annotations.length === 0) return;
+    const label = page.label || (page.pdfPageNumber != null ? `Page ${page.pdfPageNumber}` : `Page ${page.pageIndex + 1}`);
+    doImport(page.annotations, label);
   };
 
   const calculateRatio = () => {
@@ -3253,7 +3278,45 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
             {/* Step 1: Project list */}
             {!importSelectedProject && !importLoading && (
               <div style={{ overflowY: "auto", flex: 1 }}>
-                {importProjects.length === 0 && <div style={{ color: "#4a6a7a", fontSize: 11 }}>No other projects found.</div>}
+                {/* Current project pages */}
+                {importCurrentProjectPages.length > 0 && (
+                  <>
+                    <div style={{ color: "#cfaa6c", fontSize: 10, fontWeight: 700, letterSpacing: 1, marginBottom: 6 }}>THIS PROJECT</div>
+                    {importCurrentProjectPages.map((page, idx) => {
+                      const annCount = (page.annotations || []).length;
+                      const label = page.label || (page.pdfPageNumber != null ? `Page ${page.pdfPageNumber}` : `Page ${page.pageIndex + 1}`);
+                      const isSelected = importCurrentSelectedPage === idx;
+                      return (
+                        <div
+                          key={idx}
+                          onClick={() => annCount > 0 && setImportCurrentSelectedPage(isSelected ? null : idx)}
+                          style={{ padding: "8px 10px", marginBottom: 4, background: isSelected ? "#1a3056" : "#111e30", border: `1px solid ${isSelected ? "#3a6ab0" : "#1e3050"}`, borderRadius: 4, cursor: annCount > 0 ? "pointer" : "not-allowed", opacity: annCount > 0 ? 1 : 0.45 }}
+                          onMouseEnter={e => { if (annCount > 0) e.currentTarget.style.borderColor = "#3a6ab0"; }}
+                          onMouseLeave={e => { if (!isSelected) e.currentTarget.style.borderColor = "#1e3050"; }}
+                        >
+                          <div style={{ color: "#c8d0e0", fontSize: 12 }}>{label}</div>
+                          <div style={{ color: "#5a7a9a", fontSize: 10 }}>
+                            {annCount} annotation{annCount !== 1 ? "s" : ""}
+                            {annCount > 0 && (() => {
+                              const classes = {};
+                              page.annotations.forEach(a => { classes[a.clsName] = (classes[a.clsName] || 0) + 1; });
+                              return " — " + Object.entries(classes).map(([c, n]) => `${n} ${c}`).join(", ");
+                            })()}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {importCurrentSelectedPage != null && (
+                      <button
+                        onClick={confirmImportCurrentPage}
+                        style={{ ...styles.smallBtn, width: "100%", marginBottom: 10, background: "#1a3a1a", borderColor: "#2a6a2a", color: "#6caa6c", fontWeight: 700 }}
+                      >Import {importCurrentProjectPages[importCurrentSelectedPage].annotations.length} annotations</button>
+                    )}
+                    <div style={{ borderTop: "1px solid #1a2e50", margin: "10px 0 10px" }} />
+                    <div style={{ color: "#7a9aaa", fontSize: 10, fontWeight: 700, letterSpacing: 1, marginBottom: 6 }}>OTHER PROJECTS</div>
+                  </>
+                )}
+                {importProjects.length === 0 && importCurrentProjectPages.length === 0 && <div style={{ color: "#4a6a7a", fontSize: 11 }}>No other pages or projects found.</div>}
                 {importProjects.map(p => (
                   <div
                     key={p.id}
