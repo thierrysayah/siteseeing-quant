@@ -3,7 +3,7 @@
 	REGION
 Amplify Params - DO NOT EDIT */
 
-const { CognitoIdentityProviderClient, ListUsersCommand } = require("@aws-sdk/client-cognito-identity-provider");
+const { CognitoIdentityProviderClient, ListUsersCommand, AdminListGroupsForUserCommand } = require("@aws-sdk/client-cognito-identity-provider");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const { DynamoDBDocumentClient, PutCommand, QueryCommand, DeleteCommand } = require("@aws-sdk/lib-dynamodb");
 
@@ -13,16 +13,13 @@ const cognito = new CognitoIdentityProviderClient({ region: process.env.AWS_REGI
 const USER_POOL_ID = process.env.USER_POOL_ID || "eu-west-3_jpxbGzhTX";
 const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*" };
 
-function ok(data)    { return { statusCode: 200, headers: CORS, body: JSON.stringify(data) }; }
-function fail(msg)   { return { statusCode: 200, headers: CORS, body: JSON.stringify({ error: msg }) }; }
+function ok(data)  { return { statusCode: 200, headers: CORS, body: JSON.stringify(data) }; }
+function fail(msg) { return { statusCode: 200, headers: CORS, body: JSON.stringify({ error: msg }) }; }
 
 // Extract Cognito User Pool sub from IAM-authorized request
 function getCallerSub(event) {
-  // Try Cognito User Pool authorizer first
   const claimsSub = event.requestContext?.authorizer?.claims?.sub;
   if (claimsSub) return claimsSub;
-  // IAM auth: parse from cognitoAuthenticationProvider
-  // Format: "...CognitoSignIn:<user-pool-sub>"
   const provider = event.requestContext?.identity?.cognitoAuthenticationProvider;
   if (provider) {
     const match = provider.match(/CognitoSignIn:([a-f0-9-]+)$/);
@@ -31,17 +28,56 @@ function getCallerSub(event) {
   return null;
 }
 
+// Look up a Cognito user by sub → returns { username, orgId }
+async function getUserBySub(sub) {
+  const resp = await cognito.send(new ListUsersCommand({
+    UserPoolId: USER_POOL_ID,
+    Filter: `sub = "${sub}"`,
+    Limit: 1,
+  }));
+  const user = resp.Users?.[0];
+  if (!user) return null;
+  const orgId = user.Attributes?.find(a => a.Name === "custom:orgId")?.Value || null;
+  return { username: user.Username, orgId };
+}
+
+// Look up a Cognito user by email → returns { sub, username, orgId, name }
+async function getUserByEmail(email) {
+  const resp = await cognito.send(new ListUsersCommand({
+    UserPoolId: USER_POOL_ID,
+    Filter: `email = "${email}"`,
+    Limit: 1,
+  }));
+  const user = resp.Users?.[0];
+  if (!user) return null;
+  const attrs = user.Attributes || [];
+  return {
+    username: user.Username,
+    sub:    attrs.find(a => a.Name === "sub")?.Value || null,
+    orgId:  attrs.find(a => a.Name === "custom:orgId")?.Value || null,
+    name:   attrs.find(a => a.Name === "name")?.Value || email,
+  };
+}
+
+// Check if a Cognito user (by username) is in a given group
+async function isInGroup(username, groupName) {
+  const resp = await cognito.send(new AdminListGroupsForUserCommand({
+    UserPoolId: USER_POOL_ID,
+    Username: username,
+  }));
+  return (resp.Groups || []).some(g => g.GroupName === groupName);
+}
+
 exports.handler = async (event) => {
   try {
     const method = event.httpMethod;
     const callerSub = getCallerSub(event);
     console.log("[grantProjectAccess]", method, "caller:", callerSub);
 
-    // ── GET — list managers for a project ─────────────────────────────────────
+    // ── GET — list managers for a project ────────────────────────────────────
     if (method === "GET") {
       const projectId = (event.queryStringParameters || {}).projectId;
       if (!projectId) return fail("Missing projectId query param");
-
       const { Items } = await dynamo.send(new QueryCommand({
         TableName: "ProjectGrants",
         KeyConditionExpression: "projectId = :pid",
@@ -63,49 +99,54 @@ exports.handler = async (event) => {
     // ── POST — grant access ───────────────────────────────────────────────────
     if (method === "POST") {
       const body = JSON.parse(event.body || "{}");
-      console.log("[grantProjectAccess] body:", JSON.stringify(body));
-      const { projectId, managerEmail, ownerSub, orgId } = body;
+      const { projectId, managerEmail, ownerSub } = body;
 
       if (!projectId || !managerEmail || !ownerSub) {
         return fail("Missing projectId, managerEmail, or ownerSub");
       }
+
+      // 1. Caller must be the project owner
       if (callerSub !== ownerSub) {
-        return fail("Only the project owner can grant access (caller mismatch)");
+        return fail("Only the project owner can grant access");
       }
 
-      // Look up manager by email in the User Pool
-      const listResp = await cognito.send(new ListUsersCommand({
-        UserPoolId: USER_POOL_ID,
-        Filter: `email = "${managerEmail}"`,
-        Limit: 1,
-      }));
+      // 2. Look up caller's org (from Cognito — never trust client-provided orgId)
+      const caller = await getUserBySub(callerSub);
+      if (!caller) return fail("Could not verify caller identity");
+      if (!caller.orgId) return fail("You must belong to an organisation to share projects");
 
-      if (!listResp.Users || listResp.Users.length === 0) {
-        return fail(`No user found with email: ${managerEmail}`);
+      // 3. Look up manager by email
+      const manager = await getUserByEmail(managerEmail);
+      if (!manager) return fail(`No user found with email: ${managerEmail}`);
+      if (!manager.sub) return fail("Could not resolve manager's user ID");
+
+      // 4. Manager must be in the same organisation
+      if (!manager.orgId || manager.orgId !== caller.orgId) {
+        return fail("This user does not belong to your organisation");
       }
 
-      const manager = listResp.Users[0];
-      const managerId = manager.Attributes?.find(a => a.Name === "sub")?.Value;
-      const managerName = manager.Attributes?.find(a => a.Name === "name")?.Value || managerEmail;
+      // 5. Manager must be in the EnterpriseManager group
+      const managerIsValid = await isInGroup(manager.username, "EnterpriseManager");
+      if (!managerIsValid) {
+        return fail("This user does not have the Enterprise Manager role");
+      }
 
-      if (!managerId) return fail("Could not resolve manager's user ID");
-
-      // Write the grant
+      // All checks passed — write the grant
       await dynamo.send(new PutCommand({
         TableName: "ProjectGrants",
         Item: {
           projectId,
-          managerId,
+          managerId: manager.sub,
           managerEmail,
-          managerName,
+          managerName: manager.name,
           ownerSub,
-          orgId: orgId || "none",
+          orgId: caller.orgId,
           grantedAt: new Date().toISOString(),
         },
       }));
 
-      console.log("[grantProjectAccess] granted", managerEmail, "->", projectId);
-      return ok({ success: true, managerId, managerName });
+      console.log("[grantProjectAccess] granted", managerEmail, "->", projectId, "org:", caller.orgId);
+      return ok({ success: true, managerId: manager.sub, managerName: manager.name });
     }
 
     return fail("Method not allowed: " + method);
