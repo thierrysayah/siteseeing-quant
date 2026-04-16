@@ -2769,7 +2769,11 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
       const areaPx = annotationAreaPx(ann);
       const areaM2 = ratio ? areaPx * ratio * ratio : null;
       const perimPx = (ann.shapeType === "polygon" || ann.shapeType === "line" || ann.clsName === "zone") ? annotationPerimeterPx(ann) : null;
-      const perimM = ratio && perimPx != null ? perimPx * ratio : null;
+      let perimM = ratio && perimPx != null ? perimPx * ratio : null;
+      if (ratio && (ann.clsName === "External_Wall" || ann.clsName === "Internal_Wall") && ann.shapeType === "box") {
+        const wallLenPx = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1));
+        perimM = wallLenPx * ratio;
+      }
       return { page: currentPageLabel(), num_id: ann.numId ?? null, shape_type: ann.shapeType, class: ann.clsName, x1, y1, x2, y2, polygon_points: ann.points, confidence: ann.confidence, source_model: ann.sourceModel, zone_tag: ann.zoneTag, area_pixels2: areaPx, area_m2: areaM2, perimeter_pixels: perimPx, perimeter_m: perimM };
     });
     const pageSuffix = pageCount > 1 ? `_${labelToSlug(currentPageLabel())}` : '';
@@ -2790,7 +2794,12 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         const areaPx = annotationAreaPx(ann);
         const areaM2 = ratio ? areaPx * ratio * ratio : "";
         const perimPx = (ann.shapeType === "polygon" || ann.shapeType === "line" || ann.clsName === "zone") ? annotationPerimeterPx(ann) : "";
-        const perimM = ratio && perimPx !== "" ? perimPx * ratio : "";
+        let perimM = ratio && perimPx !== "" ? perimPx * ratio : "";
+        // Wall length = longer side of bounding box, converted to meters
+        if (ratio && (ann.clsName === "External_Wall" || ann.clsName === "Internal_Wall") && ann.shapeType === "box") {
+          const wallLenPx = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1));
+          perimM = wallLenPx * ratio;
+        }
         const pageLabel = page.label || (page.pdfPageNumber != null ? `Page ${page.pdfPageNumber}` : `Page ${page.pageIndex + 1}`);
         rows.push([pageLabel, ann.numId ?? "", ann.shapeType, ann.clsName, x1, y1, x2, y2, ann.points ? JSON.stringify(ann.points) : "", ann.confidence ?? "", ann.sourceModel ?? "", ann.zoneTag ?? "", areaPx, areaM2, perimPx, perimM]);
       }
@@ -3376,7 +3385,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                       });
                     }}
                   />
-                  <span style={{ ...styles.classChip, borderColor: color, color }}>{cls}</span>
+                  <span style={{ ...styles.classChip, borderColor: color, color }}>{cls} ({annotations.filter(a => a.clsName === cls).length})</span>
                 </label>
               );
             })}
@@ -3508,7 +3517,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
               <span style={{ color: "#00ccff", fontSize: 12, whiteSpace: "nowrap" }}>Scale</span>
               <input
                 value={realLength}
-                onChange={e => { const v = e.target.value; if (v === '' || /^\d+$/.test(v)) setRealLength(v); }}
+                onChange={e => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setRealLength(v); }}
                 style={{ ...styles.smallInput, width: 48 }}
                 placeholder=""
                 title="Real-world length"
@@ -3516,7 +3525,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
               <span style={{ color: "#5a7a9a", fontSize: 12 }}>:</span>
               <input
                 value={pixelLength}
-                onChange={e => { const v = e.target.value; if (v === '' || /^\d+$/.test(v)) setPixelLength(v); }}
+                onChange={e => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setPixelLength(v); }}
                 style={{ ...styles.smallInput, width: 48 }}
                 placeholder=""
                 title="Pixel length (auto-filled when you draw a line)"
@@ -3528,31 +3537,24 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
 
           {/* Export */}
           <div style={styles.section}>
-            <div style={styles.sectionTitle}>EXPORT</div>
-            <button onClick={exportJSON} style={{ ...styles.smallBtn, width: "100%", marginBottom: 4 }}>⬇ JSON</button>
-            <button onClick={exportCSV} style={{ ...styles.smallBtn, width: "100%", marginBottom: 4, background: "#0d3d2a" }}>⬇ CSV</button>
-            <button
-              onClick={canExportDXF ? exportDXF : undefined}
-              disabled={!canExportDXF}
-              title={canExportDXF ? undefined : "Upgrade to Pro or Enterprise to export DXF"}
-              style={{ ...styles.smallBtn, width: "100%", marginBottom: 4, background: canExportDXF ? "#2a1a4a" : "#111820", borderColor: canExportDXF ? "#4a2a7a" : "#1a2030", color: canExportDXF ? "#b88adf" : "#3a4a5a", cursor: canExportDXF ? "pointer" : "not-allowed" }}
-            >⬇ DXF (Manual){!canExportDXF && " 🔒"}</button>
-            {(() => {
-              const isPdf = existingFileInfoRef.current.ext === 'pdf' || pdfBytesRef.current;
-              const enabled = canExportDXF && isPdf && !fetchingPdf;
-              const title = !canExportDXF
-                ? "Upgrade to Pro or Enterprise to export DXF"
-                : !isPdf ? "Only available for PDF imports"
-                : "Extract vector geometry from the source PDF";
-              return (
-                <button
-                  onClick={canExportDXF ? handleAutoDxfClick : undefined}
-                  disabled={!enabled}
-                  title={title}
-                  style={{ ...styles.smallBtn, width: "100%", background: enabled ? "#1a2a4a" : "#111820", borderColor: enabled ? "#2a4a7a" : "#1a2030", color: enabled ? "#7ab8df" : "#3a4a5a", cursor: enabled ? "pointer" : "not-allowed" }}
-                >{fetchingPdf ? "⏳ Loading PDF…" : `⬇ DXF (Auto)${!canExportDXF ? " 🔒" : ""}`}</button>
-              );
-            })()}
+            <select
+              defaultValue=""
+              onChange={e => {
+                const val = e.target.value;
+                e.target.value = "";
+                if (val === "json") exportJSON();
+                else if (val === "csv") exportCSV();
+                else if (val === "dxf-manual" && canExportDXF) exportDXF();
+                else if (val === "dxf-auto" && canExportDXF) handleAutoDxfClick();
+              }}
+              style={{ ...styles.select, cursor: "pointer", fontWeight: 700, color: "#c8f0fa", letterSpacing: 1 }}
+            >
+              <option value="" disabled>EXPORT</option>
+              <option value="json">JSON</option>
+              <option value="csv">CSV</option>
+              <option value="dxf-manual" disabled={!canExportDXF}>{canExportDXF ? "DXF (Manual)" : "DXF (Manual) - Pro"}</option>
+              <option value="dxf-auto" disabled={!canExportDXF || !(existingFileInfoRef.current.ext === 'pdf' || pdfBytesRef.current)}>{canExportDXF ? "DXF (Auto)" : "DXF (Auto) - Pro"}</option>
+            </select>
           </div>
 
           {/* Annotation list */}
@@ -3565,11 +3567,19 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                 return (
                   <div key={ann.id} onClick={() => { setSelectedIdx(origIdx); setSelectedIndices(new Set([origIdx])); setEditClass(ann.clsName); setEditConf(ann.confidence != null ? String(ann.confidence) : ""); }}
                     style={{ ...styles.annRow, background: isSel ? "#1a3056" : "transparent", borderLeft: `3px solid ${getClassColor(ann.clsName)}` }}>
-                    {ann.numId != null && <span style={{ color: "#8ab", fontWeight: 700, fontSize: 10, marginRight: 5 }}>#{ann.numId}</span>}
-                    <span style={{ color: getClassColor(ann.clsName), fontWeight: 600, fontSize: 10 }}>{ann.clsName}</span>
-                    {ann.zoneTag && <span style={{ color: "#aaa", fontSize: 9 }}> :{ann.zoneTag}</span>}
-                    <br />
-                    <span style={{ color: "#667", fontSize: 9 }}>({x1},{y1})–({x2},{y2}) {ann.shapeType === "polygon" ? "[poly]" : ann.shapeType === "line" ? "[line]" : ""}</span>
+                    {ann.numId != null && <span style={{ color: "#8ab", fontWeight: 700, fontSize: 12, marginRight: 5 }}>#{ann.numId}</span>}
+                    <span style={{ color: getClassColor(ann.clsName), fontWeight: 600, fontSize: 12 }}>{ann.clsName}</span>
+                    {ann.zoneTag && <span style={{ color: "#aaa", fontSize: 11 }}> :{ann.zoneTag}</span>}
+                    {(ann.clsName === "External_Wall" || ann.clsName === "Internal_Wall") && ratio != null && (
+                      <><br /><span style={{ color: "#ffffff", fontSize: 11 }}>L: {(Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1)) * ratio).toFixed(2)} m</span></>
+                    )}
+                    {ann.clsName === "zone" && (
+                      <><br /><span style={{ color: "#ffffff", fontSize: 11 }}>
+                        {ratio != null ? `A: ${(annotationAreaPx(ann) * ratio * ratio).toFixed(2)} m²` : `A: ${annotationAreaPx(ann).toFixed(0)} px²`}
+                        {" | "}
+                        {ratio != null ? `P: ${(annotationPerimeterPx(ann) * ratio).toFixed(2)} m` : `P: ${annotationPerimeterPx(ann).toFixed(0)} px`}
+                      </span></>
+                    )}
                     {showConfidence && ann.confidence != null && <span style={{ color: "#556", fontSize: 9 }}> {ann.confidence.toFixed(2)}</span>}
                   </div>
                 );

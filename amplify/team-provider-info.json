@@ -35,11 +35,11 @@
         },
         "getUserProfile": {
           "deploymentBucketName": "amplify-estimationplatform-dev-20748-deployment",
-          "s3Key": "amplify-builds/getUserProfile-46525178667a2b61366c-build.zip"
+          "s3Key": "amplify-builds/getUserProfile-574c646b374963667148-build.zip"
         },
         "grantProjectAccess": {
           "deploymentBucketName": "amplify-estimationplatform-dev-20748-deployment",
-          "s3Key": "amplify-builds/grantProjectAccess-61726b484f3437415474-build.zip"
+          "s3Key": "amplify-builds/grantProjectAccess-42486a687a49416c556b-build.zip"
         }
       },
       "api": {
