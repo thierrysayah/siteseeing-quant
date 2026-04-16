@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { loadProject, saveProject, getOriginalFileUrl, pageSlugify, listProjects, grantProjectAccess, getProjectGrants, revokeProjectAccess } from "./services/projectStorage";
 import { getLimits, tierLabel, tierColor } from "./services/userService";
 import Drawing from "dxf-writer";
+import { jsPDF } from "jspdf";
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const WALL_MODEL_URL = "https://predict-69b7f2f29e8ba20d1c3c-dproatj77a-lm.a.run.app/predict";
@@ -1709,8 +1710,8 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         const pages = data.pages || [];
         const pageImageUrls = data.pageImageUrls || {};
 
-        // If we have page images in S3, load them (keyed by slug)
-        if (Object.keys(pageImageUrls).length > 0) {
+        // Load pages if we have annotation data (images may be missing but annotations are the source of truth)
+        if (pages.length > 0) {
           const loadedPages = await Promise.all(pages.map(async (page) => {
             // Try slug key first (new naming), fallback to legacy numeric key
             const slug = page.pageSlug || pageSlugify(page.label, page.pageIndex);
@@ -1735,8 +1736,9 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
           allPagesRef.current = normalizedPages;
           setPageCount(normalizedPages.length);
           // Track uploaded slugs so we don't re-upload unchanged images
+          // Only mark slugs as uploaded if the image actually loaded
           uploadedPageImages.current = new Set(
-            normalizedPages.map(p => p.pageSlug || pageSlugify(p.label, p.pageIndex))
+            normalizedPages.filter(p => p.img).map(p => p.pageSlug || pageSlugify(p.label, p.pageIndex))
           );
 
           // Set first page as active
@@ -1751,7 +1753,12 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
               setBaseScale(bs);
               setZoom(1.0);
             }
-            setStatus(`Loaded project: ${normalizedPages.length} page(s)`);
+            const missingImages = normalizedPages.filter(p => !p.img).length;
+            if (missingImages > 0) {
+              setStatus(`Loaded project: ${normalizedPages.length} page(s) — ${missingImages} background image(s) missing (re-import PDF to restore)`);
+            } else {
+              setStatus(`Loaded project: ${normalizedPages.length} page(s)`);
+            }
           }
         } else if (data.originalFileUrl) {
           // Fallback: old v1 project with original.{ext}
@@ -2993,6 +3000,306 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
     const a = document.createElement("a"); a.href = url; a.download = "annotations.csv"; a.click();
   };
 
+  const exportReport = async () => {
+    syncCurrentPageToRef();
+    const allPages = allPagesRef.current.length > 0 ? allPagesRef.current : [];
+    const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+    const W = 210, H = 297;
+    const MARGIN = 14;
+    const COL = W - MARGIN * 2;
+    const ACCENT = [30, 80, 160];
+    const DARK   = [15, 23, 40];
+    const LIGHT  = [200, 208, 224];
+    const MUTED  = [100, 120, 150];
+
+    const scaleLabel = ratio
+      ? `1 px = ${ratio.toFixed(6)} m  (${realLength}m : ${pixelLength}px)`
+      : "No scale calibrated";
+
+    // ── Helper: draw a horizontal rule ────────────────────────────────────────
+    const hRule = (y, r=ACCENT[0], g=ACCENT[1], b=ACCENT[2]) => {
+      doc.setDrawColor(r, g, b); doc.setLineWidth(0.4); doc.line(MARGIN, y, W - MARGIN, y);
+    };
+
+    // ── Helper: render one annotation table for a page ────────────────────────
+    const drawTable = (anns, startY) => {
+      const classes = {};
+      for (const ann of anns) {
+        if (!classes[ann.clsName]) classes[ann.clsName] = { count: 0, totalLength: 0, totalArea: 0 };
+        const entry = classes[ann.clsName];
+        entry.count++;
+        const areaPx = annotationAreaPx(ann);
+        const perimPx = annotationPerimeterPx(ann);
+        if (ann.clsName === "External_Wall" || ann.clsName === "Internal_Wall") {
+          if (perimPx > 0) entry.totalLength += wallLengthFromAreaPerim(areaPx, perimPx) * (ratio || 0);
+        } else if (ann.clsName === "zone") {
+          entry.totalArea += ratio ? areaPx * ratio * ratio : 0;
+        }
+      }
+
+      let y = startY;
+      const ROW_H = 7;
+      const cols = [MARGIN, MARGIN + 60, MARGIN + 95, MARGIN + 135];
+
+      // Table header
+      doc.setFillColor(ACCENT[0], ACCENT[1], ACCENT[2]);
+      doc.rect(MARGIN, y, COL, ROW_H, "F");
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(8); doc.setFont("helvetica", "bold");
+      doc.text("Class", cols[0] + 2, y + 5);
+      doc.text("Count", cols[1], y + 5);
+      doc.text("Total Length (m)", cols[2], y + 5);
+      doc.text("Total Area (m²)", cols[3], y + 5);
+      y += ROW_H;
+
+      const entries = Object.entries(classes);
+      entries.forEach(([cls, data], i) => {
+        doc.setFillColor(i % 2 === 0 ? 240 : 250, i % 2 === 0 ? 244 : 250, i % 2 === 0 ? 252 : 255);
+        doc.rect(MARGIN, y, COL, ROW_H, "F");
+        doc.setTextColor(DARK[0], DARK[1], DARK[2]);
+        doc.setFont("helvetica", "normal"); doc.setFontSize(8);
+        doc.text(cls, cols[0] + 2, y + 5);
+        doc.text(String(data.count), cols[1], y + 5);
+        doc.text(data.totalLength > 0 ? data.totalLength.toFixed(2) : "—", cols[2], y + 5);
+        doc.text(data.totalArea > 0 ? data.totalArea.toFixed(2) : "—", cols[3], y + 5);
+        y += ROW_H;
+      });
+
+      // Border around table
+      doc.setDrawColor(180, 200, 220); doc.setLineWidth(0.3);
+      doc.rect(MARGIN, startY, COL, y - startY);
+
+      return y;
+    };
+
+    // ── Helper: render page image onto PDF ────────────────────────────────────
+    const addPageImage = (page, y) => {
+      if (!page.img) return y;
+      const maxW = COL, maxH = 140;
+      const imgW = page.imgNaturalSize?.w || page.img.naturalWidth;
+      const imgH = page.imgNaturalSize?.h || page.img.naturalHeight;
+      const scale = Math.min(maxW / imgW, maxH / imgH);
+      const dw = imgW * scale, dh = imgH * scale;
+      // Draw on temp canvas at natural size
+      const c = document.createElement("canvas");
+      c.width = imgW; c.height = imgH;
+      const ctx = c.getContext("2d");
+      ctx.drawImage(page.img, 0, 0);
+      // Overlay annotations
+      const annScale = 1;
+      const drawAnnOnCanvas = (ann) => {
+        const color = allClassColors[ann.clsName] || DEFAULT_COLOR;
+        const hex = color.replace("#", "");
+        const r = parseInt(hex.slice(0,2),16), g = parseInt(hex.slice(2,4),16), b = parseInt(hex.slice(4,6),16);
+        ctx.strokeStyle = `rgb(${r},${g},${b})`;
+        ctx.lineWidth = Math.max(2, imgW / 400);
+        if (ann.shapeType === "box") {
+          const [x1,y1,x2,y2] = annotationBbox(ann);
+          ctx.strokeRect(x1*annScale, y1*annScale, (x2-x1)*annScale, (y2-y1)*annScale);
+          ctx.fillStyle = `rgba(${r},${g},${b},0.12)`;
+          ctx.fillRect(x1*annScale, y1*annScale, (x2-x1)*annScale, (y2-y1)*annScale);
+        } else if (ann.points && ann.points.length > 1) {
+          ctx.beginPath();
+          ctx.moveTo(ann.points[0][0]*annScale, ann.points[0][1]*annScale);
+          ann.points.slice(1).forEach(([px,py]) => ctx.lineTo(px*annScale, py*annScale));
+          ctx.closePath(); ctx.stroke();
+          ctx.fillStyle = `rgba(${r},${g},${b},0.12)`; ctx.fill();
+        }
+      };
+      (page.annotations || []).forEach(drawAnnOnCanvas);
+      const dataUrl = c.toDataURL("image/jpeg", 0.85);
+      doc.addImage(dataUrl, "JPEG", MARGIN, y, dw, dh);
+      return y + dh + 4;
+    };
+
+    // ══ COVER PAGE ═══════════════════════════════════════════════════════════
+    doc.setFillColor(DARK[0], DARK[1], DARK[2]);
+    doc.rect(0, 0, W, H, "F");
+    // Accent bars
+    doc.setFillColor(ACCENT[0], ACCENT[1], ACCENT[2]);
+    doc.rect(0, 70, W, 2, "F");
+    doc.rect(0, 145, W, 2, "F");
+
+    // Logo + "Quant" branding
+    try {
+      const logoResp = await fetch("/logo.png");
+      const logoBlob = await logoResp.blob();
+      const logoB64 = await new Promise(res => {
+        const reader = new FileReader();
+        reader.onload = () => res(reader.result);
+        reader.readAsDataURL(logoBlob);
+      });
+      const LOGO_SIZE = 22;
+      const logoX = W / 2 - LOGO_SIZE / 2;
+      doc.addImage(logoB64, "PNG", logoX, 28, LOGO_SIZE, LOGO_SIZE);
+    } catch { /* skip if logo missing */ }
+    doc.setTextColor(100, 210, 255);
+    doc.setFont("helvetica", "bold"); doc.setFontSize(20);
+    doc.text("QUANT", W / 2, 58, { align: "center" });
+
+    // Title
+    doc.setTextColor(200, 240, 255);
+    doc.setFont("helvetica", "bold"); doc.setFontSize(26);
+    doc.text("Quantity Takeoff Report", W / 2, 95, { align: "center" });
+    // Project name
+    doc.setTextColor(LIGHT[0], LIGHT[1], LIGHT[2]);
+    doc.setFontSize(16); doc.setFont("helvetica", "normal");
+    doc.text(project?.name || "Untitled Project", W / 2, 112, { align: "center" });
+    // Meta info
+    doc.setFontSize(10); doc.setTextColor(MUTED[0], MUTED[1], MUTED[2]);
+    const userName = user?.signInDetails?.loginId || user?.username || "Unknown";
+    doc.text(`Prepared by: ${userName}`, W / 2, 157, { align: "center" });
+    doc.text(`Generated: ${new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}`, W / 2, 167, { align: "center" });
+    doc.text(`Scale: ${scaleLabel}`, W / 2, 177, { align: "center" });
+    doc.text(`Pages analysed: ${allPages.length}`, W / 2, 187, { align: "center" });
+
+    // ══ GRAND SUMMARY PAGE ═══════════════════════════════════════════════════
+    doc.addPage();
+    let y = MARGIN;
+
+    // Header bar
+    doc.setFillColor(ACCENT[0], ACCENT[1], ACCENT[2]);
+    doc.rect(0, 0, W, 12, "F");
+    doc.setTextColor(255,255,255); doc.setFont("helvetica","bold"); doc.setFontSize(9);
+    doc.text(project?.name || "Untitled", MARGIN, 8);
+    y = 20;
+
+    doc.setTextColor(DARK[0], DARK[1], DARK[2]);
+    doc.setFont("helvetica", "bold"); doc.setFontSize(14);
+    doc.text("Summary — All Pages", MARGIN, y); y += 3;
+    hRule(y); y += 6;
+
+    // Aggregate totals across all pages
+    const totals = {};
+    for (const page of allPages) {
+      for (const ann of (page.annotations || [])) {
+        if (!totals[ann.clsName]) totals[ann.clsName] = { count: 0, totalLength: 0, totalArea: 0 };
+        const entry = totals[ann.clsName];
+        entry.count++;
+        const areaPx = annotationAreaPx(ann);
+        const perimPx = annotationPerimeterPx(ann);
+        if (ann.clsName === "External_Wall" || ann.clsName === "Internal_Wall") {
+          if (perimPx > 0) entry.totalLength += wallLengthFromAreaPerim(areaPx, perimPx) * (ratio || 0);
+        } else if (ann.clsName === "zone") {
+          entry.totalArea += ratio ? areaPx * ratio * ratio : 0;
+        }
+      }
+    }
+
+    if (Object.keys(totals).length === 0) {
+      doc.setFont("helvetica","italic"); doc.setFontSize(10); doc.setTextColor(MUTED[0],MUTED[1],MUTED[2]);
+      doc.text("No annotations found.", MARGIN, y); y += 10;
+    } else {
+      const ROW_H = 8;
+      const cols = [MARGIN, MARGIN+60, MARGIN+95, MARGIN+135];
+      // header
+      doc.setFillColor(ACCENT[0],ACCENT[1],ACCENT[2]);
+      doc.rect(MARGIN, y, COL, ROW_H, "F");
+      doc.setTextColor(255,255,255); doc.setFont("helvetica","bold"); doc.setFontSize(9);
+      doc.text("Class", cols[0]+2, y+5.5);
+      doc.text("Count", cols[1], y+5.5);
+      doc.text("Total Length (m)", cols[2], y+5.5);
+      doc.text("Total Area (m²)", cols[3], y+5.5);
+      y += ROW_H;
+      Object.entries(totals).forEach(([cls, data], i) => {
+        doc.setFillColor(i%2===0?235:245, i%2===0?242:247, i%2===0?252:255);
+        doc.rect(MARGIN, y, COL, ROW_H, "F");
+        doc.setTextColor(DARK[0],DARK[1],DARK[2]); doc.setFont("helvetica","normal"); doc.setFontSize(9);
+        doc.text(cls, cols[0]+2, y+5.5);
+        doc.text(String(data.count), cols[1], y+5.5);
+        doc.text(data.totalLength>0 ? data.totalLength.toFixed(2) : "—", cols[2], y+5.5);
+        doc.text(data.totalArea>0 ? data.totalArea.toFixed(2) : "—", cols[3], y+5.5);
+        y += ROW_H;
+      });
+      doc.setDrawColor(180,200,220); doc.setLineWidth(0.3);
+      doc.rect(MARGIN, 29, COL, y-29);
+    }
+
+    // ══ PER-PAGE SECTIONS ════════════════════════════════════════════════════
+    for (const page of allPages) {
+      doc.addPage();
+      y = 0;
+
+      // Header bar
+      doc.setFillColor(ACCENT[0],ACCENT[1],ACCENT[2]);
+      doc.rect(0, 0, W, 12, "F");
+      doc.setTextColor(255,255,255); doc.setFont("helvetica","bold"); doc.setFontSize(9);
+      doc.text(project?.name || "Untitled", MARGIN, 8);
+      y = 20;
+
+      const pageLabel = page.label || (page.pdfPageNumber != null ? `Page ${page.pdfPageNumber}` : `Page ${page.pageIndex + 1}`);
+      doc.setTextColor(DARK[0],DARK[1],DARK[2]); doc.setFont("helvetica","bold"); doc.setFontSize(13);
+      doc.text(pageLabel, MARGIN, y); y += 3;
+      hRule(y); y += 6;
+
+      // Annotated thumbnail
+      y = addPageImage(page, y) + 2;
+
+      // Scale note
+      doc.setFontSize(7); doc.setTextColor(MUTED[0],MUTED[1],MUTED[2]); doc.setFont("helvetica","italic");
+      doc.text(`Scale: ${scaleLabel}`, MARGIN, y); y += 6;
+
+      // Annotation count
+      const annCount = (page.annotations || []).length;
+      doc.setFontSize(9); doc.setFont("helvetica","bold"); doc.setTextColor(DARK[0],DARK[1],DARK[2]);
+      doc.text(`Annotations: ${annCount}`, MARGIN, y); y += 5;
+      hRule(y, 180, 200, 220); y += 4;
+
+      if (annCount === 0) {
+        doc.setFont("helvetica","italic"); doc.setFontSize(9); doc.setTextColor(MUTED[0],MUTED[1],MUTED[2]);
+        doc.text("No annotations on this page.", MARGIN, y);
+      } else {
+        y = drawTable(page.annotations, y);
+      }
+
+      // ── Class & tag colour legend ─────────────────────────────────────────
+      y += 6;
+      doc.setFont("helvetica","bold"); doc.setFontSize(8); doc.setTextColor(DARK[0],DARK[1],DARK[2]);
+      doc.text("Legend", MARGIN, y); y += 4;
+      hRule(y, 180, 200, 220); y += 4;
+
+      // Classes present on this page
+      const pageClasses = [...new Set((page.annotations || []).map(a => a.clsName))];
+      const SWATCH = 4, GAP = 3, ITEM_W = 45;
+      let lx = MARGIN, ly = y;
+      doc.setFont("helvetica","normal"); doc.setFontSize(7.5);
+      for (const cls of pageClasses) {
+        const hex = (allClassColors[cls] || DEFAULT_COLOR).replace("#","");
+        const r = parseInt(hex.slice(0,2),16), g = parseInt(hex.slice(2,4),16), b = parseInt(hex.slice(4,6),16);
+        doc.setFillColor(r,g,b); doc.rect(lx, ly - SWATCH + 1, SWATCH, SWATCH, "F");
+        doc.setTextColor(DARK[0],DARK[1],DARK[2]); doc.text(cls, lx + SWATCH + 2, ly);
+        lx += ITEM_W;
+        if (lx + ITEM_W > W - MARGIN) { lx = MARGIN; ly += SWATCH + GAP + 1; }
+      }
+
+      // Zone tags used on this page
+      const pageTags = [...new Set((page.annotations || []).filter(a => a.zoneTag).map(a => a.zoneTag))];
+      if (pageTags.length > 0) {
+        lx = MARGIN; ly += SWATCH + GAP + 4;
+        doc.setFont("helvetica","bold"); doc.setFontSize(8); doc.setTextColor(DARK[0],DARK[1],DARK[2]);
+        doc.text("Zone Tags", MARGIN, ly); ly += 4;
+        hRule(ly, 180, 200, 220); ly += 4;
+        doc.setFont("helvetica","normal"); doc.setFontSize(7.5);
+        for (const tag of pageTags) {
+          const tagColor = (zoneTags[tag] || "#888888").replace("#","");
+          const r = parseInt(tagColor.slice(0,2),16), g = parseInt(tagColor.slice(2,4),16), b = parseInt(tagColor.slice(4,6),16);
+          doc.setFillColor(r,g,b); doc.rect(lx, ly - SWATCH + 1, SWATCH, SWATCH, "F");
+          doc.setTextColor(DARK[0],DARK[1],DARK[2]); doc.text(tag, lx + SWATCH + 2, ly);
+          lx += ITEM_W;
+          if (lx + ITEM_W > W - MARGIN) { lx = MARGIN; ly += SWATCH + GAP + 1; }
+        }
+      }
+
+      // Page footer
+      doc.setFontSize(7); doc.setTextColor(MUTED[0],MUTED[1],MUTED[2]); doc.setFont("helvetica","normal");
+      doc.text(`${new Date().toLocaleDateString("en-GB")}`, W - MARGIN, H - 6, { align: "right" });
+      hRule(H - 9, 50, 70, 100);
+    }
+
+    const slug = (project?.name || "report").replace(/[^a-z0-9]/gi, "_");
+    doc.save(`QT_${slug}.pdf`);
+  };
+
   const exportDXF = () => {
     // DXF export: current page only, one layer per class
     const d = new Drawing();
@@ -3883,6 +4190,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                 else if (val === "csv") exportCSV();
                 else if (val === "dxf-manual" && canExportDXF) exportDXF();
                 else if (val === "dxf-auto" && canExportDXF) handleAutoDxfClick();
+                else if (val === "report") exportReport();
               }}
               style={{ ...styles.select, cursor: "pointer", fontWeight: 700, color: "#c8f0fa", letterSpacing: 1 }}
             >
@@ -3891,6 +4199,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
               <option value="csv">CSV</option>
               <option value="dxf-manual" disabled={!canExportDXF}>{canExportDXF ? "DXF (Manual)" : "DXF (Manual) - Pro"}</option>
               <option value="dxf-auto" disabled={!canExportDXF || !(existingFileInfoRef.current.ext === 'pdf' || pdfBytesRef.current)}>{canExportDXF ? "DXF (Auto)" : "DXF (Auto) - Pro"}</option>
+              <option value="report">PDF Report</option>
             </select>
           </div>
 

@@ -210,7 +210,9 @@ export async function saveProject(
 
   await Promise.all(uploads);
 
-  // Cleanup stale annotation/image files from renamed pages
+  // Cleanup stale annotation JSON files from renamed/deleted pages
+  // NOTE: PNG files are intentionally NOT deleted here to prevent data loss from slug mismatches.
+  // Stale PNGs are harmless (small storage cost) vs accidentally deleting valid floor plan images.
   if (currentSlugs.size > 0) {
     try {
       const prefix = await userPrefix(projectId);
@@ -220,8 +222,6 @@ export async function saveProject(
         const p = item.path;
         const annotMatch = p.match(/\/annotations-([^/]+)\.json$/);
         if (annotMatch && !currentSlugs.has(annotMatch[1])) toDelete.push(p);
-        const imageMatch = p.match(/\/page-([^/]+)\.png$/);
-        if (imageMatch && !currentSlugs.has(imageMatch[1])) toDelete.push(p);
       }
       if (toDelete.length > 0) await Promise.all(toDelete.map(path => remove({ path })));
     } catch (err) {
