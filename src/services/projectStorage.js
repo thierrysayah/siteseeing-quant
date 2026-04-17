@@ -64,7 +64,45 @@ async function fetchJSON(path) {
   return res.json();
 }
 
-// ─── COUNT HELPER ─────────────────────────────────────────────────────────────
+// ─── GEOMETRY HELPERS (exact mirror of DetectionTool.jsx) ────────────────────
+function _areaPx(ann) {
+  if (ann.shapeType === 'box') {
+    return Math.max(0, ann.x2 - ann.x1) * Math.max(0, ann.y2 - ann.y1);
+  }
+  const pts = ann.points || [];
+  if (pts.length < 3) return 0;
+  let area = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const [x1, y1] = pts[i], [x2, y2] = pts[(i + 1) % pts.length];
+    area += x1 * y2 - x2 * y1;
+  }
+  return Math.abs(area) / 2;
+}
+function _perimPx(ann) {
+  if (ann.shapeType === 'box') {
+    return 2 * (Math.max(0, ann.x2 - ann.x1) + Math.max(0, ann.y2 - ann.y1));
+  }
+  if (ann.shapeType === 'line') {
+    return Math.hypot(ann.x2 - ann.x1, ann.y2 - ann.y1);
+  }
+  const pts = ann.points || [];
+  if (pts.length < 2) return 0;
+  let total = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const [x1, y1] = pts[i], [x2, y2] = pts[(i + 1) % pts.length];
+    total += Math.hypot(x2 - x1, y2 - y1);
+  }
+  return total;
+}
+function _wallLength(areaPx, perimPx) {
+  const halfP = perimPx / 2;
+  const disc = halfP * halfP - 4 * areaPx;
+  if (disc < 0) return halfP / 2;
+  const sqrtDisc = Math.sqrt(disc);
+  return (halfP + sqrtDisc) / 2;
+}
+
+// ─── COUNT & MEASUREMENT HELPERS ─────────────────────────────────────────────
 function deriveCountsFromPages(pages) {
   if (!pages || pages.length === 0) return null;
   const allAnns = pages.flatMap(p => p.annotations || []);
@@ -74,6 +112,54 @@ function deriveCountsFromPages(pages) {
     doors:   allAnns.filter(a => a.clsName === 'door').length,
     windows: allAnns.filter(a => a.clsName === 'window').length,
     walls:   allAnns.filter(a => a.clsName === 'Internal_Wall' || a.clsName === 'External_Wall').length,
+  };
+}
+
+function deriveMeasurementsFromPages(pages, ratio, customClasses) {
+  if (!pages || pages.length === 0) return { totalWallLengthM: null, totalZoneAreaM2: null, customMeasurements: {} };
+  const allAnns = pages.flatMap(p => p.annotations || []);
+
+  // Build measureType lookup for custom classes: { name -> 'length'|'area'|'unit' }
+  const customMeasureType = {};
+  for (const cc of (customClasses || [])) {
+    if (cc.measureType) customMeasureType[cc.name] = cc.measureType;
+  }
+
+  let wallLengthPx = 0, zoneAreaPx = 0;
+  const customPx = {}; // { className: accumulated px value }
+
+  for (const ann of allAnns) {
+    if (ann.clsName === 'Internal_Wall' || ann.clsName === 'External_Wall') {
+      if (ratio) { const perim = _perimPx(ann); if (perim > 0) wallLengthPx += _wallLength(_areaPx(ann), perim); }
+    } else if (ann.clsName === 'zone') {
+      if (ratio) zoneAreaPx += _areaPx(ann);
+    } else if (customMeasureType[ann.clsName]) {
+      const mt = customMeasureType[ann.clsName];
+      if (!customPx[ann.clsName]) customPx[ann.clsName] = 0;
+      if (mt === 'length' && ratio) {
+        const perim = _perimPx(ann);
+        customPx[ann.clsName] += perim > 0 ? _wallLength(_areaPx(ann), perim) : 0;
+      } else if (mt === 'area' && ratio) {
+        customPx[ann.clsName] += _areaPx(ann);
+      } else if (mt === 'unit') {
+        customPx[ann.clsName] += 1; // count
+      }
+    }
+  }
+
+  // Convert px → real units
+  const customMeasurements = {};
+  for (const [cls, val] of Object.entries(customPx)) {
+    const mt = customMeasureType[cls];
+    if (mt === 'length' && ratio) customMeasurements[cls] = val * ratio;
+    else if (mt === 'area' && ratio) customMeasurements[cls] = val * ratio * ratio;
+    else if (mt === 'unit') customMeasurements[cls] = val;
+  }
+
+  return {
+    totalWallLengthM: ratio ? wallLengthPx * ratio : null,
+    totalZoneAreaM2:  ratio ? zoneAreaPx * ratio * ratio : null,
+    customMeasurements,
   };
 }
 
@@ -141,21 +227,28 @@ export async function saveProject(
   projectId,
   { name, pages, scale, settings, file, pageImages, existingExt, existingFileName }
 ) {
-  const { userId } = await getCurrentUser();
+  const { userId, signInDetails } = await getCurrentUser();
+  const ownerEmail = signInDetails?.loginId || null;
   const counts = deriveCountsFromPages(pages);
+  const measurements = deriveMeasurementsFromPages(pages, scale?.pixelToMeter, settings?.customClasses);
   const originalExt = file ? file.name.split('.').pop().toLowerCase() : (existingExt || null);
   const fileName = file ? file.name : (existingFileName || null);
 
   const metadata = {
     id: projectId,
     name,
+    owner: ownerEmail,
     ownerSub: userId,
     status: counts ? 'In Progress' : 'Draft',
     lastEdited: new Date().toISOString(),
     counts,
+    totalWallLengthM:    measurements.totalWallLengthM,
+    totalZoneAreaM2:     measurements.totalZoneAreaM2,
+    customMeasurements:  measurements.customMeasurements,
     fileName,
     originalExt,
     pageCount: pages ? pages.length : 1,
+    customClasses: settings?.customClasses || [],
   };
 
   const NO_CACHE = 'no-cache, no-store, must-revalidate';
@@ -379,4 +472,63 @@ export async function revokeProjectAccess(projectId, managerId) {
   const data = await body.json();
   if (data.error) throw new Error(data.error);
   return data;
+}
+
+// ─── RATE CARD ────────────────────────────────────────────────────────────────
+// Stored at private/org-{orgId}/{userId}/rate-card.json
+// Each manager in the org has their own rate card.
+export async function loadRateCard() {
+  try {
+    const { userId } = await getCurrentUser();
+    const orgId = await getOrgId();
+    if (!orgId) return null;
+    const key = `private/org-${orgId}/${userId}/rate-card.json`;
+    const { url } = await getUrl({ path: key, options: { expiresIn: 60 } });
+    const res = await fetch(url.toString(), { cache: 'no-store' });
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+export async function saveRateCard(rates) {
+  const { userId } = await getCurrentUser();
+  const orgId = await getOrgId();
+  if (!orgId) throw new Error('No org context');
+  const key = `private/org-${orgId}/${userId}/rate-card.json`;
+  const payload = { updatedAt: new Date().toISOString(), rates };
+  await uploadData({
+    path: key,
+    data: JSON.stringify(payload),
+    options: { contentType: 'application/json', cacheControl: 'no-cache, no-store, must-revalidate' },
+  }).result;
+}
+
+// ─── MANAGER META ─────────────────────────────────────────────────────────────
+// Stores per-project rate overrides and status overrides for this manager.
+// Path: private/org-{orgId}/{userId}/manager-meta.json
+// Shape: { projectStatuses: { [id]: string }, projectOverrides: { [id]: { [cls]: { costType, rate } } } }
+export async function loadManagerMeta() {
+  try {
+    const { userId } = await getCurrentUser();
+    const orgId = await getOrgId();
+    if (!orgId) return null;
+    const key = `private/org-${orgId}/${userId}/manager-meta.json`;
+    const { url } = await getUrl({ path: key, options: { expiresIn: 60 } });
+    const res = await fetch(url.toString(), { cache: 'no-store' });
+    if (!res.ok) return null;
+    return res.json();
+  } catch { return null; }
+}
+
+export async function saveManagerMeta(meta) {
+  const { userId } = await getCurrentUser();
+  const orgId = await getOrgId();
+  if (!orgId) throw new Error('No org context');
+  const key = `private/org-${orgId}/${userId}/manager-meta.json`;
+  const payload = { ...meta, updatedAt: new Date().toISOString() };
+  await uploadData({
+    path: key,
+    data: JSON.stringify(payload),
+    options: { contentType: 'application/json', cacheControl: 'no-cache, no-store, must-revalidate' },
+  }).result;
 }

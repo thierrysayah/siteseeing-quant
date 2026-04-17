@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import ProjectCard from "./ProjectCard";
 import NewProjectModal from "./NewProjectModal";
+import ManagerDashboard from "./ManagerDashboard";
 import { listProjects, listManagerProjects, createProject, deleteProject } from "../services/projectStorage";
 import { getLimits, fetchUserProfile } from "../services/userService";
 import "./ProjectsPage.css";
@@ -90,38 +91,56 @@ export default function ProjectsPage({ onOpenProject, user, refreshKey, userTier
     if (onOpenProject) onOpenProject(newProject);
   };
 
+  // Managers get the full dashboard — no header chrome needed, it's inside the dashboard
+  if (isManager) {
+    return (
+      <div className="pp-root">
+        <header className="pp-header">
+          <div className="pp-header-left">
+            <span className="pp-logo">⬡ QUANT</span>
+            <span className="pp-header-divider" />
+            <h1 className="pp-title">Dashboard</h1>
+          </div>
+        </header>
+        {loading && <div className="pp-feedback pp-loading">Loading projects…</div>}
+        {!loading && error && <div className="pp-feedback pp-error">{error}</div>}
+        {!loading && !error && (
+          <ManagerDashboard
+            projects={projects}
+            onOpenProject={handleOpen}
+            user={user}
+            userTierInfo={userTierInfo}
+          />
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="pp-root">
       <header className="pp-header">
         <div className="pp-header-left">
           <span className="pp-logo">⬡ QUANT</span>
           <span className="pp-header-divider" />
-          <h1 className="pp-title">{isManager ? "Shared Projects" : "Projects"}</h1>
+          <h1 className="pp-title">Projects</h1>
         </div>
         <div className="pp-header-right">
-          {!loading && !isManager && (
+          {!loading && (
             <span className="pp-project-count">
               {projects.length}
               {limits.maxProjects !== Infinity ? ` / ${limits.maxProjects}` : ""} project{projects.length !== 1 ? "s" : ""}
             </span>
           )}
-          {!isManager && (
-            <button
-              className="pp-btn-primary"
-              onClick={() => atLimit ? null : setShowModal(true)}
-              disabled={atLimit}
-              title={atLimit ? `Upgrade your plan to create more than ${limits.maxProjects} project${limits.maxProjects !== 1 ? 's' : ''}` : ''}
-            >
-              + New Project
-            </button>
-          )}
+          <button
+            className="pp-btn-primary"
+            onClick={() => atLimit ? null : setShowModal(true)}
+            disabled={atLimit}
+            title={atLimit ? `Upgrade your plan to create more than ${limits.maxProjects} project${limits.maxProjects !== 1 ? 's' : ''}` : ''}
+          >
+            + New Project
+          </button>
           {atLimit && (
             <span className="pp-upgrade-hint">↑ Upgrade to add more</span>
-          )}
-          {isManager && (
-            <span style={{ fontSize: 11, color: '#8aaa88', fontStyle: 'italic' }}>
-              View only — projects shared with you
-            </span>
           )}
         </div>
       </header>
@@ -130,9 +149,7 @@ export default function ProjectsPage({ onOpenProject, user, refreshKey, userTier
         {loading && <div className="pp-feedback pp-loading">Loading projects…</div>}
         {!loading && error && <div className="pp-feedback pp-error">{error}</div>}
         {!loading && !error && projects.length === 0 && (
-          isManager
-            ? <EmptyManagerState />
-            : <EmptyState onNew={() => setShowModal(true)} />
+          <EmptyState onNew={() => setShowModal(true)} />
         )}
         {!loading && !error && projects.length > 0 && (
           <div className="pp-grid">
@@ -142,8 +159,8 @@ export default function ProjectsPage({ onOpenProject, user, refreshKey, userTier
                 project={project}
                 formatDate={formatDate}
                 onOpen={handleOpen}
-                onDelete={isManager ? null : handleDelete}
-                isReadOnly={isManager}
+                onDelete={handleDelete}
+                isReadOnly={false}
               />
             ))}
           </div>

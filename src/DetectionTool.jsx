@@ -1466,6 +1466,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
   const [showClassManager, setShowClassManager] = useState(false);
   const [newCustomClassName, setNewCustomClassName] = useState("");
   const [newCustomClassColor, setNewCustomClassColor] = useState("#FF6B6B");
+  const [newCustomClassMeasureType, setNewCustomClassMeasureType] = useState("unit");
 
   // ─── Multi-page support ─────────────────────────────────────────────────────
   // allPagesRef stores data for ALL pages. The currently active page's annotations/img
@@ -4505,7 +4506,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                       if (e.key !== "Enter") return;
                       const name = newCustomClassName.trim();
                       if (!name || allClasses.includes(name)) return;
-                      setCustomClasses(prev => [...prev, { name, color: newCustomClassColor }]);
+                      setCustomClasses(prev => [...prev, { name, color: newCustomClassColor, measureType: newCustomClassMeasureType }]);
                       setVisibleClasses(prev => new Set([...prev, name]));
                       setNewCustomClassName("");
                     }}
@@ -4513,10 +4514,15 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                     style={{ ...styles.smallInput, flex: 1, width: "auto" }}
                   />
                   <input type="color" value={newCustomClassColor} onChange={e => setNewCustomClassColor(e.target.value)} style={{ width: 28, height: 24, padding: 1, background: "none", border: "none", cursor: "pointer" }} />
+                  <select value={newCustomClassMeasureType} onChange={e => setNewCustomClassMeasureType(e.target.value)} title="How is this class measured?" style={{ ...styles.select, width: 68, fontSize: 10, padding: "2px 4px" }}>
+                    <option value="unit">unit</option>
+                    <option value="length">length</option>
+                    <option value="area">area</option>
+                  </select>
                   <button onClick={() => {
                     const name = newCustomClassName.trim();
                     if (!name || allClasses.includes(name)) return;
-                    setCustomClasses(prev => [...prev, { name, color: newCustomClassColor }]);
+                    setCustomClasses(prev => [...prev, { name, color: newCustomClassColor, measureType: newCustomClassMeasureType }]);
                     setVisibleClasses(prev => new Set([...prev, name]));
                     setNewCustomClassName("");
                   }} style={styles.smallBtn}>Add</button>
