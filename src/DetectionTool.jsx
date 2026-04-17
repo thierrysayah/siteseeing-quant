@@ -3,6 +3,27 @@ import { loadProject, saveProject, getOriginalFileUrl, pageSlugify, listProjects
 import { getLimits, tierLabel, tierColor } from "./services/userService";
 import Drawing from "dxf-writer";
 import { jsPDF } from "jspdf";
+import * as XLSX from "xlsx";
+
+// ─── EXCEL COLUMNS ────────────────────────────────────────────────────────────
+const EXCEL_COLUMNS = [
+  { key: "page",             label: "Page" },
+  { key: "num_id",           label: "ID" },
+  { key: "shape_type",       label: "Shape Type" },
+  { key: "class",            label: "Class" },
+  { key: "x1",               label: "X1 (px)" },
+  { key: "y1",               label: "Y1 (px)" },
+  { key: "x2",               label: "X2 (px)" },
+  { key: "y2",               label: "Y2 (px)" },
+  { key: "polygon_points",   label: "Polygon Points" },
+  { key: "confidence",       label: "Confidence" },
+  { key: "source_model",     label: "Source Model" },
+  { key: "zone_tag",         label: "Tag" },
+  { key: "area_px2",         label: "Area (px²)" },
+  { key: "area_m2",          label: "Area (m²)" },
+  { key: "perimeter_px",     label: "Perimeter (px)" },
+  { key: "length_m",         label: "Length / Perimeter (m)" },
+];
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const WALL_MODEL_URL = "https://predict-69b7f2f29e8ba20d1c3c-dproatj77a-lm.a.run.app/predict";
@@ -2796,6 +2817,16 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
 
   const [rotateAngle, setRotateAngle] = useState("0");
 
+  // Excel export column picker modal
+  const [showExcelPicker, setShowExcelPicker] = useState(false);
+  const [excelEnabledCols, setExcelEnabledCols] = useState(() => new Set(EXCEL_COLUMNS.map(c => c.key)));
+  const [excelRows, setExcelRows] = useState([]);
+
+  // PDF export column picker modal
+  const [showPdfPicker, setShowPdfPicker] = useState(false);
+  const [pdfEnabledCols, setPdfEnabledCols] = useState(() => new Set(EXCEL_COLUMNS.map(c => c.key)));
+  const [pdfPickerRows, setPdfPickerRows] = useState([]);
+
   // Import annotations modal
   const [showImportAnns, setShowImportAnns] = useState(false);
   const [importProjects, setImportProjects] = useState([]);
@@ -2971,6 +3002,69 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
     const a = document.createElement("a"); a.href = url; a.download = `annotations${pageSuffix}.json`; a.click();
   };
 
+  const buildExcelRows = () => {
+    syncCurrentPageToRef();
+    const allPages = allPagesRef.current.length > 0 ? allPagesRef.current : [{ pageIndex: currentPageIndex, annotations }];
+    const rows = [];
+    for (const page of allPages) {
+      for (const ann of (page.annotations || [])) {
+        const [x1, y1, x2, y2] = annotationBbox(ann);
+        const areaPx = annotationAreaPx(ann);
+        const areaM2 = ratio ? areaPx * ratio * ratio : "";
+        const perimPx = (ann.shapeType === "polygon" || ann.shapeType === "line" || ann.clsName === "zone") ? annotationPerimeterPx(ann) : "";
+        let lengthM = ratio && perimPx !== "" ? perimPx * ratio : "";
+        if (ratio && (ann.clsName === "External_Wall" || ann.clsName === "Internal_Wall")) {
+          const wPerimPx = annotationPerimeterPx(ann);
+          if (wPerimPx > 0) lengthM = wallLengthFromAreaPerim(areaPx, wPerimPx) * ratio;
+        }
+        const pageLabel = page.label || (page.pdfPageNumber != null ? `Page ${page.pdfPageNumber}` : `Page ${page.pageIndex + 1}`);
+        rows.push({
+          page: pageLabel,
+          num_id: ann.numId ?? "",
+          shape_type: ann.shapeType,
+          class: ann.clsName,
+          x1: Math.round(x1), y1: Math.round(y1), x2: Math.round(x2), y2: Math.round(y2),
+          polygon_points: ann.points ? JSON.stringify(ann.points) : "",
+          confidence: ann.confidence ?? "",
+          source_model: ann.sourceModel ?? "",
+          zone_tag: ann.zoneTag ?? "",
+          area_px2: areaPx !== "" ? Math.round(areaPx) : "",
+          area_m2: areaM2 !== "" ? +areaM2.toFixed(4) : "",
+          perimeter_px: perimPx !== "" ? Math.round(perimPx) : "",
+          length_m: lengthM !== "" ? +lengthM.toFixed(4) : "",
+        });
+      }
+    }
+    return rows;
+  };
+
+  const openExcelPicker = () => {
+    setExcelRows(buildExcelRows());
+    setShowExcelPicker(true);
+  };
+
+  const openPdfPicker = () => {
+    setPdfPickerRows(buildExcelRows());
+    setShowPdfPicker(true);
+  };
+
+  const exportXLSX = (enabledCols) => {
+    const cols = EXCEL_COLUMNS.filter(c => enabledCols.has(c.key));
+    const header = cols.map(c => c.label);
+    const data = excelRows.map(row => cols.map(c => row[c.key] ?? ""));
+    const ws = XLSX.utils.aoa_to_sheet([header, ...data]);
+    // Auto column widths
+    const colWidths = cols.map((c, ci) => ({
+      wch: Math.max(c.label.length + 2, ...data.map(r => String(r[ci] ?? "").length))
+    }));
+    ws["!cols"] = colWidths;
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Annotations");
+    const slug = (project?.name || "annotations").replace(/[^a-z0-9]/gi, "_");
+    XLSX.writeFile(wb, `QT_${slug}.xlsx`);
+    setShowExcelPicker(false);
+  };
+
   const exportCSV = () => {
     syncCurrentPageToRef();
     const allPages = allPagesRef.current.length > 0 ? allPagesRef.current : [{ pageIndex: currentPageIndex, annotations }];
@@ -3000,7 +3094,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
     const a = document.createElement("a"); a.href = url; a.download = "annotations.csv"; a.click();
   };
 
-  const exportReport = async () => {
+  const exportReport = async (enabledCols) => {
     syncCurrentPageToRef();
     const allPages = allPagesRef.current.length > 0 ? allPagesRef.current : [];
     const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
@@ -3072,6 +3166,100 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
       return y;
     };
 
+    // ── Helper: draw per-annotation detail table with selected columns ────────
+    const drawDetailTable = (anns, startY, pageLabel) => {
+      const selCols = EXCEL_COLUMNS.filter(c => enabledCols.has(c.key));
+      if (selCols.length === 0 || anns.length === 0) return startY;
+
+      const numCols = selCols.length;
+      const fontSize = numCols <= 4 ? 8 : numCols <= 8 ? 7 : numCols <= 12 ? 6 : 5.5;
+      const ROW_H = numCols <= 4 ? 7 : numCols <= 8 ? 6.5 : 6;
+
+      // Proportional column widths — text-heavy columns get more space
+      const COL_WEIGHTS = {
+        page: 1.4, num_id: 0.6, shape_type: 0.7, class: 2.0,
+        x1: 0.7, y1: 0.7, x2: 0.7, y2: 0.7,
+        polygon_points: 1.0, confidence: 0.8, source_model: 1.2,
+        zone_tag: 1.5, area_px2: 0.9, area_m2: 1.2,
+        perimeter_px: 0.9, length_m: 1.4,
+      };
+      const totalWeight = selCols.reduce((s, c) => s + (COL_WEIGHTS[c.key] || 1), 0);
+      const colWidths = selCols.map(c => (COL_WEIGHTS[c.key] || 1) / totalWeight * COL);
+      const colOffsets = colWidths.map((_, i) => colWidths.slice(0, i).reduce((s, w) => s + w, 0));
+
+      const trunc = (v, ci) => {
+        const maxChars = Math.max(3, Math.floor(colWidths[ci] / (fontSize * 0.42)));
+        const s = String(v ?? "");
+        return s.length > maxChars ? s.slice(0, maxChars - 1) + "…" : s;
+      };
+
+      let y = startY;
+      let tableTop = y;
+
+      const drawHeader = () => {
+        doc.setFillColor(ACCENT[0], ACCENT[1], ACCENT[2]);
+        doc.rect(MARGIN, y, COL, ROW_H, "F");
+        doc.setTextColor(255, 255, 255); doc.setFont("helvetica", "bold"); doc.setFontSize(fontSize);
+        selCols.forEach((col, ci) => doc.text(trunc(col.label, ci), MARGIN + 1 + colOffsets[ci], y + ROW_H - 2));
+        y += ROW_H;
+      };
+
+      // Build row data from annotations
+      const rowDataList = anns.map(ann => {
+        const [x1, bY1, x2, bY2] = annotationBbox(ann);
+        const areaPx = annotationAreaPx(ann);
+        const areaM2 = ratio ? areaPx * ratio * ratio : "";
+        const perimPx = (ann.shapeType === "polygon" || ann.shapeType === "line" || ann.clsName === "zone")
+          ? annotationPerimeterPx(ann) : "";
+        let lengthM = ratio && perimPx !== "" ? perimPx * ratio : "";
+        if (ratio && (ann.clsName === "External_Wall" || ann.clsName === "Internal_Wall")) {
+          const wP = annotationPerimeterPx(ann);
+          if (wP > 0) lengthM = wallLengthFromAreaPerim(areaPx, wP) * ratio;
+        }
+        return {
+          page: pageLabel,
+          num_id: String(ann.numId ?? ""),
+          shape_type: ann.shapeType || "",
+          class: ann.clsName || "",
+          x1: String(Math.round(x1)), y1: String(Math.round(bY1)),
+          x2: String(Math.round(x2)), y2: String(Math.round(bY2)),
+          polygon_points: ann.points ? `[${ann.points.length}pts]` : "",
+          confidence: ann.confidence != null ? String(ann.confidence) : "",
+          source_model: ann.sourceModel || "",
+          zone_tag: ann.zoneTag || "",
+          area_px2: areaPx !== "" ? String(Math.round(areaPx)) : "",
+          area_m2: areaM2 !== "" ? (+areaM2).toFixed(3) : "",
+          perimeter_px: perimPx !== "" ? String(Math.round(perimPx)) : "",
+          length_m: lengthM !== "" ? (+lengthM).toFixed(3) : "",
+        };
+      });
+
+      drawHeader();
+      rowDataList.forEach((rowData, ri) => {
+        // Page break
+        if (y + ROW_H > H - 12) {
+          doc.setDrawColor(180, 200, 220); doc.setLineWidth(0.3);
+          doc.rect(MARGIN, tableTop, COL, y - tableTop);
+          doc.addPage();
+          doc.setFillColor(ACCENT[0], ACCENT[1], ACCENT[2]);
+          doc.rect(0, 0, W, 12, "F");
+          doc.setTextColor(255,255,255); doc.setFont("helvetica","bold"); doc.setFontSize(9);
+          doc.text(project?.name || "Untitled", MARGIN, 8);
+          y = 20; tableTop = y;
+          drawHeader();
+        }
+        doc.setFillColor(ri%2===0?240:250, ri%2===0?244:250, ri%2===0?252:255);
+        doc.rect(MARGIN, y, COL, ROW_H, "F");
+        doc.setTextColor(DARK[0], DARK[1], DARK[2]); doc.setFont("helvetica","normal"); doc.setFontSize(fontSize);
+        selCols.forEach((col, ci) => doc.text(trunc(rowData[col.key] ?? "", ci), MARGIN + 1 + colOffsets[ci], y + ROW_H - 2));
+        y += ROW_H;
+      });
+
+      doc.setDrawColor(180, 200, 220); doc.setLineWidth(0.3);
+      doc.rect(MARGIN, tableTop, COL, y - tableTop);
+      return y;
+    };
+
     // ── Helper: render page image onto PDF ────────────────────────────────────
     const addPageImage = (page, y) => {
       if (!page.img) return y;
@@ -3120,7 +3308,9 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
     doc.rect(0, 70, W, 2, "F");
     doc.rect(0, 145, W, 2, "F");
 
-    // Logo + "Quant" branding
+    // Logo + "Quant" branding — top-left corner
+    const LOGO_SIZE = 14;
+    const LOGO_X = MARGIN, LOGO_Y = MARGIN;
     try {
       const logoResp = await fetch("/logo.png");
       const logoBlob = await logoResp.blob();
@@ -3129,13 +3319,11 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         reader.onload = () => res(reader.result);
         reader.readAsDataURL(logoBlob);
       });
-      const LOGO_SIZE = 22;
-      const logoX = W / 2 - LOGO_SIZE / 2;
-      doc.addImage(logoB64, "PNG", logoX, 28, LOGO_SIZE, LOGO_SIZE);
+      doc.addImage(logoB64, "PNG", LOGO_X, LOGO_Y, LOGO_SIZE, LOGO_SIZE);
     } catch { /* skip if logo missing */ }
     doc.setTextColor(100, 210, 255);
-    doc.setFont("helvetica", "bold"); doc.setFontSize(20);
-    doc.text("QUANT", W / 2, 58, { align: "center" });
+    doc.setFont("helvetica", "bold"); doc.setFontSize(14);
+    doc.text("QUANT", LOGO_X + LOGO_SIZE + 3, LOGO_Y + 10);
 
     // Title
     doc.setTextColor(200, 240, 255);
@@ -3249,7 +3437,30 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         doc.setFont("helvetica","italic"); doc.setFontSize(9); doc.setTextColor(MUTED[0],MUTED[1],MUTED[2]);
         doc.text("No annotations on this page.", MARGIN, y);
       } else {
-        y = drawTable(page.annotations, y);
+        // Group annotations by class and draw one table per class
+        const byClass = {};
+        for (const ann of (page.annotations || [])) {
+          if (!byClass[ann.clsName]) byClass[ann.clsName] = [];
+          byClass[ann.clsName].push(ann);
+        }
+        for (const [cls, clsAnns] of Object.entries(byClass)) {
+          // Class title with colour swatch
+          const hex = (allClassColors[cls] || DEFAULT_COLOR).replace("#", "");
+          const cr = parseInt(hex.slice(0,2),16), cg = parseInt(hex.slice(2,4),16), cb = parseInt(hex.slice(4,6),16);
+          if (y + 14 > H - 12) {
+            doc.addPage();
+            doc.setFillColor(ACCENT[0],ACCENT[1],ACCENT[2]); doc.rect(0,0,W,12,"F");
+            doc.setTextColor(255,255,255); doc.setFont("helvetica","bold"); doc.setFontSize(9);
+            doc.text(project?.name || "Untitled", MARGIN, 8);
+            y = 20;
+          }
+          doc.setFillColor(cr, cg, cb); doc.rect(MARGIN, y, 4, 4, "F");
+          doc.setFont("helvetica","bold"); doc.setFontSize(9); doc.setTextColor(DARK[0],DARK[1],DARK[2]);
+          doc.text(`${cls}  (${clsAnns.length})`, MARGIN + 6, y + 3.5);
+          y += 7;
+          y = drawDetailTable(clsAnns, y, pageLabel);
+          y += 5;
+        }
       }
 
       // ── Class & tag colour legend ─────────────────────────────────────────
@@ -3298,6 +3509,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
 
     const slug = (project?.name || "report").replace(/[^a-z0-9]/gi, "_");
     doc.save(`QT_${slug}.pdf`);
+    setShowPdfPicker(false);
   };
 
   const exportDXF = () => {
@@ -3567,6 +3779,168 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                 <span style={{ color: value, fontSize: 11, marginLeft: "auto", fontFamily: "monospace" }}>{value}</span>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Excel Column Picker Modal */}
+      {showExcelPicker && (
+        <div style={styles.settingsOverlay} onClick={() => setShowExcelPicker(false)}>
+          <div style={{ ...styles.settingsModal, minWidth: 620, maxWidth: "90vw", maxHeight: "80vh", display: "flex", flexDirection: "column" }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <span style={{ color: "#cfaa6c", fontWeight: 700, fontSize: 13, letterSpacing: 2 }}>EXCEL EXPORT</span>
+              <button onClick={() => setShowExcelPicker(false)} style={styles.tinyBtn}>✕</button>
+            </div>
+
+            {/* Column toggles */}
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ color: "#7a9aaa", fontSize: 11, marginBottom: 8, letterSpacing: 1 }}>SELECT COLUMNS</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px" }}>
+                {EXCEL_COLUMNS.map(col => (
+                  <label key={col.key} style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", color: excelEnabledCols.has(col.key) ? "#c8f0fa" : "#4a6a7a", fontSize: 11, userSelect: "none" }}>
+                    <input
+                      type="checkbox"
+                      checked={excelEnabledCols.has(col.key)}
+                      onChange={() => setExcelEnabledCols(prev => {
+                        const next = new Set(prev);
+                        next.has(col.key) ? next.delete(col.key) : next.add(col.key);
+                        return next;
+                      })}
+                      style={{ accentColor: "#1e50a0" }}
+                    />
+                    {col.label}
+                  </label>
+                ))}
+              </div>
+              <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+                <button onClick={() => setExcelEnabledCols(new Set(EXCEL_COLUMNS.map(c => c.key)))} style={{ ...styles.tinyBtn, fontSize: 10 }}>All</button>
+                <button onClick={() => setExcelEnabledCols(new Set())} style={{ ...styles.tinyBtn, fontSize: 10 }}>None</button>
+              </div>
+            </div>
+
+            <div style={{ borderTop: "1px solid #1a2e50", marginBottom: 10 }} />
+
+            {/* Data preview */}
+            <div style={{ flex: 1, overflowY: "auto", overflowX: "auto", marginBottom: 12 }}>
+              {excelRows.length === 0 ? (
+                <div style={{ color: "#4a6a7a", fontSize: 12, padding: 10 }}>No annotations to export.</div>
+              ) : (
+                <table style={{ borderCollapse: "collapse", fontSize: 10, whiteSpace: "nowrap", width: "100%" }}>
+                  <thead>
+                    <tr>
+                      {EXCEL_COLUMNS.filter(c => excelEnabledCols.has(c.key)).map(col => (
+                        <th key={col.key} style={{ background: "#1e3050", color: "#c8f0fa", padding: "4px 8px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid #2a4070", position: "sticky", top: 0 }}>
+                          {col.label}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {excelRows.map((row, i) => (
+                      <tr key={i} style={{ background: i % 2 === 0 ? "#0d1e38" : "#0a1628" }}>
+                        {EXCEL_COLUMNS.filter(c => excelEnabledCols.has(c.key)).map(col => (
+                          <td key={col.key} style={{ padding: "3px 8px", color: "#a0c0d0", borderBottom: "1px solid #12243c", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis" }}>
+                            {String(row[col.key] ?? "")}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button onClick={() => setShowExcelPicker(false)} style={styles.tinyBtn}>Cancel</button>
+              <button
+                onClick={() => exportXLSX(excelEnabledCols)}
+                disabled={excelEnabledCols.size === 0 || excelRows.length === 0}
+                style={{ ...styles.tinyBtn, background: "#1e50a0", color: "#fff", fontWeight: 700, opacity: (excelEnabledCols.size === 0 || excelRows.length === 0) ? 0.4 : 1 }}
+              >
+                Export XLSX
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PDF Column Picker Modal */}
+      {showPdfPicker && (
+        <div style={styles.settingsOverlay} onClick={() => setShowPdfPicker(false)}>
+          <div style={{ ...styles.settingsModal, minWidth: 620, maxWidth: "90vw", maxHeight: "80vh", display: "flex", flexDirection: "column" }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <span style={{ color: "#cfaa6c", fontWeight: 700, fontSize: 13, letterSpacing: 2 }}>PDF REPORT EXPORT</span>
+              <button onClick={() => setShowPdfPicker(false)} style={styles.tinyBtn}>✕</button>
+            </div>
+
+            {/* Column toggles */}
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ color: "#7a9aaa", fontSize: 11, marginBottom: 8, letterSpacing: 1 }}>SELECT COLUMNS TO INCLUDE IN REPORT</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px" }}>
+                {EXCEL_COLUMNS.map(col => (
+                  <label key={col.key} style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", color: pdfEnabledCols.has(col.key) ? "#c8f0fa" : "#4a6a7a", fontSize: 11, userSelect: "none" }}>
+                    <input
+                      type="checkbox"
+                      checked={pdfEnabledCols.has(col.key)}
+                      onChange={() => setPdfEnabledCols(prev => {
+                        const next = new Set(prev);
+                        next.has(col.key) ? next.delete(col.key) : next.add(col.key);
+                        return next;
+                      })}
+                      style={{ accentColor: "#1e50a0" }}
+                    />
+                    {col.label}
+                  </label>
+                ))}
+              </div>
+              <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+                <button onClick={() => setPdfEnabledCols(new Set(EXCEL_COLUMNS.map(c => c.key)))} style={{ ...styles.tinyBtn, fontSize: 10 }}>All</button>
+                <button onClick={() => setPdfEnabledCols(new Set())} style={{ ...styles.tinyBtn, fontSize: 10 }}>None</button>
+              </div>
+            </div>
+
+            <div style={{ borderTop: "1px solid #1a2e50", marginBottom: 10 }} />
+
+            {/* Data preview */}
+            <div style={{ flex: 1, overflowY: "auto", overflowX: "auto", marginBottom: 12 }}>
+              {pdfPickerRows.length === 0 ? (
+                <div style={{ color: "#4a6a7a", fontSize: 12, padding: 10 }}>No annotations to export.</div>
+              ) : (
+                <table style={{ borderCollapse: "collapse", fontSize: 10, whiteSpace: "nowrap", width: "100%" }}>
+                  <thead>
+                    <tr>
+                      {EXCEL_COLUMNS.filter(c => pdfEnabledCols.has(c.key)).map(col => (
+                        <th key={col.key} style={{ background: "#1e3050", color: "#c8f0fa", padding: "4px 8px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid #2a4070", position: "sticky", top: 0 }}>
+                          {col.label}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pdfPickerRows.map((row, i) => (
+                      <tr key={i} style={{ background: i % 2 === 0 ? "#0d1e38" : "#0a1628" }}>
+                        {EXCEL_COLUMNS.filter(c => pdfEnabledCols.has(c.key)).map(col => (
+                          <td key={col.key} style={{ padding: "3px 8px", color: "#a0c0d0", borderBottom: "1px solid #12243c", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis" }}>
+                            {String(row[col.key] ?? "")}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button onClick={() => setShowPdfPicker(false)} style={styles.tinyBtn}>Cancel</button>
+              <button
+                onClick={() => exportReport(pdfEnabledCols)}
+                disabled={pdfEnabledCols.size === 0 || pdfPickerRows.length === 0}
+                style={{ ...styles.tinyBtn, background: "#1e50a0", color: "#fff", fontWeight: 700, opacity: (pdfEnabledCols.size === 0 || pdfPickerRows.length === 0) ? 0.4 : 1 }}
+              >
+                Export PDF
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -4187,16 +4561,16 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                 const val = e.target.value;
                 e.target.value = "";
                 if (val === "json") exportJSON();
-                else if (val === "csv") exportCSV();
+                else if (val === "excel") openExcelPicker();
                 else if (val === "dxf-manual" && canExportDXF) exportDXF();
                 else if (val === "dxf-auto" && canExportDXF) handleAutoDxfClick();
-                else if (val === "report") exportReport();
+                else if (val === "report") openPdfPicker();
               }}
               style={{ ...styles.select, cursor: "pointer", fontWeight: 700, color: "#c8f0fa", letterSpacing: 1 }}
             >
               <option value="" disabled>EXPORT</option>
               <option value="json">JSON</option>
-              <option value="csv">CSV</option>
+              <option value="excel">Excel (.xlsx)</option>
               <option value="dxf-manual" disabled={!canExportDXF}>{canExportDXF ? "DXF (Manual)" : "DXF (Manual) - Pro"}</option>
               <option value="dxf-auto" disabled={!canExportDXF || !(existingFileInfoRef.current.ext === 'pdf' || pdfBytesRef.current)}>{canExportDXF ? "DXF (Auto)" : "DXF (Auto) - Pro"}</option>
               <option value="report">PDF Report</option>
