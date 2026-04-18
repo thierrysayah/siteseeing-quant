@@ -56,29 +56,55 @@ function effectiveRates(orgRates, projectOverrides) {
   return merged;
 }
 
+// Pull a scalar value (length, area or count) from a per-class measurement entry
+function measurementValue(entry) {
+  if (!entry) return 0;
+  return entry.length ?? entry.area ?? entry.count ?? 0;
+}
+
 function calcProjectCost(project, orgRates, projectOverrides) {
   const rates = effectiveRates(orgRates, projectOverrides);
   if (!rates) return null;
   let total = 0; let hasAny = false;
+
+  // Preferred path: unified `measurements` map — one entry per class.
+  // Each entry has either { length }, { area } or { count }.
+  const m = project.measurements;
+  if (m && typeof m === 'object' && Object.keys(m).length > 0) {
+    for (const [cls, entry] of Object.entries(m)) {
+      const val = measurementValue(entry);
+      const rate = rates[cls]?.rate;
+      if (rate > 0 && val > 0) { total += val * rate; hasAny = true; }
+    }
+    return hasAny ? total : null;
+  }
+
+  // ── Legacy fallback for projects saved before unified measurements ───────
   const c = project.counts;
-  // Use actual measurements when available, fall back to counts
   const wallLen = project.totalWallLengthM;
   const zoneArea = project.totalZoneAreaM2;
   if (wallLen != null) {
-    // Split evenly between internal/external
-    ["Internal_Wall", "External_Wall"].forEach(cls => {
-      if (rates[cls]?.rate > 0) { total += (wallLen / 2) * rates[cls].rate; hasAny = true; }
-    });
+    // Best-effort split between internal/external when per-class breakdown missing
+    const iRate = rates.Internal_Wall?.rate || 0;
+    const eRate = rates.External_Wall?.rate || 0;
+    if (iRate > 0 && eRate > 0) {
+      total += (wallLen / 2) * iRate + (wallLen / 2) * eRate;
+      hasAny = true;
+    } else if (iRate > 0) { total += wallLen * iRate; hasAny = true; }
+    else if (eRate > 0)   { total += wallLen * eRate; hasAny = true; }
   } else if (c?.walls != null) {
-    ["Internal_Wall", "External_Wall"].forEach(cls => {
-      if (rates[cls]?.rate > 0) { total += (c.walls / 2) * rates[cls].rate; hasAny = true; }
-    });
+    const iRate = rates.Internal_Wall?.rate || 0;
+    const eRate = rates.External_Wall?.rate || 0;
+    if (iRate > 0 || eRate > 0) {
+      total += c.walls * Math.max(iRate, eRate); hasAny = true;
+    }
   }
   if (zoneArea != null && rates.zone?.rate > 0)   { total += zoneArea * rates.zone.rate;   hasAny = true; }
   else if (c?.zones != null && rates.zone?.rate > 0) { total += c.zones * rates.zone.rate; hasAny = true; }
-  if (c?.doors != null && rates.door?.rate > 0)   { total += c.doors   * rates.door.rate;   hasAny = true; }
+  if (c?.doors != null && rates.door?.rate > 0)     { total += c.doors   * rates.door.rate;   hasAny = true; }
   if (c?.windows != null && rates.window?.rate > 0) { total += c.windows * rates.window.rate; hasAny = true; }
-  // Custom classes — use stored measurements keyed by class name
+
+  // Custom classes — use stored customMeasurements keyed by class name
   const cm = project.customMeasurements || {};
   for (const [cls, val] of Object.entries(cm)) {
     if (rates[cls]?.rate > 0 && val > 0) { total += val * rates[cls].rate; hasAny = true; }
@@ -543,27 +569,120 @@ export default function ManagerDashboard({ projects, onOpenProject, user }) {
   };
 
   // ── Export helpers ────────────────────────────────────────────────────────
-  const buildExportRows = (projs) => projs.map(p => {
-    const cost = calcProjectCost(p, rates, managerMeta.projectOverrides?.[p.id]);
-    const status = managerMeta.projectStatuses?.[p.id] || p.status || "Draft";
-    return {
-      name: p.name, owner: p.owner || "—", pages: p.pageCount || 1,
-      walls: p.totalWallLengthM != null ? +p.totalWallLengthM.toFixed(2) : (p.counts?.walls ?? ""),
-      zones: p.totalZoneAreaM2  != null ? +p.totalZoneAreaM2.toFixed(2)  : (p.counts?.zones  ?? ""),
-      doors: p.counts?.doors ?? 0, windows: p.counts?.windows ?? 0,
-      cost: cost != null ? cost : 0, status,
-      lastEdited: fmtDate(p.lastEdited),
-    };
-  });
+
+  // Get the measurement value for a class from a project (unified map preferred, legacy fallback)
+  const getClassMeasurement = (project, cls) => {
+    const m = project.measurements?.[cls];
+    if (m) return measurementValue(m);
+    // Legacy fallback
+    if (cls === "Internal_Wall") return project.totalWallLengthM != null ? +(project.totalWallLengthM / 2).toFixed(2) : (project.counts?.walls ? project.counts.walls / 2 : null);
+    if (cls === "External_Wall") return project.totalWallLengthM != null ? +(project.totalWallLengthM / 2).toFixed(2) : (project.counts?.walls ? project.counts.walls / 2 : null);
+    if (cls === "zone")   return project.totalZoneAreaM2 ?? project.counts?.zones ?? null;
+    if (cls === "door")   return project.counts?.doors   ?? null;
+    if (cls === "window") return project.counts?.windows ?? null;
+    return project.customMeasurements?.[cls] ?? null;
+  };
+
+  // Unit label for a class — data-driven: checks allClasses.measureType first,
+  // then falls back to what the measurements map actually contains.
+  const getClassUnit = (cls) => {
+    if (cls === "Internal_Wall" || cls === "External_Wall") return "m";
+    if (cls === "zone") return "m²";
+    if (cls === "door" || cls === "window") return "unit";
+    const cc = allClasses.find(c => c.name === cls);
+    if (cc?.measureType === "area")   return "m²";
+    if (cc?.measureType === "length") return "m";
+    // Fall back to inspecting saved measurements across projects
+    if (projects.some(p => p.measurements?.[cls]?.area   != null)) return "m²";
+    if (projects.some(p => p.measurements?.[cls]?.length != null)) return "m";
+    return "unit";
+  };
+
+  // Build per-project cost breakdown: [{ cls, qty, unit, rate, cost, perimeter? }]
+  const getProjectBreakdown = (project) => {
+    const effRates = effectiveRates(rates, managerMeta.projectOverrides?.[project.id]);
+    const rows = [];
+    for (const { name: cls } of allClasses) {
+      const qty = getClassMeasurement(project, cls);
+      if (qty == null || qty <= 0) continue;
+      const rate = effRates?.[cls]?.rate;
+      const cost = (rate > 0) ? qty * rate : null;
+      const entry = { cls, qty, unit: getClassUnit(cls), rate: rate || null, cost };
+      // Attach perimeter for area-type custom classes
+      const m = project.measurements?.[cls];
+      if (m?.perimeter != null && m.perimeter > 0) entry.perimeter = m.perimeter;
+      rows.push(entry);
+    }
+    return rows;
+  };
 
   const exportExcel = () => {
-    const rows = buildExportRows(projects);
-    const headers = ["Project", "Owner", "Pages", "Wall Length (m)", "Zone Area (m²)", "Doors", "Windows", "Est. Cost ($)", "Status", "Last Edited"];
-    const data = rows.map(r => [r.name, r.owner, r.pages, r.walls, r.zones, r.doors, r.windows, r.cost || "", r.status, r.lastEdited]);
-    const ws = XLSX.utils.aoa_to_sheet([headers, ...data]);
-    ws["!cols"] = [20,22,6,8,8,8,8,14,14,14].map(w => ({ wch: w }));
+    // A class needs a perimeter column if ANY project has perimeter stored for it
+    // (data-driven: works even if measureType wasn't saved in old metadata)
+    const hasPerimeter = (cls) => projects.some(p => (p.measurements?.[cls]?.perimeter ?? 0) > 0);
+    const isAreaCustom = hasPerimeter; // alias for clarity below
+
+    // Summary sheet: one row per project, dynamic class columns
+    // For area-type custom classes: qty column + perimeter column + cost column
+    // For all others: qty column + cost column
+    const classNames = allClasses.map(c => c.name);
+    const summaryHeaders = [
+      "Project", "Owner", "Pages",
+      ...classNames.flatMap(cls => [
+        `${cls} (${getClassUnit(cls)})`,
+        ...(isAreaCustom(cls) ? [`${cls} Perimeter (m)`] : []),
+        `${cls} Cost ($)`,
+      ]),
+      "Total Cost ($)", "Status", "Last Edited",
+    ];
+
+    const summaryData = projects.map(p => {
+      const effRates = effectiveRates(rates, managerMeta.projectOverrides?.[p.id]);
+      const status = managerMeta.projectStatuses?.[p.id] || p.status || "Draft";
+      const totalCost = calcProjectCost(p, rates, managerMeta.projectOverrides?.[p.id]);
+      const classCols = classNames.flatMap(cls => {
+        const qty = getClassMeasurement(p, cls);
+        const rate = effRates?.[cls]?.rate;
+        const cost = (qty != null && rate > 0) ? +(qty * rate).toFixed(2) : "";
+        const qtyVal = qty != null ? +qty.toFixed(3) : "";
+        if (isAreaCustom(cls)) {
+          const perim = p.measurements?.[cls]?.perimeter;
+          return [qtyVal, perim != null ? +perim.toFixed(3) : "", cost];
+        }
+        return [qtyVal, cost];
+      });
+      return [p.name, p.owner || "—", p.pageCount || 1, ...classCols, totalCost != null ? +totalCost.toFixed(2) : "", status, fmtDate(p.lastEdited)];
+    });
+
+    // Breakdown sheet: one row per project-class (with separate perimeter row for area classes)
+    const bkHeaders = ["Project", "Owner", "Class", "Quantity", "Unit", "Rate ($/unit)", "Cost ($)"];
+    const bkData = [];
+    for (const p of projects) {
+      const breakdown = getProjectBreakdown(p);
+      for (const row of breakdown) {
+        bkData.push([p.name, p.owner || "—", row.cls, row.qty != null ? +row.qty.toFixed(3) : "", row.unit, row.rate != null ? +row.rate.toFixed(2) : "", row.cost != null ? +row.cost.toFixed(2) : ""]);
+        // Extra perimeter row for area-type custom classes
+        if (row.perimeter != null) {
+          bkData.push([p.name, p.owner || "—", `${row.cls} — Perimeter`, +row.perimeter.toFixed(3), "m", "", ""]);
+        }
+      }
+      if (breakdown.length > 0) {
+        const projTotal = breakdown.reduce((s, r) => s + (r.cost || 0), 0);
+        bkData.push(["", "", "TOTAL", "", "", "", +projTotal.toFixed(2)]);
+        bkData.push(["", "", "", "", "", "", ""]);
+      }
+    }
+
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Projects");
+    const ws1 = XLSX.utils.aoa_to_sheet([summaryHeaders, ...summaryData]);
+    const colWidths = [20, 20, 6, ...classNames.flatMap(cls => isAreaCustom(cls) ? [10, 10, 12] : [10, 12]), 14, 14, 14];
+    ws1["!cols"] = colWidths.map(w => ({ wch: w }));
+    XLSX.utils.book_append_sheet(wb, ws1, "Summary");
+
+    const ws2 = XLSX.utils.aoa_to_sheet([bkHeaders, ...bkData]);
+    ws2["!cols"] = [22, 20, 26, 12, 8, 14, 14].map(w => ({ wch: w }));
+    XLSX.utils.book_append_sheet(wb, ws2, "Cost Breakdown");
+
     XLSX.writeFile(wb, "manager_cost_report.xlsx");
     setShowExportMenu(false);
   };
@@ -571,14 +690,11 @@ export default function ManagerDashboard({ projects, onOpenProject, user }) {
   const exportPDF = () => {
     const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
     const W = 210, H = 297, M = 14, COL = W - M * 2;
-    const DARK = [15, 23, 40], ACCENT = [30, 80, 160], MUTED = [100, 120, 150], LIGHT = [200, 208, 224];
+    const DARK = [15, 23, 40], ACCENT = [30, 80, 160], MUTED = [100, 120, 150];
 
-    // Cover
+    // ── Cover page ───────────────────────────────────────────────────────────
     doc.setFillColor(...DARK); doc.rect(0, 0, W, H, "F");
     doc.setFillColor(...ACCENT); doc.rect(0, 70, W, 2, "F"); doc.rect(0, 145, W, 2, "F");
-    try {
-      // logo attempt (may not load in PDF context but try)
-    } catch { /* skip */ }
     doc.setTextColor(100, 210, 255); doc.setFont("helvetica", "bold"); doc.setFontSize(14);
     doc.text("QUANT", M, 32);
     doc.setTextColor(200, 240, 255); doc.setFont("helvetica", "bold"); doc.setFontSize(24);
@@ -592,60 +708,120 @@ export default function ManagerDashboard({ projects, onOpenProject, user }) {
     doc.text(`Projects: ${activeProjects.length} active, ${completedProjects.length} complete`, W / 2, 177, { align: "center" });
     if (totals.totalCost != null) doc.text(`Total Est. Cost: ${fmtCost(totals.totalCost)}`, W / 2, 187, { align: "center" });
 
-    // Active projects table
+    // ── Per-project cost breakdown pages ─────────────────────────────────────
+    const ROW_H = 7;
+    const BK_COLS = [M, M+62, M+90, M+112, M+132, M+160]; // Class | Qty | Unit | Rate | Cost
+
+    const ensureSpace = (doc, y, needed, pageTitle) => {
+      if (y + needed <= H - 16) return y;
+      doc.addPage();
+      doc.setFillColor(...ACCENT); doc.rect(0, 0, W, 12, "F");
+      doc.setTextColor(255,255,255); doc.setFont("helvetica","bold"); doc.setFontSize(9);
+      doc.text(pageTitle, M, 8);
+      return 20;
+    };
+
+    for (const p of projects) {
+      const breakdown = getProjectBreakdown(p);
+      if (breakdown.length === 0) continue;
+      const projTotal = breakdown.reduce((s, r) => s + (r.cost || 0), 0);
+      const status = managerMeta.projectStatuses?.[p.id] || p.status || "Draft";
+
+      doc.addPage();
+      doc.setFillColor(...ACCENT); doc.rect(0, 0, W, 12, "F");
+      doc.setTextColor(255,255,255); doc.setFont("helvetica","bold"); doc.setFontSize(9);
+      doc.text("COST REPORT — PROJECT BREAKDOWN", M, 8);
+
+      let y = 20;
+      // Project header
+      doc.setTextColor(...DARK); doc.setFont("helvetica","bold"); doc.setFontSize(13);
+      doc.text(p.name || "Untitled", M, y); y += 5;
+      doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(...MUTED);
+      doc.text(`Owner: ${p.owner || "—"}   |   Pages: ${p.pageCount || 1}   |   Status: ${status}   |   Edited: ${fmtDate(p.lastEdited)}`, M, y); y += 4;
+      doc.setDrawColor(...ACCENT); doc.setLineWidth(0.4); doc.line(M, y, W-M, y); y += 6;
+
+      // Table header
+      doc.setFillColor(...ACCENT); doc.rect(M, y, COL, ROW_H, "F");
+      doc.setTextColor(255,255,255); doc.setFont("helvetica","bold"); doc.setFontSize(8);
+      ["Class", "Quantity", "Unit", "Rate ($/unit)", "Cost ($)"].forEach((h, i) => doc.text(h, BK_COLS[i]+1, y+5));
+      y += ROW_H;
+
+      const trunc = (s, n) => { const t = String(s||""); return t.length > n ? t.slice(0,n-1)+"…" : t; };
+      let rowColorIdx = 0;
+      breakdown.forEach((row) => {
+        y = ensureSpace(doc, y, ROW_H * (row.perimeter != null ? 2 : 1), "COST REPORT — PROJECT BREAKDOWN (cont.)");
+        const bg = rowColorIdx % 2 === 0 ? [240, 244, 252] : [250, 250, 255];
+        doc.setFillColor(...bg); doc.rect(M, y, COL, ROW_H, "F");
+        doc.setTextColor(...DARK); doc.setFont("helvetica","normal"); doc.setFontSize(8);
+        doc.text(trunc(row.cls, 22),                                   BK_COLS[0]+1, y+5);
+        doc.text(row.qty != null ? row.qty.toFixed(2) : "—",           BK_COLS[1]+1, y+5);
+        doc.text(row.unit,                                              BK_COLS[2]+1, y+5);
+        doc.text(row.rate != null ? `$${row.rate.toFixed(2)}` : "—",  BK_COLS[3]+1, y+5);
+        doc.text(row.cost != null ? fmtCost(row.cost) : "—",           BK_COLS[4]+1, y+5);
+        y += ROW_H;
+        // Perimeter sub-row for area-type custom classes
+        if (row.perimeter != null) {
+          doc.setFillColor(bg[0]-4, bg[1]-4, bg[2]-4); doc.rect(M, y, COL, ROW_H, "F");
+          doc.setTextColor(80, 100, 130); doc.setFont("helvetica","italic"); doc.setFontSize(7.5);
+          doc.text(`  ↳ ${row.cls} — Perimeter`, BK_COLS[0]+1, y+5);
+          doc.text(row.perimeter.toFixed(2),      BK_COLS[1]+1, y+5);
+          doc.text("m",                           BK_COLS[2]+1, y+5);
+          doc.text("—",                           BK_COLS[3]+1, y+5);
+          doc.text("—",                           BK_COLS[4]+1, y+5);
+          y += ROW_H;
+        }
+        rowColorIdx++;
+      });
+
+      // Project total row
+      y = ensureSpace(doc, y, ROW_H, "COST REPORT — PROJECT BREAKDOWN (cont.)");
+      doc.setFillColor(30, 50, 100); doc.rect(M, y, COL, ROW_H, "F");
+      doc.setTextColor(200,230,255); doc.setFont("helvetica","bold"); doc.setFontSize(8.5);
+      doc.text("TOTAL", BK_COLS[0]+1, y+5);
+      doc.text(fmtCost(projTotal), BK_COLS[4]+1, y+5);
+      y += ROW_H;
+    }
+
+    // ── Summary page (all projects, one row each) ────────────────────────────
     doc.addPage();
     doc.setFillColor(...ACCENT); doc.rect(0, 0, W, 12, "F");
     doc.setTextColor(255,255,255); doc.setFont("helvetica","bold"); doc.setFontSize(9);
-    doc.text("COST REPORT — ACTIVE PROJECTS", M, 8);
-    let y = 22;
+    doc.text("COST REPORT — SUMMARY", M, 8);
+    let sy = 20;
     doc.setTextColor(...DARK); doc.setFont("helvetica","bold"); doc.setFontSize(13);
-    doc.text("Active Projects", M, y); y += 3;
-    doc.setDrawColor(...ACCENT); doc.setLineWidth(0.4); doc.line(M, y, W-M, y); y += 6;
+    doc.text("All Projects — Cost Summary", M, sy); sy += 3;
+    doc.setDrawColor(...ACCENT); doc.setLineWidth(0.4); doc.line(M, sy, W-M, sy); sy += 6;
 
-    const cols = [M, M+52, M+90, M+110, M+122, M+134, M+148, M+168];
-    const ROW_H = 7;
+    const sumCols = [M, M+58, M+96, M+130, M+158];
+    doc.setFillColor(...ACCENT); doc.rect(M, sy, COL, ROW_H, "F");
+    doc.setTextColor(255,255,255); doc.setFont("helvetica","bold"); doc.setFontSize(8);
+    ["Project", "Owner", "Status", "Last Edited", "Est. Cost ($)"].forEach((h, i) => doc.text(h, sumCols[i]+1, sy+5));
+    sy += ROW_H;
 
-    // Header
-    doc.setFillColor(...ACCENT); doc.rect(M, y, COL, ROW_H, "F");
-    doc.setTextColor(255,255,255); doc.setFont("helvetica","bold"); doc.setFontSize(7.5);
-    ["Project","Owner","Pages","Wall Len (m)","Zone Area (m²)","Doors","Win","Est. Cost"].forEach((h,i) => doc.text(h, cols[i]+1, y+5));
-    y += ROW_H;
-
-    buildExportRows(activeProjects).forEach((r, i) => {
-      if (y + ROW_H > H - 20) {
-        doc.addPage();
-        doc.setFillColor(...ACCENT); doc.rect(0,0,W,12,"F");
-        doc.setTextColor(255,255,255); doc.setFont("helvetica","bold"); doc.setFontSize(9);
-        doc.text("COST REPORT — ACTIVE PROJECTS (cont.)", M, 8);
-        y = 20;
-        doc.setFillColor(...ACCENT); doc.rect(M, y, COL, ROW_H, "F");
-        doc.setTextColor(255,255,255); doc.setFont("helvetica","bold"); doc.setFontSize(7.5);
-        ["Project","Owner","Pages","Wall Len (m)","Zone Area (m²)","Doors","Win","Est. Cost"].forEach((h,ci) => doc.text(h, cols[ci]+1, y+5));
-        y += ROW_H;
-      }
+    let grandTotal = 0;
+    projects.forEach((p, i) => {
+      sy = ensureSpace(doc, sy, ROW_H, "COST REPORT — SUMMARY (cont.)");
+      const cost = calcProjectCost(p, rates, managerMeta.projectOverrides?.[p.id]);
+      const status = managerMeta.projectStatuses?.[p.id] || p.status || "Draft";
+      if (cost) grandTotal += cost;
       doc.setFillColor(i%2===0?240:250, i%2===0?244:250, i%2===0?252:255);
-      doc.rect(M, y, COL, ROW_H, "F");
-      doc.setTextColor(...DARK); doc.setFont("helvetica","normal"); doc.setFontSize(7.5);
-      const trunc = (s, maxC) => { const t = String(s||""); return t.length > maxC ? t.slice(0,maxC-1)+"…" : t; };
-      doc.text(trunc(r.name, 18), cols[0]+1, y+5);
-      doc.text(trunc(r.owner, 16), cols[1]+1, y+5);
-      doc.text(String(r.pages), cols[2]+1, y+5);
-      doc.text(String(r.walls||0), cols[3]+1, y+5);
-      doc.text(String(r.zones||0), cols[4]+1, y+5);
-      doc.text(String(r.doors||0), cols[5]+1, y+5);
-      doc.text(String(r.windows||0), cols[6]+1, y+5);
-      doc.text(r.cost ? fmtCost(r.cost) : "—", cols[7]+1, y+5);
-      y += ROW_H;
+      doc.rect(M, sy, COL, ROW_H, "F");
+      doc.setTextColor(...DARK); doc.setFont("helvetica","normal"); doc.setFontSize(8);
+      const trunc = (s, n) => { const t = String(s||""); return t.length > n ? t.slice(0,n-1)+"…" : t; };
+      doc.text(trunc(p.name, 20),      sumCols[0]+1, sy+5);
+      doc.text(trunc(p.owner||"—",18), sumCols[1]+1, sy+5);
+      doc.text(status,                 sumCols[2]+1, sy+5);
+      doc.text(fmtDate(p.lastEdited),  sumCols[3]+1, sy+5);
+      doc.text(cost ? fmtCost(cost) : "—", sumCols[4]+1, sy+5);
+      sy += ROW_H;
     });
 
-    // Total row
-    const totalCost = buildExportRows(activeProjects).reduce((s,r) => s + (r.cost||0), 0);
-    doc.setFillColor(30, 50, 100); doc.rect(M, y, COL, ROW_H, "F");
-    doc.setTextColor(200,230,255); doc.setFont("helvetica","bold"); doc.setFontSize(8);
-    doc.text("TOTAL", cols[0]+1, y+5);
-    doc.text(fmtCost(totalCost), cols[7]+1, y+5);
-    y += ROW_H + 2;
-    doc.setDrawColor(...ACCENT); doc.setLineWidth(0.3); doc.rect(M, y - (ROW_H*(buildExportRows(activeProjects).length+2)), COL, ROW_H*(buildExportRows(activeProjects).length+2));
+    // Grand total
+    sy = ensureSpace(doc, sy, ROW_H, "COST REPORT — SUMMARY (cont.)");
+    doc.setFillColor(30, 50, 100); doc.rect(M, sy, COL, ROW_H, "F");
+    doc.setTextColor(200,230,255); doc.setFont("helvetica","bold"); doc.setFontSize(8.5);
+    doc.text("GRAND TOTAL", sumCols[0]+1, sy+5);
+    doc.text(fmtCost(grandTotal), sumCols[4]+1, sy+5);
 
     doc.save("manager_cost_report.pdf");
     setShowExportMenu(false);

@@ -115,8 +115,26 @@ function deriveCountsFromPages(pages) {
   };
 }
 
+// Compute the length contribution of an annotation (in px) given its expected measure type.
+// - 'line' shape: direct endpoint distance (no quadratic formula — that would halve it)
+// - 'box' or 'polygon': apply wall-length quadratic formula to recover the longer dimension
+function _lengthPx(ann) {
+  if (ann.shapeType === 'line') return Math.hypot(ann.x2 - ann.x1, ann.y2 - ann.y1);
+  const perim = _perimPx(ann);
+  if (perim <= 0) return 0;
+  return _wallLength(_areaPx(ann), perim);
+}
+
+// Derive per-class measurements from all annotations across all pages.
+// Returns a unified `measurements` map keyed by className, where each entry has ONE of:
+//   { length: <metres> }  — for walls and custom measureType='length'
+//   { area:   <m²>     }  — for zones and custom measureType='area'
+//   { count:  <n>      }  — for doors, windows and custom measureType='unit'
+// Also returns legacy totals for backward compatibility with older dashboard code paths.
 function deriveMeasurementsFromPages(pages, ratio, customClasses) {
-  if (!pages || pages.length === 0) return { totalWallLengthM: null, totalZoneAreaM2: null, customMeasurements: {} };
+  if (!pages || pages.length === 0) {
+    return { measurements: {}, totalWallLengthM: null, totalZoneAreaM2: null, customMeasurements: {} };
+  }
   const allAnns = pages.flatMap(p => p.annotations || []);
 
   // Build measureType lookup for custom classes: { name -> 'length'|'area'|'unit' }
@@ -125,39 +143,72 @@ function deriveMeasurementsFromPages(pages, ratio, customClasses) {
     if (cc.measureType) customMeasureType[cc.name] = cc.measureType;
   }
 
-  let wallLengthPx = 0, zoneAreaPx = 0;
-  const customPx = {}; // { className: accumulated px value }
+  // Accumulators in PX / count — keyed by class name
+  const lenPxByClass = {};    // { clsName: total length in px }
+  const areaPxByClass = {};   // { clsName: total area   in px² }
+  const perimPxByClass = {};  // { clsName: total perimeter in px } — only for area-type custom classes
+  const countByClass = {};    // { clsName: count }
 
   for (const ann of allAnns) {
-    if (ann.clsName === 'Internal_Wall' || ann.clsName === 'External_Wall') {
-      if (ratio) { const perim = _perimPx(ann); if (perim > 0) wallLengthPx += _wallLength(_areaPx(ann), perim); }
-    } else if (ann.clsName === 'zone') {
-      if (ratio) zoneAreaPx += _areaPx(ann);
-    } else if (customMeasureType[ann.clsName]) {
-      const mt = customMeasureType[ann.clsName];
-      if (!customPx[ann.clsName]) customPx[ann.clsName] = 0;
-      if (mt === 'length' && ratio) {
-        const perim = _perimPx(ann);
-        customPx[ann.clsName] += perim > 0 ? _wallLength(_areaPx(ann), perim) : 0;
-      } else if (mt === 'area' && ratio) {
-        customPx[ann.clsName] += _areaPx(ann);
+    const cls = ann.clsName;
+    if (!cls) continue;
+
+    if (cls === 'Internal_Wall' || cls === 'External_Wall') {
+      lenPxByClass[cls] = (lenPxByClass[cls] || 0) + _lengthPx(ann);
+    } else if (cls === 'zone') {
+      areaPxByClass[cls] = (areaPxByClass[cls] || 0) + _areaPx(ann);
+    } else if (cls === 'door' || cls === 'window') {
+      countByClass[cls] = (countByClass[cls] || 0) + 1;
+    } else if (customMeasureType[cls]) {
+      const mt = customMeasureType[cls];
+      if (mt === 'length') {
+        lenPxByClass[cls] = (lenPxByClass[cls] || 0) + _lengthPx(ann);
+      } else if (mt === 'area') {
+        areaPxByClass[cls] = (areaPxByClass[cls] || 0) + _areaPx(ann);
+        // Also accumulate perimeter for area-type custom classes
+        perimPxByClass[cls] = (perimPxByClass[cls] || 0) + _perimPx(ann);
       } else if (mt === 'unit') {
-        customPx[ann.clsName] += 1; // count
+        countByClass[cls] = (countByClass[cls] || 0) + 1;
       }
     }
+    // Unknown / Unassigned classes are ignored for cost/measurement purposes.
   }
 
-  // Convert px → real units
+  // Build the unified `measurements` map (converting px → real units via ratio)
+  const measurements = {};
+  for (const [cls, px] of Object.entries(lenPxByClass)) {
+    if (ratio) measurements[cls] = { length: px * ratio };
+  }
+  for (const [cls, px2] of Object.entries(areaPxByClass)) {
+    if (ratio) {
+      measurements[cls] = {
+        area: px2 * ratio * ratio,
+        // Include perimeter if it was tracked (area-type custom classes)
+        ...(perimPxByClass[cls] != null ? { perimeter: perimPxByClass[cls] * ratio } : {}),
+      };
+    }
+  }
+  for (const [cls, n] of Object.entries(countByClass)) {
+    measurements[cls] = { count: n };
+  }
+
+  // ── Legacy totals (kept for dashboard backward compat) ─────────────────────
+  const wallLenPx =
+    (lenPxByClass['Internal_Wall'] || 0) + (lenPxByClass['External_Wall'] || 0);
+  const zoneAreaPx = areaPxByClass['zone'] || 0;
+
   const customMeasurements = {};
-  for (const [cls, val] of Object.entries(customPx)) {
-    const mt = customMeasureType[cls];
-    if (mt === 'length' && ratio) customMeasurements[cls] = val * ratio;
-    else if (mt === 'area' && ratio) customMeasurements[cls] = val * ratio * ratio;
-    else if (mt === 'unit') customMeasurements[cls] = val;
+  for (const cls of Object.keys(customMeasureType)) {
+    const m = measurements[cls];
+    if (!m) continue;
+    if (m.length != null) customMeasurements[cls] = m.length;
+    else if (m.area != null) customMeasurements[cls] = m.area;
+    else if (m.count != null) customMeasurements[cls] = m.count;
   }
 
   return {
-    totalWallLengthM: ratio ? wallLengthPx * ratio : null,
+    measurements,
+    totalWallLengthM: ratio ? wallLenPx * ratio : null,
     totalZoneAreaM2:  ratio ? zoneAreaPx * ratio * ratio : null,
     customMeasurements,
   };
@@ -242,14 +293,17 @@ export async function saveProject(
     status: counts ? 'In Progress' : 'Draft',
     lastEdited: new Date().toISOString(),
     counts,
-    totalWallLengthM:    measurements.totalWallLengthM,
-    totalZoneAreaM2:     measurements.totalZoneAreaM2,
-    customMeasurements:  measurements.customMeasurements,
+    measurements:        measurements.measurements,        // unified per-class: { cls: { length|area|count } }
+    totalWallLengthM:    measurements.totalWallLengthM,    // legacy
+    totalZoneAreaM2:     measurements.totalZoneAreaM2,     // legacy
+    customMeasurements:  measurements.customMeasurements,  // legacy
     fileName,
     originalExt,
     pageCount: pages ? pages.length : 1,
     customClasses: settings?.customClasses || [],
   };
+
+  console.log('[saveProject] measurements being saved:', measurements.measurements, '(ratio=', scale?.pixelToMeter, ')');
 
   const NO_CACHE = 'no-cache, no-store, must-revalidate';
 

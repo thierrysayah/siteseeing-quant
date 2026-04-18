@@ -2988,12 +2988,13 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
       const [x1, y1, x2, y2] = annotationBbox(ann);
       const areaPx = annotationAreaPx(ann);
       const areaM2 = ratio ? areaPx * ratio * ratio : null;
-      const perimPx = (ann.shapeType === "polygon" || ann.shapeType === "line" || ann.clsName === "zone") ? annotationPerimeterPx(ann) : null;
-      let perimM = ratio && perimPx != null ? perimPx * ratio : null;
+      // Compute perimeter for every shape type (box, line, polygon, circle-as-polygon).
+      // annotationPerimeterPx handles each case; no need to filter by shapeType.
+      const perimPx = annotationPerimeterPx(ann);
+      let perimM = ratio ? perimPx * ratio : null;
       if (ratio && (ann.clsName === "External_Wall" || ann.clsName === "Internal_Wall")) {
         const wAreaPx = annotationAreaPx(ann);
-        const wPerimPx = annotationPerimeterPx(ann);
-        if (wPerimPx > 0) perimM = wallLengthFromAreaPerim(wAreaPx, wPerimPx) * ratio;
+        if (perimPx > 0) perimM = wallLengthFromAreaPerim(wAreaPx, perimPx) * ratio;
       }
       return { page: currentPageLabel(), num_id: ann.numId ?? null, shape_type: ann.shapeType, class: ann.clsName, x1, y1, x2, y2, polygon_points: ann.points, confidence: ann.confidence, source_model: ann.sourceModel, zone_tag: ann.zoneTag, area_pixels2: areaPx, area_m2: areaM2, perimeter_pixels: perimPx, perimeter_m: perimM };
     });
@@ -3012,11 +3013,11 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         const [x1, y1, x2, y2] = annotationBbox(ann);
         const areaPx = annotationAreaPx(ann);
         const areaM2 = ratio ? areaPx * ratio * ratio : "";
-        const perimPx = (ann.shapeType === "polygon" || ann.shapeType === "line" || ann.clsName === "zone") ? annotationPerimeterPx(ann) : "";
-        let lengthM = ratio && perimPx !== "" ? perimPx * ratio : "";
+        // Perimeter for every shape (box, line, polygon, circle-as-polygon)
+        const perimPx = annotationPerimeterPx(ann);
+        let lengthM = ratio ? perimPx * ratio : "";
         if (ratio && (ann.clsName === "External_Wall" || ann.clsName === "Internal_Wall")) {
-          const wPerimPx = annotationPerimeterPx(ann);
-          if (wPerimPx > 0) lengthM = wallLengthFromAreaPerim(areaPx, wPerimPx) * ratio;
+          if (perimPx > 0) lengthM = wallLengthFromAreaPerim(areaPx, perimPx) * ratio;
         }
         const pageLabel = page.label || (page.pdfPageNumber != null ? `Page ${page.pdfPageNumber}` : `Page ${page.pageIndex + 1}`);
         rows.push({
@@ -3077,13 +3078,13 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         const [x1, y1, x2, y2] = annotationBbox(ann);
         const areaPx = annotationAreaPx(ann);
         const areaM2 = ratio ? areaPx * ratio * ratio : "";
-        const perimPx = (ann.shapeType === "polygon" || ann.shapeType === "line" || ann.clsName === "zone") ? annotationPerimeterPx(ann) : "";
-        let perimM = ratio && perimPx !== "" ? perimPx * ratio : "";
+        // Perimeter for every shape (box, line, polygon, circle-as-polygon)
+        const perimPx = annotationPerimeterPx(ann);
+        let perimM = ratio ? perimPx * ratio : "";
         // Wall length from area & perimeter (rotation-invariant)
         if (ratio && (ann.clsName === "External_Wall" || ann.clsName === "Internal_Wall")) {
           const wAreaPx = annotationAreaPx(ann);
-          const wPerimPx = annotationPerimeterPx(ann);
-          if (wPerimPx > 0) perimM = wallLengthFromAreaPerim(wAreaPx, wPerimPx) * ratio;
+          if (perimPx > 0) perimM = wallLengthFromAreaPerim(wAreaPx, perimPx) * ratio;
         }
         const pageLabel = page.label || (page.pdfPageNumber != null ? `Page ${page.pdfPageNumber}` : `Page ${page.pageIndex + 1}`);
         rows.push([pageLabel, ann.numId ?? "", ann.shapeType, ann.clsName, x1, y1, x2, y2, ann.points ? JSON.stringify(ann.points) : "", ann.confidence ?? "", ann.sourceModel ?? "", ann.zoneTag ?? "", areaPx, areaM2, perimPx, perimM]);
@@ -3210,12 +3211,11 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         const [x1, bY1, x2, bY2] = annotationBbox(ann);
         const areaPx = annotationAreaPx(ann);
         const areaM2 = ratio ? areaPx * ratio * ratio : "";
-        const perimPx = (ann.shapeType === "polygon" || ann.shapeType === "line" || ann.clsName === "zone")
-          ? annotationPerimeterPx(ann) : "";
-        let lengthM = ratio && perimPx !== "" ? perimPx * ratio : "";
+        // Perimeter for every shape (box, line, polygon, circle-as-polygon)
+        const perimPx = annotationPerimeterPx(ann);
+        let lengthM = ratio ? perimPx * ratio : "";
         if (ratio && (ann.clsName === "External_Wall" || ann.clsName === "Internal_Wall")) {
-          const wP = annotationPerimeterPx(ann);
-          if (wP > 0) lengthM = wallLengthFromAreaPerim(areaPx, wP) * ratio;
+          if (perimPx > 0) lengthM = wallLengthFromAreaPerim(areaPx, perimPx) * ratio;
         }
         return {
           page: pageLabel,
@@ -4606,6 +4606,22 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                         {ratio != null ? `P: ${(annotationPerimeterPx(ann) * ratio).toFixed(2)} m` : `P: ${annotationPerimeterPx(ann).toFixed(0)} px`}
                       </span></>
                     )}
+                    {(() => {
+                      const cc = customClasses.find(c => c.name === ann.clsName);
+                      if (!cc || !cc.measureType) return null;
+                      if (cc.measureType === "area" && ratio != null) {
+                        const a = annotationAreaPx(ann) * ratio * ratio;
+                        const p = annotationPerimeterPx(ann) * ratio;
+                        return <><br /><span style={{ color: "#ffffff", fontSize: 11 }}>A: {a.toFixed(2)} m² | P: {p.toFixed(2)} m</span></>;
+                      }
+                      if (cc.measureType === "length" && ratio != null) {
+                        let lenPx;
+                        if (ann.shapeType === "line") lenPx = Math.hypot(ann.x2 - ann.x1, ann.y2 - ann.y1);
+                        else lenPx = wallLengthFromAreaPerim(annotationAreaPx(ann), annotationPerimeterPx(ann));
+                        return <><br /><span style={{ color: "#ffffff", fontSize: 11 }}>L: {(lenPx * ratio).toFixed(2)} m</span></>;
+                      }
+                      return null;
+                    })()}
                     {showConfidence && ann.confidence != null && <span style={{ color: "#556", fontSize: 9 }}> {ann.confidence.toFixed(2)}</span>}
                   </div>
                 );

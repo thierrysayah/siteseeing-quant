@@ -39,7 +39,7 @@
         },
         "grantProjectAccess": {
           "deploymentBucketName": "amplify-estimationplatform-dev-20748-deployment",
-          "s3Key": "amplify-builds/grantProjectAccess-42486a687a49416c556b-build.zip"
+          "s3Key": "amplify-builds/grantProjectAccess-6c4b2f41547555356863-build.zip"
         }
       },
       "api": {
