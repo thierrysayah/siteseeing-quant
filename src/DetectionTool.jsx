@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
-const WALL_MODEL_URL = "https://predict-69b7f2f29e8ba20d1c3c-dproatj77a-lm.a.run.app/predict";
-const WALL_MODEL_HEADERS = { Authorization: "Bearer ul_28460c43f1db933b0dc3c576368ac6ce07f45392" };
+const WALL_MODEL_URL = "";
+const WALL_MODEL_HEADERS = { Authorization: "" };
 const WALL_MODEL_DATA = { conf: 0.5, iou: 0.7, imgsz: 640 };
 
 const ZONE_MODEL_URL = "https://predict-69bbe87c3bb65e1f7377-dproatj77a-nw.a.run.app/predict";
