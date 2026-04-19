@@ -3,17 +3,17 @@ import { loadProject, saveProject, getOriginalFileUrl } from "./services/project
 import Drawing from "dxf-writer";
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
-const WALL_MODEL_URL = "https://predict-69b7f2f29e8ba20d1c3c-dproatj77a-lm.a.run.app/predict";
-const WALL_MODEL_HEADERS = { Authorization: "Bearer ul_28460c43f1db933b0dc3c576368ac6ce07f45392" };
+const WALL_MODEL_URL = "";
+const WALL_MODEL_HEADERS = { Authorization: "" };
 const WALL_MODEL_DATA = { conf: 0.5, iou: 0.7, imgsz: 640 };
 
-const ZONE_MODEL_URL = "https://predict-69bbe87c3bb65e1f7377-dproatj77a-nw.a.run.app/predict";
-const ZONE_MODEL_HEADERS = { Authorization: "Bearer ul_28460c43f1db933b0dc3c576368ac6ce07f45392" };
+const ZONE_MODEL_URL = "";
+const ZONE_MODEL_HEADERS = { Authorization: "" };
 const ZONE_MODEL_DATA = { conf: 0.25, iou: 0.7, imgsz: 640 };
 
 // Instance segmentation model — zones only (returns polygons, not boxes)
-const ZONE_SEG_MODEL_URL = "https://predict-69d4e9609d26fcda25f5-dproatj77a-od.a.run.app/predict";
-const ZONE_SEG_MODEL_HEADERS = { Authorization: "Bearer ul_28460c43f1db933b0dc3c576368ac6ce07f45392" };
+const ZONE_SEG_MODEL_URL = "";
+const ZONE_SEG_MODEL_HEADERS = { Authorization: "" };
 const ZONE_SEG_MODEL_DATA = { conf: 0.25, iou: 0.7, imgsz: 640 };
 
 const IMAGE_SEARCH_URL   = ""; // set after ECS deployment — e.g. https://your-alb.amazonaws.com/search
