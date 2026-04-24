@@ -23,6 +23,16 @@
           "delete"
         ]
       }
+    },
+    "/infer": {
+      "name": "/infer",
+      "lambdaFunction": "inferProxy",
+      "permissions": {
+        "setting": "private",
+        "auth": [
+          "create"
+        ]
+      }
     }
   }
 }

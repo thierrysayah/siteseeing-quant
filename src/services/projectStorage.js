@@ -25,21 +25,21 @@ async function getOrgId() {
 }
 
 // ─── PATH HELPERS ─────────────────────────────────────────────────────────────
-// Individual/Pro:   private/{sub}/projects/{projectId}/
-// Enterprise QS:    private/org-{orgId}/projects/{sub}/{projectId}/
-// Enterprise Mgr:   private/org-{orgId}/projects/{ownerSub}/{projectId}/  (read only)
+// Individual/Pro:   private/users/{sub}/projects/{projectId}/
+// Enterprise QS:    private/organisations/org-{orgId}/projects/{sub}/{projectId}/
+// Enterprise Mgr:   private/organisations/org-{orgId}/projects/{ownerSub}/{projectId}/  (read only)
 async function getBasePrefix() {
   const { userId } = await getCurrentUser();
   const orgId = await getOrgId();
-  if (orgId) return `private/org-${orgId}/projects/${userId}/`;
-  return `private/${userId}/projects/`;
+  if (orgId) return `private/organisations/org-${orgId}/projects/${userId}/`;
+  return `private/users/${userId}/projects/`;
 }
 
 // Build a path for a specific owner (used by managers accessing a QS's project)
 async function ownerBasePath(ownerSub) {
   const orgId = await getOrgId();
   if (!orgId) throw new Error('ownerBasePath called outside org context');
-  return `private/org-${orgId}/projects/${ownerSub}/`;
+  return `private/organisations/org-${orgId}/projects/${ownerSub}/`;
 }
 
 async function userPath(projectId, filename, ownerSub) {
@@ -241,7 +241,7 @@ export async function listManagerProjects(grants) {
   const projects = await Promise.all(
     grants.map(async grant => {
       try {
-        const key = `private/org-${orgId}/projects/${grant.ownerSub}/${grant.projectId}/metadata.json`;
+        const key = `private/organisations/org-${orgId}/projects/${grant.ownerSub}/${grant.projectId}/metadata.json`;
         const data = await fetchJSON(key);
         return { ...data, ownerSub: grant.ownerSub }; // attach ownerSub so we can route loads
       } catch { return null; }
@@ -529,14 +529,14 @@ export async function revokeProjectAccess(projectId, managerId) {
 }
 
 // ─── RATE CARD ────────────────────────────────────────────────────────────────
-// Stored at private/org-{orgId}/{userId}/rate-card.json
+// Stored at private/organisations/org-{orgId}/{userId}/rate-card.json
 // Each manager in the org has their own rate card.
 export async function loadRateCard() {
   try {
     const { userId } = await getCurrentUser();
     const orgId = await getOrgId();
     if (!orgId) return null;
-    const key = `private/org-${orgId}/${userId}/rate-card.json`;
+    const key = `private/organisations/org-${orgId}/${userId}/rate-card.json`;
     const { url } = await getUrl({ path: key, options: { expiresIn: 60 } });
     const res = await fetch(url.toString(), { cache: 'no-store' });
     if (!res.ok) return null;
@@ -548,7 +548,7 @@ export async function saveRateCard(rates) {
   const { userId } = await getCurrentUser();
   const orgId = await getOrgId();
   if (!orgId) throw new Error('No org context');
-  const key = `private/org-${orgId}/${userId}/rate-card.json`;
+  const key = `private/organisations/org-${orgId}/${userId}/rate-card.json`;
   const payload = { updatedAt: new Date().toISOString(), rates };
   await uploadData({
     path: key,
@@ -559,14 +559,14 @@ export async function saveRateCard(rates) {
 
 // ─── MANAGER META ─────────────────────────────────────────────────────────────
 // Stores per-project rate overrides and status overrides for this manager.
-// Path: private/org-{orgId}/{userId}/manager-meta.json
+// Path: private/organisations/org-{orgId}/{userId}/manager-meta.json
 // Shape: { projectStatuses: { [id]: string }, projectOverrides: { [id]: { [cls]: { costType, rate } } } }
 export async function loadManagerMeta() {
   try {
     const { userId } = await getCurrentUser();
     const orgId = await getOrgId();
     if (!orgId) return null;
-    const key = `private/org-${orgId}/${userId}/manager-meta.json`;
+    const key = `private/organisations/org-${orgId}/${userId}/manager-meta.json`;
     const { url } = await getUrl({ path: key, options: { expiresIn: 60 } });
     const res = await fetch(url.toString(), { cache: 'no-store' });
     if (!res.ok) return null;
@@ -578,7 +578,7 @@ export async function saveManagerMeta(meta) {
   const { userId } = await getCurrentUser();
   const orgId = await getOrgId();
   if (!orgId) throw new Error('No org context');
-  const key = `private/org-${orgId}/${userId}/manager-meta.json`;
+  const key = `private/organisations/org-${orgId}/${userId}/manager-meta.json`;
   const payload = { ...meta, updatedAt: new Date().toISOString() };
   await uploadData({
     path: key,

@@ -17,6 +17,14 @@
           ],
           "category": "function",
           "resourceName": "grantProjectAccess"
+        },
+        {
+          "attributes": [
+            "Name",
+            "Arn"
+          ],
+          "category": "function",
+          "resourceName": "inferProxy"
         }
       ],
       "providerPlugin": "awscloudformation",
@@ -64,6 +72,11 @@
     "grantProjectAccess": {
       "build": true,
       "dependsOn": [],
+      "providerPlugin": "awscloudformation",
+      "service": "Lambda"
+    },
+    "inferProxy": {
+      "build": true,
       "providerPlugin": "awscloudformation",
       "service": "Lambda"
     }
@@ -121,6 +134,22 @@
         {
           "category": "function",
           "resourceName": "grantProjectAccess"
+        }
+      ]
+    },
+    "AMPLIFY_function_inferProxy_deploymentBucketName": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "inferProxy"
+        }
+      ]
+    },
+    "AMPLIFY_function_inferProxy_s3Key": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "inferProxy"
         }
       ]
     },

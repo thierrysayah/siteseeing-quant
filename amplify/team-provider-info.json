@@ -40,6 +40,10 @@
         "grantProjectAccess": {
           "deploymentBucketName": "amplify-estimationplatform-dev-20748-deployment",
           "s3Key": "amplify-builds/grantProjectAccess-6c4b2f41547555356863-build.zip"
+        },
+        "inferProxy": {
+          "deploymentBucketName": "amplify-estimationplatform-dev-20748-deployment",
+          "s3Key": "amplify-builds/inferProxy-73495a384f4b64636376-build.zip"
         }
       },
       "api": {

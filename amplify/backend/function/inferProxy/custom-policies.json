@@ -1,0 +1,6 @@
+[
+  {
+    "Action": ["secretsmanager:GetSecretValue"],
+    "Resource": ["arn:aws:secretsmanager:eu-west-3:851725386383:secret:quant/inference/ultralytics-*"]
+  }
+]

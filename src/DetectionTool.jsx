@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { post } from "aws-amplify/api";
 import { loadProject, saveProject, getOriginalFileUrl, pageSlugify, listProjects, grantProjectAccess, getProjectGrants, revokeProjectAccess } from "./services/projectStorage";
 import { getLimits, tierLabel, tierColor } from "./services/userService";
 import Drawing from "dxf-writer";
@@ -26,17 +27,12 @@ const EXCEL_COLUMNS = [
 ];
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
-const WALL_MODEL_URL = "";
-const WALL_MODEL_HEADERS = { Authorization: "" };
-const WALL_MODEL_DATA = { conf: 0.5, iou: 0.7, imgsz: 640 };
-
-const ZONE_MODEL_URL = "";
-const ZONE_MODEL_HEADERS = { Authorization: "" };
-const ZONE_MODEL_DATA = { conf: 0.25, iou: 0.7, imgsz: 640 };
-
+// Model URLs and bearer tokens live server-side in the inferProxy Lambda and
+// AWS Secrets Manager — the frontend only knows a short model key ('wall' |
+// 'zone' | 'zoneseg') and posts to quantApi /infer.
+const WALL_MODEL_DATA     = { conf: 0.5,  iou: 0.7, imgsz: 640 };
+const ZONE_MODEL_DATA     = { conf: 0.25, iou: 0.7, imgsz: 640 };
 // Instance segmentation model — zones only (returns polygons, not boxes)
-const ZONE_SEG_MODEL_URL = "";
-const ZONE_SEG_MODEL_HEADERS = { Authorization: "" };
 const ZONE_SEG_MODEL_DATA = { conf: 0.25, iou: 0.7, imgsz: 640 };
 
 const IMAGE_SEARCH_URL   = ""; // set after ECS deployment — e.g. https://your-alb.amazonaws.com/search
@@ -2530,12 +2526,21 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
     if (drawMode === "polygon" && tempPolyPts.length >= 3) finishPolygon();
   };
 
-  const onWheel = (e) => {
-    if (!originalImg) return;
-    e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-    setZoom(z => clamp(z * factor, 0.1, 8.0));
-  };
+  // Wheel zoom — attached via useEffect below with { passive: false } so that
+  // preventDefault actually suppresses page scrolling. React's JSX onWheel is
+  // passive-by-default as of React 17, which would make preventDefault a no-op.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const handler = (e) => {
+      if (!originalImg) return;
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      setZoom(z => clamp(z * factor, 0.1, 8.0));
+    };
+    el.addEventListener('wheel', handler, { passive: false });
+    return () => el.removeEventListener('wheel', handler);
+  }, [originalImg]);
 
   // ─── Polygon finish ──────────────────────────────────────────────────────────
   const finishPolygon = () => {
@@ -2613,9 +2618,9 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         setStatus(`Tiled inference complete (page ${targetPageIndex + 1}) — ${allAnns.length} detections.`);
       } else {
         const [wallRes, doorWinRes, zoneSegRes] = await Promise.all([
-          postInference(blob, WALL_MODEL_URL, WALL_MODEL_HEADERS, wallModelData),
-          postInference(blob, ZONE_MODEL_URL, ZONE_MODEL_HEADERS, zoneModelData),
-          postInference(blob, ZONE_SEG_MODEL_URL, ZONE_SEG_MODEL_HEADERS, zoneSegModelData),
+          postInference(blob, "wall",    wallModelData),
+          postInference(blob, "zone",    zoneModelData),
+          postInference(blob, "zoneseg", zoneSegModelData),
         ]);
         const autoEps2 = (() => { const v = parseInt(autoSimplifyDist, 10); return !isNaN(v) && v > 0 ? v : 0; })();
         const wallAnns    = parseModelResponse(wallRes, "wall_model");
@@ -2638,13 +2643,30 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
     }
   };
 
-  const postInference = async (blob, url, headers, data) => {
-    const fd = new FormData();
-    fd.append("file", blob, "image.jpg");
-    Object.entries(data).forEach(([k, v]) => fd.append(k, String(v)));
-    const res = await fetch(url, { method: "POST", headers, body: fd });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.json();
+  // Convert a Blob to base64 for transport through the JSON-bodied /infer route.
+  // Chunked to avoid "Maximum call stack size exceeded" on large (~multi-MB) tiles.
+  const blobToBase64 = async (blob) => {
+    const buf = await blob.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    const CHUNK = 0x8000; // 32KB — safe across browsers for String.fromCharCode apply
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+    }
+    return btoa(bin);
+  };
+
+  // Route: POST /infer on quantApi.
+  // `model` is 'wall' | 'zone' | 'zoneseg' — the Lambda resolves it to the actual
+  // Cloud Run URL + bearer token (token is loaded from Secrets Manager on cold start).
+  const postInference = async (blob, model, data) => {
+    const imageB64 = await blobToBase64(blob);
+    const { body } = await post({
+      apiName: "quantApi",
+      path: "/infer",
+      options: { body: { model, imageB64, ...data } },
+    }).response;
+    return body.json();
   };
 
   const runTiledInference = async (canvas, _blob, wallModelData, zoneModelData, zoneSegModelData, autoEps = 0) => {
@@ -2664,9 +2686,9 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
       const tBlob = await new Promise(res => tc.toBlob(res, "image/jpeg", 0.9));
       try {
         const [wallRes, doorWinRes, zoneSegRes] = await Promise.all([
-          postInference(tBlob, WALL_MODEL_URL, WALL_MODEL_HEADERS, wallModelData),
-          postInference(tBlob, ZONE_MODEL_URL, ZONE_MODEL_HEADERS, zoneModelData),
-          postInference(tBlob, ZONE_SEG_MODEL_URL, ZONE_SEG_MODEL_HEADERS, zoneSegModelData),
+          postInference(tBlob, "wall",    wallModelData),
+          postInference(tBlob, "zone",    zoneModelData),
+          postInference(tBlob, "zoneseg", zoneSegModelData),
         ]);
         const tileAnns = [
           ...parseModelResponse(wallRes, "wall_model"),
@@ -4319,7 +4341,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
             </div>
           )}
 
-          <div ref={containerRef} style={styles.canvasContainer} onWheel={onWheel}>
+          <div ref={containerRef} style={styles.canvasContainer}>
             {!originalImg && (
               <label style={styles.dropZone}>
                 <div style={styles.dropIcon}>⬡</div>
