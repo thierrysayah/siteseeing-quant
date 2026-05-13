@@ -13,6 +13,7 @@ import './App.css';
 import DetectionTool from './DetectionTool';
 import ProjectsPage from './pages/ProjectsPage';
 import { getUserTier, tierLabel, tierColor } from './services/userService';
+import { useSessionGuard } from './hooks/useSessionGuard';
 
 // ─── Module-level plan selection ──────────────────────────────────────────────
 // Stored outside React state so authComponents / authServices stay stable
@@ -156,9 +157,49 @@ function LoginScreen() {
   );
 }
 
+// ─── Forced sign-out modal ────────────────────────────────────────────────────
+// Shown after another device claims this account's session and our heartbeat
+// caught the change. Renders only when the user is already signed out so it
+// sits on top of <LoginScreen />.
+function ForcedSignOutModal({ onDismiss }) {
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      zIndex: 9999,
+    }}>
+      <div style={{
+        background: '#0f1a2c', border: '1px solid rgba(100,150,255,0.25)',
+        borderRadius: 10, padding: '24px 28px', maxWidth: 420,
+        boxShadow: '0 16px 48px rgba(0,0,0,0.5)',
+        color: '#dbe7ff', fontFamily: 'system-ui, sans-serif',
+      }}>
+        <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 10, color: '#10b7e8' }}>
+          You&apos;ve been signed out
+        </div>
+        <div style={{ fontSize: 13, lineHeight: 1.5, marginBottom: 18 }}>
+          This account was opened on another device. Only one active session is
+          allowed at a time.
+        </div>
+        <button
+          onClick={onDismiss}
+          style={{
+            background: '#0f8fb3', color: '#fff', border: 'none',
+            borderRadius: 6, padding: '8px 16px', fontWeight: 600,
+            cursor: 'pointer', fontSize: 13,
+          }}
+        >
+          Sign back in
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main app (authenticated) ─────────────────────────────────────────────────
 function MainApp() {
   const { user, signOut } = useAuthenticator((context) => [context.user, context.signOut]);
+  const { forcedOut, dismiss } = useSessionGuard(user, signOut);
 
   const [currentPage, setCurrentPage] = useState('projects');
   const [selectedProject, setSelectedProject] = useState(null);
@@ -182,7 +223,14 @@ function MainApp() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (!user) return <LoginScreen />;
+  if (!user) {
+    return (
+      <>
+        <LoginScreen />
+        {forcedOut && <ForcedSignOutModal onDismiss={dismiss} />}
+      </>
+    );
+  }
 
   const handleOpenProject  = (project) => { setSelectedProject(project); setCurrentPage('editor'); };
   const handleBackToProjects = () => { setCurrentPage('projects'); setRefreshKey((k) => k + 1); };

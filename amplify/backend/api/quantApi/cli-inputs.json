@@ -33,6 +33,26 @@
           "create"
         ]
       }
+    },
+    "/session/claim": {
+      "name": "/session/claim",
+      "lambdaFunction": "sessionGuard",
+      "permissions": {
+        "setting": "private",
+        "auth": [
+          "create"
+        ]
+      }
+    },
+    "/session/heartbeat": {
+      "name": "/session/heartbeat",
+      "lambdaFunction": "sessionGuard",
+      "permissions": {
+        "setting": "private",
+        "auth": [
+          "create"
+        ]
+      }
     }
   }
 }

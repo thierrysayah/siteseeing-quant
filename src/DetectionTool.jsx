@@ -451,7 +451,7 @@ function drawAnnotations(ctx, anns, scale, {
   ratio, hoverIdx, selectedIdx, selectedIndices,
   tempBox, tempPolyPts, tempPolyMouse, tempLine, tempLineShape, lastMeasureLine,
   hotHandle, zoneTags, classColors, tempCircle, lastLineIsMeasure,
-  areaTextColor, perimTextColor, measureTextColor, showConfidence,
+  areaTextColor, perimTextColor, measureTextColor, showConfidence, showZoneLabels = true,
 }) {
   const getColor = (cls) => (classColors && classColors[cls]) || CLASS_COLORS[cls] || DEFAULT_COLOR;
   // Tagged shape fills (all classes)
@@ -520,8 +520,11 @@ function drawAnnotations(ctx, anns, scale, {
       ctx.stroke();
     }
 
-    // Label (skip for line — length already shown inline with ID)
-    if (ann.shapeType !== "line") {
+    // Label (skip for line — length already shown inline with ID).
+    // Zones can clutter the canvas when there are many, so respect the
+    // showZoneLabels toggle for any zone-tagged or zone-class annotation.
+    const isZoneLabel = ann.clsName === "zone" || !!ann.zoneTag;
+    if (ann.shapeType !== "line" && (!isZoneLabel || showZoneLabels)) {
       let label = ann.numId != null ? `#${ann.numId} ${ann.clsName}` : ann.clsName;
       if (ann.zoneTag) label += `: ${ann.zoneTag}`;
       if (showConfidence && ann.confidence != null) label += ` ${ann.confidence.toFixed(2)}`;
@@ -1383,9 +1386,12 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
   const lineDrawing = useRef(false);
   const lineStart = useRef(null);
   const mouseDown = useRef(false);
-  const dragAnnIdx = useRef(null);       // whole-shape move
+  const dragAnnIdx = useRef(null);       // whole-shape move (primary index for legacy callers)
   const dragStart = useRef(null);        // [ox,oy] image-coords where drag began
-  const dragOrigPts = useRef(null);      // polygon: full points snapshot; box: [x1,y1,x2,y2]
+  const dragOrigPts = useRef(null);      // primary shape: polygon points snapshot OR [x1,y1,x2,y2]
+  // Group drag — captured at mousedown so multi-select moves stay rigid relative
+  // to each shape's original position. Map<annIdx, { shapeType, orig }>.
+  const dragGroupOrig = useRef(null);
   const handleDragging = useRef(null);   // box corner handle index
   const handleAnnIdx = useRef(null);
   const handleOrigBox = useRef(null);
@@ -1430,6 +1436,9 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
   // Settings
   const [showSettings,      setShowSettings]      = useState(false);
   const [showConfidence,    setShowConfidence]    = useState(false);
+  // Zones can dominate the canvas when there are many — let users toggle the
+  // index/class label off without affecting the area/perimeter overlay.
+  const [showZoneLabels,    setShowZoneLabels]    = useState(true);
   const [autoSimplifyDist,  setAutoSimplifyDist]  = useState("20"); // px, applied after inference
   const [areaTextColor,     setAreaTextColor]     = useState("#c0c0c0");
   const [perimTextColor,    setPerimTextColor]    = useState("#c0c0c0");
@@ -1922,11 +1931,11 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
       tempBox, tempPolyPts, tempPolyMouse, tempLine, tempLineShape, lastMeasureLine,
       hotHandle: handleDragging.current, zoneTags, classColors: allClassColors,
       tempCircle, lastLineIsMeasure,
-      areaTextColor, perimTextColor, measureTextColor, showConfidence,
+      areaTextColor, perimTextColor, measureTextColor, showConfidence, showZoneLabels,
     });
   }, [originalImg, annotations, scale, visibleClasses, hoverIdx, selectedIdx, selectedIndices,
       tempBox, tempPolyPts, tempPolyMouse, tempLine, tempLineShape, lastMeasureLine, ratio, zoneTags, customClasses,
-      tempCircle, lastLineIsMeasure, areaTextColor, perimTextColor, measureTextColor, showConfidence]);
+      tempCircle, lastLineIsMeasure, areaTextColor, perimTextColor, measureTextColor, showConfidence, showZoneLabels]);
 
   // ─── Image upload ────────────────────────────────────────────────────────────
   const handleFileChange = (e) => {
@@ -2212,21 +2221,32 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
 
       if (candidates.length > 0) {
         const idx = candidates[0][1];
+        // Decide the post-click selection set synchronously so the drag setup
+        // below can use it without waiting for setState to flush.
+        let nextSelectedIndices;
         if (e.ctrlKey || e.metaKey) {
-          setSelectedIndices(prev => {
-            const s = new Set(prev);
-            if (s.has(idx)) {
-              s.delete(idx);
-              setSelectedIdx(s.size > 0 ? [...s][s.size - 1] : null);
-            } else {
-              s.add(idx);
-              setSelectedIdx(idx);
-            }
-            return s;
-          });
-        } else {
+          const s = new Set(selectedIndices);
+          if (s.has(idx)) {
+            s.delete(idx);
+            setSelectedIdx(s.size > 0 ? [...s][s.size - 1] : null);
+          } else {
+            s.add(idx);
+            setSelectedIdx(idx);
+          }
+          nextSelectedIndices = s;
+          setSelectedIndices(s);
+        } else if (selectedIndices.has(idx) && selectedIndices.size > 1) {
+          // Click on a shape already part of a multi-selection (no modifier) —
+          // keep the whole group selected so we can drag all of them together.
+          nextSelectedIndices = selectedIndices;
           setSelectedIdx(idx);
-          setSelectedIndices(new Set([idx]));
+          setEditClass(annotations[idx].clsName);
+          setEditConf(annotations[idx].confidence != null ? String(annotations[idx].confidence) : "");
+        } else {
+          // Click on a new (or single-selected) shape — collapse to just it.
+          nextSelectedIndices = new Set([idx]);
+          setSelectedIdx(idx);
+          setSelectedIndices(nextSelectedIndices);
           setEditClass(annotations[idx].clsName);
           setEditConf(annotations[idx].confidence != null ? String(annotations[idx].confidence) : "");
         }
@@ -2235,15 +2255,33 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         didDrag.current = false;
         dragAnnIdx.current = idx;
         dragStart.current = [ox, oy];
-        const ann = annotations[idx];
-        dragOrigPts.current = ann.shapeType === "polygon"
-          ? ann.points.map(p => [...p])
-          : ann.shapeType === "line"
-            ? [ann.x1, ann.y1, ann.x2, ann.y2]  // actual endpoints, not bbox
-            : [...annotationBbox(ann)];            // box: [x1,y1,x2,y2]
+
+        // Capture each draggable shape's original geometry so a group drag
+        // translates every selected shape rigidly. If the clicked shape isn't
+        // part of the multi-selection (e.g. ctrl-click that just deselected
+        // the previous one), fall back to a single-shape drag of `idx`.
+        const dragIdxs = nextSelectedIndices.has(idx) && nextSelectedIndices.size > 1
+          ? [...nextSelectedIndices]
+          : [idx];
+        const groupOrig = new Map();
+        for (const i of dragIdxs) {
+          const a = annotations[i];
+          if (!a) continue;
+          groupOrig.set(i, {
+            shapeType: a.shapeType,
+            orig: a.shapeType === "polygon" || a.shapeType === "circle"
+              ? (a.points || []).map(p => [...p])
+              : a.shapeType === "line"
+                ? [a.x1, a.y1, a.x2, a.y2]  // actual endpoints, not bbox
+                : [...annotationBbox(a)],   // box: [x1,y1,x2,y2]
+          });
+        }
+        dragGroupOrig.current = groupOrig;
+        dragOrigPts.current = groupOrig.get(idx)?.orig ?? null;
       } else {
         if (!e.ctrlKey && !e.metaKey) { setSelectedIdx(null); setSelectedIndices(new Set()); }
         dragAnnIdx.current = null;
+        dragGroupOrig.current = null;
       }
     }
   };
@@ -2322,14 +2360,27 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
       const [sx, sy] = dragStart.current;
       const dx = ox - sx, dy = oy - sy;
       didDrag.current = true;
+      const group = dragGroupOrig.current;
       setAnnotations(prev => prev.map((a, i) => {
-        if (i !== dragAnnIdx.current) return a;
-        if (a.shapeType === "box" || a.shapeType === "line") {
-          const [x1, y1, x2, y2] = dragOrigPts.current;
-          return { ...a, x1: Math.round(x1+dx), y1: Math.round(y1+dy), x2: Math.round(x2+dx), y2: Math.round(y2+dy) };
+        // Group drag: translate every shape captured at mousedown by the same
+        // delta. Fallback to legacy single-shape behavior if the map is empty.
+        if (group && group.has(i)) {
+          const { shapeType, orig } = group.get(i);
+          if (shapeType === "box" || shapeType === "line") {
+            const [x1, y1, x2, y2] = orig;
+            return { ...a, x1: Math.round(x1+dx), y1: Math.round(y1+dy), x2: Math.round(x2+dx), y2: Math.round(y2+dy) };
+          }
+          // polygon / circle — translate every captured point
+          return { ...a, points: orig.map(([px, py]) => [Math.round(px+dx), Math.round(py+dy)]) };
         }
-        // polygon whole-move — use original snapshot, not accumulated delta
-        return { ...a, points: dragOrigPts.current.map(([px, py]) => [Math.round(px+dx), Math.round(py+dy)]) };
+        if (!group && i === dragAnnIdx.current) {
+          if (a.shapeType === "box" || a.shapeType === "line") {
+            const [x1, y1, x2, y2] = dragOrigPts.current;
+            return { ...a, x1: Math.round(x1+dx), y1: Math.round(y1+dy), x2: Math.round(x2+dx), y2: Math.round(y2+dy) };
+          }
+          return { ...a, points: dragOrigPts.current.map(([px, py]) => [Math.round(px+dx), Math.round(py+dy)]) };
+        }
+        return a;
       }));
     }
 
@@ -2519,6 +2570,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
     }
 
     if (dragAnnIdx.current != null) dragAnnIdx.current = null;
+    dragGroupOrig.current = null;
     mouseDown.current = false;
   };
 
@@ -2816,25 +2868,44 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
   };
 
   const duplicateSelected = () => {
-    if (selectedIdx == null) return;
-    const ann = annotations[selectedIdx];
-    if (!ann) return;
+    // Duplicate every annotation in the multi-selection set, falling back to
+    // the single primary selection. Using selectedIndices (the Set) means a
+    // multi-select duplicate clones all of them — previously only the primary
+    // (`selectedIdx`) was duplicated.
+    const idxSet =
+      selectedIndices && selectedIndices.size > 0
+        ? selectedIndices
+        : (selectedIdx != null ? new Set([selectedIdx]) : new Set());
+    if (idxSet.size === 0) return;
+
+    const sourceIdxs = [...idxSet].sort((a, b) => a - b);
+    const sources = sourceIdxs.map(i => annotations[i]).filter(Boolean);
+    if (sources.length === 0) return;
+
     pushHistory(annotations);
-    const OFFSET = 20; // px offset so the copy is visible
-    const clone = {
-      ...ann,
-      id: Math.random().toString(36).slice(2),
-      x1: ann.x1 != null ? ann.x1 + OFFSET : null,
-      y1: ann.y1 != null ? ann.y1 + OFFSET : null,
-      x2: ann.x2 != null ? ann.x2 + OFFSET : null,
-      y2: ann.y2 != null ? ann.y2 + OFFSET : null,
-      points: ann.points ? ann.points.map(([x, y]) => [x + OFFSET, y + OFFSET]) : null,
-    };
+    const OFFSET = 20; // px offset so the copies are visible
+
     setAnnotations(prev => {
-      const newIdx = prev.length;
-      const cloneWithId = { ...clone, numId: nextNumId(prev) };
-      setTimeout(() => { setSelectedIdx(newIdx); setSelectedIndices(new Set([newIdx])); setEditClass(cloneWithId.clsName); }, 0);
-      return [...prev, cloneWithId];
+      let nextId = nextNumId(prev);
+      const clones = sources.map(ann => ({
+        ...ann,
+        id: Math.random().toString(36).slice(2),
+        numId: nextId++,
+        x1: ann.x1 != null ? ann.x1 + OFFSET : null,
+        y1: ann.y1 != null ? ann.y1 + OFFSET : null,
+        x2: ann.x2 != null ? ann.x2 + OFFSET : null,
+        y2: ann.y2 != null ? ann.y2 + OFFSET : null,
+        points: ann.points ? ann.points.map(([x, y]) => [x + OFFSET, y + OFFSET]) : null,
+      }));
+      const baseIdx = prev.length;
+      const newIdxs = clones.map((_, k) => baseIdx + k);
+      const lastClone = clones[clones.length - 1];
+      setTimeout(() => {
+        setSelectedIdx(newIdxs[newIdxs.length - 1]);
+        setSelectedIndices(new Set(newIdxs));
+        if (lastClone) setEditClass(lastClone.clsName);
+      }, 0);
+      return [...prev, ...clones];
     });
   };
 
@@ -4380,6 +4451,10 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
               <input type="checkbox" checked={showConfidence} onChange={e => setShowConfidence(e.target.checked)} style={{ cursor: "pointer" }} />
               Show confidence
             </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", color: "#5a7a9a", fontSize: 11, userSelect: "none" }}>
+              <input type="checkbox" checked={showZoneLabels} onChange={e => setShowZoneLabels(e.target.checked)} style={{ cursor: "pointer" }} />
+              Show zone labels
+            </label>
             {zoneSummary && <span style={styles.zoneSummary}>{zoneSummary}</span>}
           </div>
         </div>
@@ -4395,7 +4470,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         <div style={{ ...styles.rightPanel, width: rightPanelWidth }}>
           {/* Class visibility */}
           <div style={styles.section}>
-            <div style={styles.sectionTitle}>VISIBILITY</div>
+            <div style={styles.sectionTitle}>LAYERS</div>
             {allClasses.map(cls => {
               const color = allClassColors[cls] || DEFAULT_COLOR;
               return (
@@ -4498,16 +4573,16 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
           {/* Custom class manager */}
           <div style={styles.section}>
             <div style={{ ...styles.sectionTitle, display: "flex", justifyContent: "space-between" }}>
-              CUSTOM CLASSES{!canUseCustomClasses && <span style={{ fontSize: 9, color: "#c0a040", letterSpacing: 0 }}>🔒 Pro</span>}
+              CUSTOM LAYERS{!canUseCustomClasses && <span style={{ fontSize: 9, color: "#c0a040", letterSpacing: 0 }}>🔒 Pro</span>}
               {canUseCustomClasses && <button onClick={() => setShowClassManager(v => !v)} style={styles.tinyBtn}>{showClassManager ? "▲" : "▼"}</button>}
             </div>
             {!canUseCustomClasses && (
-              <div style={{ fontSize: 10, color: "#4a6a7a", fontStyle: "italic" }}>Upgrade to Pro to add custom classes.</div>
+              <div style={{ fontSize: 10, color: "#4a6a7a", fontStyle: "italic" }}>Upgrade to Pro to add custom layers.</div>
             )}
             {canUseCustomClasses && showClassManager && (
               <div>
                 {customClasses.length === 0 && (
-                  <div style={{ color: "#3a5070", fontSize: 10, marginBottom: 4 }}>No custom classes yet.</div>
+                  <div style={{ color: "#3a5070", fontSize: 10, marginBottom: 4 }}>No custom layers yet.</div>
                 )}
                 {customClasses.map(cc => (
                   <div key={cc.name} style={{ ...styles.row, marginBottom: 2 }}>
@@ -4532,7 +4607,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                       setVisibleClasses(prev => new Set([...prev, name]));
                       setNewCustomClassName("");
                     }}
-                    placeholder="class name"
+                    placeholder="layer name"
                     style={{ ...styles.smallInput, flex: 1, width: "auto" }}
                   />
                   <input type="color" value={newCustomClassColor} onChange={e => setNewCustomClassColor(e.target.value)} style={{ width: 28, height: 24, padding: 1, background: "none", border: "none", cursor: "pointer" }} />

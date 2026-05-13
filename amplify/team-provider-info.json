@@ -26,7 +26,8 @@
         "estimationplatform54fe8981": {
           "bucketName": "estimation-platform-user-data",
           "region": "eu-west-3"
-        }
+        },
+        "usersessions": {}
       },
       "function": {
         "assignDefaultGroup": {
@@ -44,6 +45,10 @@
         "inferProxy": {
           "deploymentBucketName": "amplify-estimationplatform-dev-20748-deployment",
           "s3Key": "amplify-builds/inferProxy-73495a384f4b64636376-build.zip"
+        },
+        "sessionGuard": {
+          "deploymentBucketName": "amplify-estimationplatform-dev-20748-deployment",
+          "s3Key": "amplify-builds/sessionGuard-675246704c6a46674b36-build.zip"
         }
       },
       "api": {

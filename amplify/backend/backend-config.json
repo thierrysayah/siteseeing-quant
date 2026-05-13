@@ -25,6 +25,14 @@
           ],
           "category": "function",
           "resourceName": "inferProxy"
+        },
+        {
+          "attributes": [
+            "Name",
+            "Arn"
+          ],
+          "category": "function",
+          "resourceName": "sessionGuard"
         }
       ],
       "providerPlugin": "awscloudformation",
@@ -77,6 +85,22 @@
     },
     "inferProxy": {
       "build": true,
+      "providerPlugin": "awscloudformation",
+      "service": "Lambda"
+    },
+    "sessionGuard": {
+      "build": true,
+      "dependsOn": [
+        {
+          "attributes": [
+            "Name",
+            "Arn",
+            "StreamArn"
+          ],
+          "category": "storage",
+          "resourceName": "usersessions"
+        }
+      ],
       "providerPlugin": "awscloudformation",
       "service": "Lambda"
     }
@@ -153,6 +177,22 @@
         }
       ]
     },
+    "AMPLIFY_function_sessionGuard_deploymentBucketName": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "sessionGuard"
+        }
+      ]
+    },
+    "AMPLIFY_function_sessionGuard_s3Key": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "sessionGuard"
+        }
+      ]
+    },
     "AMPLIFY_hosting_amplifyhosting_appId": {
       "usedBy": [
         {
@@ -192,6 +232,10 @@
       "providerPlugin": "awscloudformation",
       "service": "S3",
       "serviceType": "imported"
+    },
+    "usersessions": {
+      "providerPlugin": "awscloudformation",
+      "service": "DynamoDB"
     }
   }
 }
