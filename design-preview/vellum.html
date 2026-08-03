@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>QUANT — Vellum (redesign preview)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Saira+Semi+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#F1ECE0; --paper-2:#E9E3D4; --paper-3:#FBF9F2; --paper-hi:#FFFFFF;
+    --ink:#1B2430; --ink-2:#243040;
+    --line:#D8D0BE; --line-2:#C4BAA3;
+    --text-hi:#1B2430; --text-mid:#5B6472; --text-lo:#948C79;
+    --amber:#E08707; --amber-press:#C57406;
+    --blue:#1E6E9C;
+    --green:#2F9463; --extwall:#2E77AD; --zone:#C4392B; --door:#7E52C0; --window:#C9701E;
+    --danger:#B23A2C;
+    --sans:'IBM Plex Sans',system-ui,sans-serif;
+    --disp:'Saira Semi Condensed',system-ui,sans-serif;
+    --mono:'IBM Plex Mono',ui-monospace,monospace;
+    --r:6px;
+    --cream:#EFE9DB;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--paper); color:var(--text-hi); font-family:var(--sans);
+    font-size:13px; -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+  .app{display:flex; flex-direction:column; height:100vh}
+
+  .eyebrow{
+    font-family:var(--disp); font-weight:600; font-size:11px; letter-spacing:.16em;
+    text-transform:uppercase; color:var(--text-mid); display:flex; align-items:center; gap:8px;
+  }
+  .eyebrow::before{content:''; width:14px; height:2px; background:var(--amber); flex:none}
+  .mono{font-family:var(--mono); font-variant-numeric:tabular-nums}
+
+  /* ── TITLEBAR ─────────────────────────────────────────────────── */
+  .titlebar{
+    display:flex; align-items:stretch; gap:16px; height:58px; padding:0 14px;
+    background:linear-gradient(180deg,var(--paper-3),var(--paper)); border-bottom:1px solid var(--line-2);
+  }
+  /* title-block cartouche — inked stamp on paper */
+  .cartouche{
+    display:grid; grid-template-columns:auto auto; align-self:center;
+    border:1px solid var(--ink); border-radius:4px; overflow:hidden; background:var(--ink);
+    box-shadow:0 1px 0 rgba(0,0,0,.06);
+  }
+  .cartouche .name{
+    grid-row:1/3; display:flex; flex-direction:column; justify-content:center;
+    padding:6px 14px; border-right:1px solid rgba(255,255,255,.14);
+  }
+  .cartouche .name b{
+    font-family:var(--disp); font-weight:700; font-size:22px; letter-spacing:.14em; line-height:1; color:var(--cream);
+  }
+  .cartouche .name span{
+    font-family:var(--disp); font-weight:500; font-size:9px; letter-spacing:.22em;
+    color:rgba(239,233,219,.55); margin-top:4px; text-transform:uppercase;
+  }
+  .cartouche .cells{display:flex}
+  .cartouche .cell{padding:5px 12px; min-width:74px; border-right:1px solid rgba(255,255,255,.12)}
+  .cartouche .cell:last-child{border-right:0}
+  .cartouche .cell .k{font-family:var(--disp);font-size:8.5px;letter-spacing:.18em;color:rgba(239,233,219,.5);text-transform:uppercase}
+  .cartouche .cell .v{font-family:var(--mono);font-size:12px;color:var(--cream);margin-top:2px}
+  .cartouche .cell .v.ok{color:#7FD0F0}
+  .cartouche .rev{grid-row:2; display:flex; align-items:center; padding:0 12px; border-top:1px solid rgba(255,255,255,.12);
+    font-family:var(--mono); font-size:10px; color:rgba(239,233,219,.45); letter-spacing:.04em}
+
+  .tb-spacer{flex:1}
+  .tb-actions{display:flex; align-items:center; gap:7px}
+  .btn{
+    font-family:var(--sans); font-size:12px; font-weight:500; color:var(--text-hi);
+    background:var(--paper-3); border:1px solid var(--line-2); border-radius:var(--r);
+    padding:7px 12px; cursor:pointer; display:inline-flex; align-items:center; gap:7px;
+    transition:border-color .15s, background .15s;
+  }
+  .btn:hover{border-color:var(--ink); background:var(--paper-hi)}
+  .btn .ic{width:13px;height:13px;opacity:.8}
+  .btn.ghost{background:transparent; border-color:var(--line)}
+  .btn.amber{background:var(--amber); color:#241800; border-color:var(--amber); font-weight:600}
+  .btn.amber:hover{background:var(--amber-press); border-color:var(--amber-press)}
+  .btn.sq{padding:7px; width:34px; justify-content:center}
+  .divider-v{width:1px; height:26px; background:var(--line-2); align-self:center; margin:0 4px}
+
+  /* ── TOOL RAIL ────────────────────────────────────────────────── */
+  .toolrail{
+    display:flex; align-items:center; gap:2px; height:52px; padding:0 12px;
+    background:var(--paper-2); border-bottom:1px solid var(--line-2);
+  }
+  .tool{
+    position:relative; display:flex; flex-direction:column; align-items:center; gap:3px;
+    padding:6px 12px 5px; border-radius:5px; cursor:pointer; color:var(--text-mid);
+    background:transparent; border:1px solid transparent; min-width:56px;
+    transition:color .15s, background .15s;
+  }
+  .tool .ic{width:17px;height:17px}
+  .tool .lb{font-family:var(--disp); font-size:10px; letter-spacing:.08em; text-transform:uppercase; font-weight:600}
+  .tool:hover{color:var(--ink); background:var(--paper-3)}
+  .tool.active{color:var(--amber-press); background:rgba(224,135,7,.12); border-color:rgba(224,135,7,.35)}
+  .tool.active::after{content:''; position:absolute; left:10px; right:10px; bottom:-1px; height:2px; background:var(--amber); border-radius:2px}
+
+  .dim-div{position:relative; width:1px; height:24px; background:var(--line-2); margin:0 10px}
+  .dim-div::before,.dim-div::after{content:''; position:absolute; left:-2px; width:5px; height:1px; background:var(--line-2)}
+  .dim-div::before{top:0} .dim-div::after{bottom:0}
+
+  .rail-spacer{flex:1}
+  .zoom-readout{font-family:var(--mono); font-size:12px; color:var(--text-mid); padding:0 8px}
+  .rotin{width:46px; background:var(--paper-3); border:1px solid var(--line-2); border-radius:5px;
+    color:var(--text-hi); font-family:var(--mono); font-size:12px; padding:6px 8px; text-align:center}
+
+  /* ── WORKSPACE ────────────────────────────────────────────────── */
+  .workspace{flex:1; display:flex; min-height:0}
+  .canvas{position:relative; flex:1; background:radial-gradient(130% 130% at 50% 0%, #F6F1E6 0%, #E7E0CF 100%); overflow:hidden}
+  .canvas svg{position:absolute; inset:0; width:100%; height:100%}
+  .reg{position:absolute; width:16px; height:16px; opacity:.7}
+  .reg::before,.reg::after{content:''; position:absolute; background:var(--amber)}
+  .reg::before{width:16px; height:1px} .reg::after{height:16px; width:1px}
+  .reg.tl{top:12px; left:12px} .reg.tl::before{top:0;left:0}.reg.tl::after{top:0;left:0}
+  .reg.tr{top:12px; right:12px} .reg.tr::before{top:0;right:0}.reg.tr::after{top:0;right:0}
+  .reg.bl{bottom:12px; left:12px} .reg.bl::before{bottom:0;left:0}.reg.bl::after{bottom:0;left:0}
+  .reg.br{bottom:12px; right:12px} .reg.br::before{bottom:0;right:0}.reg.br::after{bottom:0;right:0}
+
+  /* ── INSPECTOR ────────────────────────────────────────────────── */
+  .inspector{width:308px; flex:none; background:var(--paper-2); border-left:1px solid var(--line-2); overflow-y:auto; overflow-x:hidden}
+  .inspector::-webkit-scrollbar{width:9px}
+  .inspector::-webkit-scrollbar-thumb{background:var(--line-2); border-radius:9px; border:2px solid var(--paper-2)}
+  .sec{padding:14px 14px; border-bottom:1px solid var(--line)}
+  .sec-h{display:flex; align-items:center; justify-content:space-between; cursor:pointer}
+  .sec-h .chev{color:var(--text-lo); font-family:var(--mono); font-size:11px}
+
+  .classrow{display:flex; align-items:center; gap:10px; padding:7px 8px; border-radius:5px; cursor:pointer; transition:background .12s}
+  .classrow:hover{background:var(--paper-3)}
+  .cbx{width:15px;height:15px;border:1.5px solid var(--line-2); border-radius:3.5px; flex:none; display:flex; align-items:center; justify-content:center; background:var(--paper-hi)}
+  .cbx.on{background:var(--blue); border-color:var(--blue)}
+  .cbx.on::after{content:''; width:7px;height:4px; border-left:1.6px solid #fff; border-bottom:1.6px solid #fff; transform:rotate(-45deg) translate(0,-1px)}
+  .chip{width:9px;height:9px;border-radius:2px;flex:none}
+  .classrow .nm{flex:1; font-size:12.5px; color:var(--text-hi)}
+  .classrow.off .nm{color:var(--text-lo)}
+  .classrow .ct{font-family:var(--mono); font-size:11.5px; color:var(--text-mid)}
+
+  .field-label{font-size:11px; color:var(--text-mid); margin-bottom:6px; display:block}
+  .row{display:flex; gap:7px; align-items:center}
+  .select, .input{width:100%; background:var(--paper-3); border:1px solid var(--line-2); border-radius:var(--r); color:var(--text-hi); font-family:var(--sans); font-size:12.5px; padding:8px 10px}
+  .input.mini{width:52px; text-align:center; font-family:var(--mono)}
+  .select{appearance:none; background-image:linear-gradient(45deg,transparent 50%,var(--text-lo) 50%),linear-gradient(135deg,var(--text-lo) 50%,transparent 50%);
+    background-position:calc(100% - 15px) 15px,calc(100% - 10px) 15px; background-size:5px 5px,5px 5px; background-repeat:no-repeat}
+  .btn-wide{width:100%; justify-content:center; margin-top:8px}
+  .btn-danger{background:transparent; border:1px solid rgba(178,58,44,.45); color:var(--danger)}
+  .btn-danger:hover{background:rgba(178,58,44,.10); border-color:var(--danger)}
+  .btn-sm{padding:7px 11px; font-size:11.5px}
+  .mt6{margin-top:6px}.mt10{margin-top:10px}
+
+  .hint{font-size:11px; color:var(--text-lo); line-height:1.5; margin-top:2px}
+  .scale-out{font-family:var(--mono); font-size:11px; color:var(--blue); margin-top:8px}
+
+  .annrow{border-left:2px solid var(--zone); padding:8px 10px; margin-top:8px; background:var(--paper-3); border-radius:0 5px 5px 0}
+  .annrow .top{display:flex; align-items:baseline; gap:8px}
+  .annrow .id{font-family:var(--mono); font-size:12px; color:var(--zone); font-weight:600}
+  .annrow .cls{font-size:12px; color:var(--text-hi)}
+  .annrow .tag{font-family:var(--mono); font-size:11px; color:var(--text-lo)}
+  .annrow .met{font-family:var(--mono); font-size:11px; color:var(--text-mid); margin-top:3px; letter-spacing:.02em}
+
+  /* ── STATUS BAR ───────────────────────────────────────────────── */
+  .statusbar{display:flex; align-items:center; gap:14px; height:48px; padding:0 14px; background:linear-gradient(0deg,var(--paper-3),var(--paper)); border-top:1px solid var(--line-2)}
+  .conf{display:flex; align-items:center; gap:8px}
+  .conf label{font-family:var(--disp); font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--text-mid)}
+  .toggle{display:flex; align-items:center; gap:8px; cursor:pointer; color:var(--text-mid); font-size:12px}
+  .sw{width:32px;height:18px;border-radius:10px;background:var(--paper-hi);border:1px solid var(--line-2);position:relative;transition:.15s;flex:none}
+  .sw::after{content:'';position:absolute;top:1.5px;left:1.5px;width:13px;height:13px;border-radius:50%;background:var(--text-lo);transition:.15s}
+  .toggle.on .sw{background:rgba(30,110,156,.2);border-color:var(--blue)}
+  .toggle.on .sw::after{left:15px;background:var(--blue)}
+  .toggle.on{color:var(--text-hi)}
+  .readout{margin-left:auto; display:flex; align-items:center; gap:18px; padding:0 4px}
+  .readout .grp{display:flex; flex-direction:column; align-items:flex-end}
+  .readout .k{font-family:var(--disp); font-size:9px; letter-spacing:.16em; text-transform:uppercase; color:var(--text-lo)}
+  .readout .v{font-family:var(--mono); font-size:15px; color:var(--text-hi); line-height:1.1}
+  .readout .v small{color:var(--text-lo); font-size:11px}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- TITLEBAR -->
+  <div class="titlebar">
+    <div class="cartouche">
+      <div class="name"><b>QUANT</b><span>Takeoff &amp; Estimation</span></div>
+      <div class="cells">
+        <div class="cell"><div class="k">Scale</div><div class="v">1:0.0006</div></div>
+        <div class="cell"><div class="k">Zoom</div><div class="v">28%</div></div>
+        <div class="cell"><div class="k">State</div><div class="v ok">SAVED</div></div>
+      </div>
+      <div class="rev">REV 1.0 · 11:32:20</div>
+    </div>
+
+    <div class="tb-spacer"></div>
+    <div class="tb-actions">
+      <button class="btn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.5"/><path d="M21 15l-5-5L5 19"/></svg>Load image</button>
+      <button class="btn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6"/></svg>Import PDF</button>
+      <button class="btn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4-4m4 4l4-4"/><path d="M4 17v3h16v-3"/></svg>Import annotations</button>
+      <div class="divider-v"></div>
+      <button class="btn"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3h11l3 3v15H5z"/><path d="M8 3v6h7V3"/><rect x="8" y="13" width="8" height="6"/></svg>Save</button>
+      <button class="btn amber"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.2 10.8l7.6-3.6M8.2 13.2l7.6 3.6"/></svg>Share</button>
+      <button class="btn sq ghost"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg></button>
+    </div>
+  </div>
+
+  <!-- TOOL RAIL -->
+  <div class="toolrail">
+    <div class="tool active"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3l14 8-6 1.5L11 19z"/></svg><span class="lb">Select</span></div>
+    <div class="dim-div"></div>
+    <div class="tool"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 20L20 4"/></svg><span class="lb">Line</span></div>
+    <div class="tool"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="6" width="16" height="12"/></svg><span class="lb">Box</span></div>
+    <div class="tool"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l8 6-3 10H7L4 9z"/></svg><span class="lb">Polygon</span></div>
+    <div class="tool"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/></svg><span class="lb">Circle</span></div>
+    <div class="dim-div"></div>
+    <div class="tool"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 15L15 3l6 6L9 21z"/><path d="M7 11l2 2M10 8l2 2M13 5l2 2"/></svg><span class="lb">Measure</span></div>
+    <div class="tool"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 17h18M6 17V9M12 17V6M18 17v-4"/></svg><span class="lb">Scale cal.</span></div>
+
+    <div class="dim-div"></div>
+    <button class="btn btn-sm"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="8" y="8" width="12" height="12" rx="1"/><path d="M4 16V4h12"/></svg>Duplicate</button>
+    <button class="btn btn-sm"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>Rotate</button>
+    <input class="rotin" value="0">
+
+    <div class="rail-spacer"></div>
+    <button class="btn btn-sm ghost"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 015 5v1"/></svg>Undo <span class="mono" style="color:var(--text-lo)">6</span></button>
+    <button class="btn btn-sm ghost"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 14l5-5-5-5"/><path d="M20 9H9a5 5 0 00-5 5v1"/></svg>Redo <span class="mono" style="color:var(--text-lo)">4</span></button>
+    <div class="dim-div"></div>
+    <button class="btn sq ghost">−</button>
+    <span class="zoom-readout">28%</span>
+    <button class="btn sq ghost">+</button>
+    <button class="btn btn-sm ghost">Reset</button>
+  </div>
+
+  <!-- WORKSPACE -->
+  <div class="workspace">
+    <div class="canvas">
+      <span class="reg tl"></span><span class="reg tr"></span><span class="reg bl"></span><span class="reg br"></span>
+      <svg viewBox="0 0 900 640" preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <pattern id="grid" width="26" height="26" patternUnits="userSpaceOnUse">
+            <path d="M26 0H0V26" fill="none" stroke="#E1D9C7" stroke-width="1"/>
+          </pattern>
+        </defs>
+        <rect width="900" height="640" fill="url(#grid)"/>
+        <rect x="150" y="70" width="600" height="500" fill="none" stroke="#33506b" stroke-width="2"/>
+        <line x1="150" y1="500" x2="750" y2="500" stroke="var(--blue)" stroke-width="1.3" stroke-dasharray="10 6" opacity="0.85"/>
+        <line x1="450" y1="70" x2="450" y2="570" stroke="#9fb0c2" stroke-width="1" stroke-dasharray="4 5"/>
+        <g fill="rgba(196,57,43,0.10)" stroke="var(--zone)" stroke-width="1.6">
+          <rect x="185" y="110" width="150" height="120"/>
+          <rect x="350" y="110" width="120" height="90"/>
+          <polygon points="185,250 320,250 320,340 250,340 250,410 185,410"/>
+          <rect x="500" y="120" width="210" height="150"/>
+          <rect x="500" y="300" width="120" height="120"/>
+          <rect x="350" y="230" width="130" height="180"/>
+          <rect x="185" y="440" width="230" height="100"/>
+          <rect x="440" y="440" width="270" height="100"/>
+          <rect x="640" y="300" width="70" height="120"/>
+        </g>
+        <g fill="var(--zone)" font-family="IBM Plex Mono, monospace" font-size="11" opacity="0.95">
+          <text x="196" y="128">#42 zone</text>
+          <text x="360" y="128">#98 zone</text>
+          <text x="510" y="138">#7 zone</text>
+          <text x="360" y="248">#146 zone</text>
+          <text x="196" y="458">#33 zone</text>
+          <text x="452" y="458">#416 zone</text>
+          <text x="510" y="318">#58 zone</text>
+        </g>
+        <g stroke="#8a8060" stroke-width="1">
+          <line x1="150" y1="52" x2="750" y2="52"/>
+          <line x1="150" y1="47" x2="150" y2="57"/><line x1="750" y1="47" x2="750" y2="57"/>
+        </g>
+        <text x="435" y="46" fill="#6f6753" font-family="IBM Plex Mono, monospace" font-size="10">12.40 m</text>
+      </svg>
+    </div>
+
+    <!-- INSPECTOR -->
+    <div class="inspector">
+      <div class="sec">
+        <div class="eyebrow">Classes</div>
+        <div class="mt10">
+          <div class="classrow off"><span class="cbx"></span><span class="chip" style="background:var(--green)"></span><span class="nm">Internal_Wall</span><span class="ct">76</span></div>
+          <div class="classrow off"><span class="cbx"></span><span class="chip" style="background:var(--extwall)"></span><span class="nm">External_Wall</span><span class="ct">68</span></div>
+          <div class="classrow"><span class="cbx on"></span><span class="chip" style="background:var(--zone)"></span><span class="nm">zone</span><span class="ct">179</span></div>
+          <div class="classrow off"><span class="cbx"></span><span class="chip" style="background:var(--door)"></span><span class="nm">door</span><span class="ct">73</span></div>
+          <div class="classrow off"><span class="cbx"></span><span class="chip" style="background:var(--window)"></span><span class="nm">window</span><span class="ct">7</span></div>
+          <div class="classrow off"><span class="cbx"></span><span class="chip" style="background:#9a927f"></span><span class="nm">Unassigned</span><span class="ct">0</span></div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="eyebrow">New shape class</div>
+        <div class="mt10"><div class="select">Internal_Wall</div></div>
+      </div>
+
+      <div class="sec">
+        <div class="eyebrow">Edit selected</div>
+        <div class="row mt10">
+          <div class="select" style="flex:1">zone</div>
+          <button class="btn btn-sm">Apply</button>
+        </div>
+        <div class="row mt6">
+          <span class="field-label" style="margin:0">Tag</span>
+          <div class="select" style="flex:1">— none —</div>
+          <button class="btn btn-sm">Set</button>
+        </div>
+        <button class="btn btn-wide btn-danger">Delete</button>
+        <div class="row mt10">
+          <span class="field-label" style="margin:0; white-space:nowrap">Simplify (px)</span>
+          <input class="input mini" value="3">
+          <button class="btn btn-sm">Simplify</button>
+        </div>
+        <button class="btn btn-wide" style="background:transparent;color:var(--amber-press);border-color:rgba(224,135,7,.5)"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 8h8v8H8z"/><path d="M3 12h5M16 12h5M12 3v5M12 16v5"/></svg>Combine zones</button>
+      </div>
+
+      <div class="sec"><div class="sec-h"><div class="eyebrow">Tags</div><span class="chev">▾</span></div></div>
+      <div class="sec"><div class="sec-h"><div class="eyebrow">Custom layers</div><span class="chev">▾</span></div></div>
+
+      <div class="sec">
+        <div class="eyebrow">Scale calibration</div>
+        <p class="hint">Draw a line with the Measure tool, then enter its real length below.</p>
+        <div class="row mt10">
+          <span class="field-label" style="margin:0">Scale</span>
+          <input class="input mini" value="1">
+          <span class="mono" style="color:var(--text-lo)">:</span>
+          <input class="input mini" value="0.00">
+          <button class="btn btn-sm">Set</button>
+        </div>
+        <div class="scale-out">px = 0.000597 m</div>
+      </div>
+
+      <div class="sec"><div class="sec-h"><div class="eyebrow">Export</div><span class="chev">▾</span></div></div>
+
+      <div class="sec" style="border-bottom:0">
+        <div class="eyebrow">Annotations <span class="mono" style="color:var(--text-lo); margin-left:auto; letter-spacing:0">179</span></div>
+        <div class="annrow">
+          <div class="top"><span class="id">#1</span><span class="cls">zone</span><span class="tag">:gen zone</span></div>
+          <div class="met">A 0.02 m²   ·   P 0.60 m</div>
+        </div>
+        <div class="annrow">
+          <div class="top"><span class="id">#2</span><span class="cls">zone</span><span class="tag">:gen zone</span></div>
+          <div class="met">A 0.01 m²   ·   P 0.59 m</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STATUS BAR -->
+  <div class="statusbar">
+    <div class="conf">
+      <label>Conf</label>
+      <input class="input mini" value="0–1">
+    </div>
+    <button class="btn amber btn-sm"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 4l14 8-14 8z"/></svg>Run analysis</button>
+    <div class="toggle"><span class="sw"></span>Show confidence</div>
+    <div class="toggle on"><span class="sw"></span>Show zone labels</div>
+
+    <div class="readout">
+      <div class="grp"><span class="k">Total zone</span><span class="v">1.97 <small>m²</small></span></div>
+      <div class="dim-div" style="height:26px"></div>
+      <div class="grp"><span class="k">Perimeter</span><span class="v">80.71 <small>m</small></span></div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

@@ -12,6 +12,7 @@
     "dxf-writer": "^1.18.4",
     "html2canvas": "^1.4.1",
     "jspdf": "^4.2.1",
+    "polygon-clipping": "^0.15.7",
     "react": "18.2.0",
     "react-dom": "18.2.0",
     "react-scripts": "5.0.1",

@@ -236,8 +236,11 @@ function MainApp() {
   const handleBackToProjects = () => { setCurrentPage('projects'); setRefreshKey((k) => k + 1); };
 
   return (
-    <div>
-      <div className="top-bar">
+    // Viewport-height flex column so the editor fills exactly the space left
+    // below the top bar. Without this the editor's own 100vh pushed its status
+    // bar (Run analysis, zone totals) below the fold.
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden' }}>
+      <div className="top-bar" style={{ flexShrink: 0 }}>
         <span className="username">
           {currentPage === 'editor' && selectedProject?.name ? selectedProject.name : user?.username}
         </span>
@@ -259,19 +262,25 @@ function MainApp() {
       </div>
 
       {currentPage === 'projects' ? (
-        <ProjectsPage
-          onOpenProject={handleOpenProject}
-          user={user}
-          refreshKey={refreshKey}
-          userTierInfo={userTierInfo}
-        />
+        // Projects list scrolls on its own; the editor manages its internal
+        // scrolling, so it just fills the remaining height.
+        <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+          <ProjectsPage
+            onOpenProject={handleOpenProject}
+            user={user}
+            refreshKey={refreshKey}
+            userTierInfo={userTierInfo}
+          />
+        </div>
       ) : (
-        <DetectionTool
-          project={selectedProject}
-          user={user}
-          onBack={handleBackToProjects}
-          userTierInfo={userTierInfo}
-        />
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          <DetectionTool
+            project={selectedProject}
+            user={user}
+            onBack={handleBackToProjects}
+            userTierInfo={userTierInfo}
+          />
+        </div>
       )}
     </div>
   );

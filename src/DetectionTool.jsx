@@ -5,6 +5,9 @@ import { getLimits, tierLabel, tierColor } from "./services/userService";
 import Drawing from "dxf-writer";
 import { jsPDF } from "jspdf";
 import * as XLSX from "xlsx";
+import polygonClipping from "polygon-clipping";
+import { useTheme } from "./hooks/useTheme";
+import "./theme.css";
 
 // ─── EXCEL COLUMNS ────────────────────────────────────────────────────────────
 const EXCEL_COLUMNS = [
@@ -958,10 +961,10 @@ function PdfPageImportModal({ pdfData, onConfirmSingle, onConfirmMulti, onCancel
 
         {/* ── Error ── */}
         {loadError && (
-          <div style={{ padding: 24, color: "#e05555", fontFamily: "monospace", fontSize: 12, textAlign: "center", lineHeight: 1.6 }}>
+          <div style={{ padding: 24, color: "var(--err-tx)", fontFamily: "monospace", fontSize: 12, textAlign: "center", lineHeight: 1.6 }}>
             Could not render this PDF.<br />
-            <span style={{ fontSize: 10, color: "#7a4a4a" }}>{loadError}</span><br /><br />
-            <span style={{ fontSize: 11, color: "#5a7a9a" }}>
+            <span style={{ fontSize: 10, color: "var(--err-tx3)" }}>{loadError}</span><br /><br />
+            <span style={{ fontSize: 11, color: "var(--tx-label)" }}>
               Try exporting the drawing as a PNG or TIFF from your CAD software and use Load Image instead.
             </span>
           </div>
@@ -971,15 +974,15 @@ function PdfPageImportModal({ pdfData, onConfirmSingle, onConfirmMulti, onCancel
         {step === 1 && !loadError && (
           <>
             {thumbnails.length === 0 && (
-              <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#3a5c7a", fontFamily: "monospace", fontSize: 13 }}>
+              <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--tx-empty)", fontFamily: "monospace", fontSize: 13 }}>
                 ⟳ Loading pages…
               </div>
             )}
 
             {thumbnails.length > 0 && (
               <>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 14px", borderBottom: "1px solid #141e30" }}>
-                  <span style={{ color: "#5a7a9a", fontSize: 11, fontFamily: "monospace" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 14px", borderBottom: "1px solid var(--bd-section)" }}>
+                  <span style={{ color: "var(--tx-label)", fontSize: 11, fontFamily: "monospace" }}>
                     {selectedPages.size} of {totalPages} selected
                   </span>
                   <button onClick={selectAll} style={pdfStyles.pageBtn}>Select All</button>
@@ -994,10 +997,10 @@ function PdfPageImportModal({ pdfData, onConfirmSingle, onConfirmMulti, onCancel
                         onClick={() => togglePage(pageIndex)}
                         style={{
                           cursor: "pointer",
-                          border: isSelected ? "2px solid #4af" : "2px solid #1a2a40",
+                          border: isSelected ? "2px solid var(--tx-logo)" : "2px solid var(--bd-tab)",
                           borderRadius: 4,
                           padding: 4,
-                          background: isSelected ? "#0c1e3a" : "#080e18",
+                          background: isSelected ? "var(--bg-thumb-on)" : "var(--bg-thumb)",
                           textAlign: "center",
                           minWidth: 100,
                           maxWidth: 160,
@@ -1007,20 +1010,20 @@ function PdfPageImportModal({ pdfData, onConfirmSingle, onConfirmMulti, onCancel
                         {dataUrl ? (
                           <img src={dataUrl} alt={`Page ${pageIndex + 1}`} style={{ width: "100%", height: "auto", borderRadius: 2, opacity: isSelected ? 1 : 0.5 }} />
                         ) : (
-                          <div style={{ width: 100, height: 130, background: "#0a1020", display: "flex", alignItems: "center", justifyContent: "center", color: "#3a5a7a", fontSize: 10 }}>Error</div>
+                          <div style={{ width: 100, height: 130, background: "var(--bg-thumb-ph)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--tx-thumb-err)", fontSize: 10 }}>Error</div>
                         )}
                         <input
                           value={pageLabels[pageIndex] || `Page ${pageIndex + 1}`}
                           onChange={e => { e.stopPropagation(); setPageLabels(prev => ({ ...prev, [pageIndex]: e.target.value })); }}
                           onClick={e => e.stopPropagation()}
-                          style={{ marginTop: 4, width: "90%", fontSize: 10, fontFamily: "monospace", background: "#0a1828", border: "1px solid #1a3050", borderRadius: 3, color: isSelected ? "#8cf" : "#4a6a7a", padding: "2px 4px", textAlign: "center", outline: "none" }}
+                          style={{ marginTop: 4, width: "90%", fontSize: 10, fontFamily: "monospace", background: "var(--bg-thumb-in)", border: "1px solid var(--bd-thumb-in)", borderRadius: 3, color: isSelected ? "var(--tx-active)" : "var(--tx-faint)", padding: "2px 4px", textAlign: "center", outline: "none" }}
                         />
                         <div style={{
                           marginTop: 2, width: 14, height: 14, borderRadius: 3,
-                          border: isSelected ? "1px solid #4af" : "1px solid #2a3a50",
-                          background: isSelected ? "#1e5a9a" : "transparent",
+                          border: isSelected ? "1px solid var(--tx-logo)" : "1px solid var(--bd-thumb)",
+                          background: isSelected ? "var(--bd-accent)" : "transparent",
                           display: "inline-flex", alignItems: "center", justifyContent: "center",
-                          fontSize: 10, color: "#fff",
+                          fontSize: 10, color: "var(--tx-on-primary)",
                         }}>
                           {isSelected ? "✓" : ""}
                         </div>
@@ -1032,7 +1035,7 @@ function PdfPageImportModal({ pdfData, onConfirmSingle, onConfirmMulti, onCancel
             )}
 
             {rendering && (
-              <div style={{ padding: "10px 14px", color: "#4af", fontFamily: "monospace", fontSize: 11, borderTop: "1px solid #141e30" }}>
+              <div style={{ padding: "10px 14px", color: "var(--tx-logo)", fontFamily: "monospace", fontSize: 11, borderTop: "1px solid var(--bd-section)" }}>
                 ⟳ {renderProgress}
               </div>
             )}
@@ -1058,13 +1061,13 @@ function PdfPageImportModal({ pdfData, onConfirmSingle, onConfirmMulti, onCancel
         {step === 2 && (
           <>
             {/* Page navigation row */}
-            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 14px", borderBottom: "1px solid #141e30" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 14px", borderBottom: "1px solid var(--bd-section)" }}>
               <button
                 onClick={() => setCropIdx(i => Math.max(0, i - 1))}
                 disabled={cropIdx === 0}
                 style={{ ...pdfStyles.pageBtn, opacity: cropIdx === 0 ? 0.35 : 1 }}
               >◀ Prev</button>
-              <span style={{ color: "#8ab", fontSize: 12, fontFamily: "monospace", minWidth: 80, textAlign: "center" }}>
+              <span style={{ color: "var(--tx-btn)", fontSize: 12, fontFamily: "monospace", minWidth: 80, textAlign: "center" }}>
                 {pageLabels[fullResPages[cropIdx]?.origPageIndex] || `Page ${(fullResPages[cropIdx]?.origPageIndex ?? cropIdx) + 1}`} ({cropIdx + 1}/{fullResPages.length})
               </span>
               <button
@@ -1073,7 +1076,7 @@ function PdfPageImportModal({ pdfData, onConfirmSingle, onConfirmMulti, onCancel
                 style={{ ...pdfStyles.pageBtn, opacity: cropIdx === fullResPages.length - 1 ? 0.35 : 1 }}
               >Next ▶</button>
               <div style={{ flex: 1 }} />
-              <span style={{ fontSize: 10, fontFamily: "monospace", color: cropRects[cropIdx] ? "#f93" : "#3a8a5a" }}>
+              <span style={{ fontSize: 10, fontFamily: "monospace", color: cropRects[cropIdx] ? "var(--tx-cropwarn)" : "var(--tx-ratio)" }}>
                 {cropRects[cropIdx] ? "⬜ Cropped" : "⬜ Full page"}
               </span>
             </div>
@@ -1089,12 +1092,12 @@ function PdfPageImportModal({ pdfData, onConfirmSingle, onConfirmMulti, onCancel
                 onMouseLeave={onCropMouseUp}
               />
               {!currentCropPage && (
-                <div style={{ color: "#3a5c7a", fontFamily: "monospace", fontSize: 13, padding: 24 }}>No page to display.</div>
+                <div style={{ color: "var(--tx-empty)", fontFamily: "monospace", fontSize: 13, padding: 24 }}>No page to display.</div>
               )}
             </div>
 
             {/* Status */}
-            <div style={{ padding: "5px 14px", color: "#5a9a7a", fontSize: 10, fontFamily: "monospace", borderTop: "1px solid #141e30", minHeight: 22 }}>
+            <div style={{ padding: "5px 14px", color: "var(--tx-crop)", fontSize: 10, fontFamily: "monospace", borderTop: "1px solid var(--bd-section)", minHeight: 22 }}>
               {cropStatus}
             </div>
 
@@ -1251,27 +1254,27 @@ function AutoDxfModal({ pdfData, initialPage, scaleRatio, onClose }) {
         </div>
 
         {totalPages > 1 && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 14px", borderBottom: "1px solid #141e30" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 14px", borderBottom: "1px solid var(--bd-section)" }}>
             <button onClick={() => { setPageIdx(i => Math.max(0, i - 1)); }} disabled={pageIdx === 0} style={{ ...pdfStyles.pageBtn, opacity: pageIdx === 0 ? 0.35 : 1 }}>◀ Prev</button>
-            <span style={{ color: "#8ab", fontSize: 12, fontFamily: "monospace", minWidth: 80, textAlign: "center" }}>Page {pageIdx + 1} / {totalPages}</span>
+            <span style={{ color: "var(--tx-btn)", fontSize: 12, fontFamily: "monospace", minWidth: 80, textAlign: "center" }}>Page {pageIdx + 1} / {totalPages}</span>
             <button onClick={() => { setPageIdx(i => Math.min(totalPages - 1, i + 1)); }} disabled={pageIdx === totalPages - 1} style={{ ...pdfStyles.pageBtn, opacity: pageIdx === totalPages - 1 ? 0.35 : 1 }}>Next ▶</button>
           </div>
         )}
 
-        {loadError && <div style={{ padding: 24, color: "#e05555", fontFamily: "monospace", fontSize: 12 }}>Error: {loadError}</div>}
+        {loadError && <div style={{ padding: 24, color: "var(--err-tx)", fontFamily: "monospace", fontSize: 12 }}>Error: {loadError}</div>}
 
         <div style={pdfStyles.canvasWrap}>
-          {!pageCanvas && !loadError && <div style={{ color: "#3a5c7a", fontFamily: "monospace", fontSize: 13, padding: 24 }}>⟳ Rendering page…</div>}
+          {!pageCanvas && !loadError && <div style={{ color: "var(--tx-empty)", fontFamily: "monospace", fontSize: 13, padding: 24 }}>⟳ Rendering page…</div>}
           <canvas ref={cvRef} style={{ display: pageCanvas ? "block" : "none", cursor: "crosshair", maxWidth: "100%", maxHeight: "100%" }}
             onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp} />
         </div>
 
-        <div style={{ padding: "5px 14px", color: "#5a9a7a", fontSize: 10, fontFamily: "monospace", borderTop: "1px solid #141e30", minHeight: 22 }}>{statusMsg}</div>
+        <div style={{ padding: "5px 14px", color: "var(--tx-crop)", fontSize: 10, fontFamily: "monospace", borderTop: "1px solid var(--bd-section)", minHeight: 22 }}>{statusMsg}</div>
 
         <div style={pdfStyles.btnRow}>
           <button onClick={() => { setRect(null); setStatusMsg("Region cleared — will export full page."); }} style={pdfStyles.clearBtn}>Clear Region</button>
           <div style={{ flex: 1 }} />
-          <button onClick={doExport} disabled={extracting || !pageCanvas} style={{ ...pdfStyles.confirmBtn, background: "#2a1a4a", borderColor: "#4a2a7a", color: "#b88adf", opacity: (extracting || !pageCanvas) ? 0.5 : 1 }}>
+          <button onClick={doExport} disabled={extracting || !pageCanvas} style={{ ...pdfStyles.confirmBtn, background: "var(--dxf-bg)", borderColor: "var(--dxf-bd)", color: "var(--dxf-tx)", opacity: (extracting || !pageCanvas) ? 0.5 : 1 }}>
             {extracting ? "⟳ Extracting…" : "📐 Extract & Export DXF"}
           </button>
           <button onClick={onClose} disabled={extracting} style={pdfStyles.cancelBtn}>✕ Close</button>
@@ -1283,18 +1286,18 @@ function AutoDxfModal({ pdfData, initialPage, scaleRatio, onClose }) {
 
 const pdfStyles = {
   overlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.82)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" },
-  modal: { background: "#0c1020", border: "1px solid #1e3050", borderRadius: 6, display: "flex", flexDirection: "column", width: "92vw", height: "90vh", overflow: "hidden", boxShadow: "0 8px 40px rgba(0,0,0,0.7)" },
-  header: { padding: "10px 14px 6px", borderBottom: "1px solid #1a2a40", display: "flex", flexDirection: "column", gap: 2 },
-  title: { color: "#4af", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, fontSize: 13, letterSpacing: 2 },
-  subtitle: { color: "#5a7a9a", fontFamily: "'IBM Plex Mono', monospace", fontSize: 11 },
+  modal: { background: "var(--bg-modal2)", border: "1px solid var(--bd-input)", borderRadius: 6, display: "flex", flexDirection: "column", width: "92vw", height: "90vh", overflow: "hidden", boxShadow: "0 8px 40px rgba(0,0,0,0.7)" },
+  header: { padding: "10px 14px 6px", borderBottom: "1px solid var(--bd-tab)", display: "flex", flexDirection: "column", gap: 2 },
+  title: { color: "var(--tx-logo)", fontFamily: "var(--font-mono)", fontWeight: 700, fontSize: 13, letterSpacing: 2 },
+  subtitle: { color: "var(--tx-label)", fontFamily: "var(--font-mono)", fontSize: 11 },
   thumbGrid: { flex: 1, overflow: "auto", display: "flex", flexWrap: "wrap", gap: 10, padding: 14, alignContent: "flex-start" },
-  canvasWrap: { flex: 1, overflow: "auto", background: "#08101a", display: "flex", alignItems: "flex-start", justifyContent: "flex-start", padding: 8, position: "relative" },
-  pageBtn: { background: "#152240", border: "1px solid #2a4070", borderRadius: 3, color: "#8ab", padding: "2px 8px", cursor: "pointer", fontSize: 11, fontFamily: "monospace" },
-  btnRow: { display: "flex", gap: 8, padding: "8px 14px", borderTop: "1px solid #1a2a40", alignItems: "center" },
-  confirmBtn: { background: "#0f3460", border: "1px solid #1e5a9a", borderRadius: 3, color: "#7af", padding: "5px 14px", cursor: "pointer", fontSize: 11, fontFamily: "monospace" },
-  fullBtn: { background: "#0d3d2a", border: "1px solid #1a6644", borderRadius: 3, color: "#6da", padding: "5px 14px", cursor: "pointer", fontSize: 11, fontFamily: "monospace" },
-  clearBtn: { background: "#1a1a2a", border: "1px solid #2a2a44", borderRadius: 3, color: "#7a8a9a", padding: "5px 12px", cursor: "pointer", fontSize: 11, fontFamily: "monospace" },
-  cancelBtn: { background: "#2a1010", border: "1px solid #5a2020", borderRadius: 3, color: "#c66", padding: "5px 12px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", marginLeft: "auto" },
+  canvasWrap: { flex: 1, overflow: "auto", background: "var(--bg-canvaswrap)", display: "flex", alignItems: "flex-start", justifyContent: "flex-start", padding: 8, position: "relative" },
+  pageBtn: { background: "var(--bg-btn)", border: "1px solid var(--bd-btn)", borderRadius: 3, color: "var(--tx-btn)", padding: "2px 8px", cursor: "pointer", fontSize: 11, fontFamily: "monospace" },
+  btnRow: { display: "flex", gap: 8, padding: "8px 14px", borderTop: "1px solid var(--bd-tab)", alignItems: "center" },
+  confirmBtn: { background: "var(--bg-accent)", border: "1px solid var(--bd-accent)", borderRadius: 3, color: "var(--tx-accent)", padding: "5px 14px", cursor: "pointer", fontSize: 11, fontFamily: "monospace" },
+  fullBtn: { background: "var(--ok-btn-bg)", border: "1px solid var(--ok-btn-bd)", borderRadius: 3, color: "var(--ok-btn-tx)", padding: "5px 14px", cursor: "pointer", fontSize: 11, fontFamily: "monospace" },
+  clearBtn: { background: "var(--neu-btn-bg)", border: "1px solid var(--neu-btn-bd)", borderRadius: 3, color: "var(--neu-btn-tx)", padding: "5px 12px", cursor: "pointer", fontSize: 11, fontFamily: "monospace" },
+  cancelBtn: { background: "var(--cancel-bg)", border: "1px solid var(--cancel-bd)", borderRadius: 3, color: "var(--cancel-tx)", padding: "5px 12px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", marginLeft: "auto" },
 };
 
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
@@ -1435,6 +1438,9 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
 
   // Settings
   const [showSettings,      setShowSettings]      = useState(false);
+  // UI theme: 'dark' (default) or 'blueprint' (light). Persisted per device and
+  // applied to <html data-theme> by the hook — see src/hooks/useTheme.js.
+  const { theme, setTheme } = useTheme();
   const [showConfidence,    setShowConfidence]    = useState(false);
   // Zones can dominate the canvas when there are many — let users toggle the
   // index/class label off without affecting the area/perimeter overlay.
@@ -1704,6 +1710,10 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
           setCustomClasses(s.customClasses);
           setVisibleClasses(prev => new Set([...prev, ...s.customClasses.map(c => c.name)]));
         }
+        // NOTE: `s.theme` is deliberately ignored. Theme is a per-user/per-device
+        // preference stored in localStorage — not project data. Older projects may
+        // still carry a saved `theme`; applying it here would override the user's
+        // current choice every time they reopened a project.
         if (s.autoSimplifyDist != null) setAutoSimplifyDist(String(s.autoSimplifyDist));
         if (s.areaTextColor)    setAreaTextColor(s.areaTextColor);
         if (s.perimTextColor)   setPerimTextColor(s.perimTextColor);
@@ -1860,6 +1870,8 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         pages: pagesToSave,
         scale: { pixelToMeter: ratio, pixelLength, realLength },
         settings: {
+          // `theme` is intentionally NOT saved here — it's a user/device
+          // preference (localStorage), not a property of the project.
           autoSimplifyDist, areaTextColor, perimTextColor, measureTextColor,
           autoSave, autoSaveInterval,
           customTags: zoneTags,
@@ -2827,6 +2839,93 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
     setStatus(`Simplified ${count} polygon(s) with ε=${eps}px.`);
   };
 
+  // Combine several selected zone polygons into a single polygon via a boolean
+  // union (polygon-clipping). Only merges zones that actually touch/overlap —
+  // if the selection would produce disjoint pieces, it bails with a message so
+  // the user doesn't silently get a broken multi-part shape. The merged shape
+  // inherits a shared zoneTag when all sources agree.
+  const combineZones = () => {
+    const idxs = [...selectedIndices].filter(i => {
+      const a = annotations[i];
+      return a && a.shapeType === "polygon" && a.clsName === "zone"
+        && Array.isArray(a.points) && a.points.length >= 3;
+    });
+    if (idxs.length < 2) {
+      setStatus("Select at least 2 zone polygons to combine.");
+      return;
+    }
+
+    // Each source becomes a polygon-clipping Polygon: [ ring ] where ring is
+    // [[x,y], ...]. The library auto-closes rings.
+    const geoms = idxs.map(i => [annotations[i].points.map(([x, y]) => [x, y])]);
+
+    let merged;
+    try {
+      merged = polygonClipping.union(geoms[0], ...geoms.slice(1));
+    } catch (err) {
+      console.error("[combineZones] union failed", err);
+      setStatus("Could not combine zones (geometry error).");
+      return;
+    }
+
+    if (!merged || merged.length === 0) {
+      setStatus("Combine produced no geometry.");
+      return;
+    }
+    if (merged.length > 1) {
+      setStatus(`These ${idxs.length} zones don't all touch — they'd form ${merged.length} separate pieces. Combine only merges overlapping/adjacent zones.`);
+      return;
+    }
+
+    // merged[0] is [exteriorRing, ...holes]. We keep the exterior ring only —
+    // zone annotations are single-ring, so any interior holes are dropped.
+    const rings = merged[0];
+    const hadHoles = rings.length > 1;
+    let pts = rings[0].map(([x, y]) => [x, y]);
+    // Drop the duplicate closing vertex the union adds (first === last).
+    if (pts.length > 1) {
+      const [fx, fy] = pts[0];
+      const [lx, ly] = pts[pts.length - 1];
+      if (fx === lx && fy === ly) pts = pts.slice(0, -1);
+    }
+    if (pts.length < 3) {
+      setStatus("Combine produced an invalid polygon.");
+      return;
+    }
+
+    // Inherit zoneTag: keep it if every source shares the same tag, otherwise
+    // fall back to the first tagged source (or null).
+    const sources = idxs.map(i => annotations[i]);
+    const tagSet = new Set(sources.map(a => a.zoneTag || null));
+    const zoneTag = tagSet.size === 1
+      ? [...tagSet][0]
+      : (sources.find(a => a.zoneTag)?.zoneTag || null);
+
+    pushHistory(annotations);
+    const toRemove = new Set(idxs);
+    setAnnotations(prev => {
+      const kept = prev.filter((_, i) => !toRemove.has(i));
+      const combined = {
+        id: Math.random().toString(36).slice(2),
+        numId: nextNumId(kept),
+        shapeType: "polygon",
+        clsName: "zone",
+        confidence: null,
+        sourceModel: "combined",
+        zoneTag,
+        x1: null, y1: null, x2: null, y2: null,
+        points: pts,
+      };
+      const newIdx = kept.length;
+      setTimeout(() => {
+        setSelectedIdx(newIdx);
+        setSelectedIndices(new Set([newIdx]));
+      }, 0);
+      return [...kept, combined];
+    });
+    setStatus(`Combined ${idxs.length} zones into 1${hadHoles ? " (interior holes dropped)" : ""}.`);
+  };
+
   const applyClass = () => {
     if (selectedIndices.size === 0) return;
     pushHistory(annotations);
@@ -3706,17 +3805,19 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
   }, [rightPanelWidth]);
 
   // ─── Zone area summary ───────────────────────────────────────────────────────
-  const zoneSummary = (() => {
+  // Totals for the status-bar instrument readout. Kept structured (rather than a
+  // prebuilt string) so the number and its unit can be typeset separately.
+  const zoneTotals = (() => {
     if (!ratio) return null;
-    let totalArea = 0, totalPerim = 0, found = false;
+    let area = 0, perim = 0, found = false;
     for (const ann of annotations) {
       if (ann.clsName === "zone") {
-        totalArea += annotationAreaPx(ann) * ratio * ratio;
-        totalPerim += annotationPerimeterPx(ann) * ratio;
+        area += annotationAreaPx(ann) * ratio * ratio;
+        perim += annotationPerimeterPx(ann) * ratio;
         found = true;
       }
     }
-    return found ? `Total zone: ${totalArea.toFixed(2)} m²  |  P: ${totalPerim.toFixed(2)} m` : null;
+    return found ? { area: area.toFixed(2), perim: perim.toFixed(2) } : null;
   })();
 
   // ─── Annotation list ─────────────────────────────────────────────────────────
@@ -3763,11 +3864,30 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
   }, [annotations, selectedIndices, undo, redo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── UI ──────────────────────────────────────────────────────────────────────
-  const toolBtn = (mode, label) => (
-    <button
-      onClick={() => { setDrawMode(mode); setTempBox(null); setTempPolyPts([]); setTempPolyMouse(null); setTempLine(null); setTempLineShape(null); setTempCircle(null); }}
-      style={{ ...styles.toolBtn, background: drawMode === mode ? "#1e6fff" : "#1a2035", border: drawMode === mode ? "1px solid #1e6fff" : "1px solid #2d3a52" }}
-    >{label}</button>
+  // Tool rail button: glyph above a condensed uppercase label, amber when active
+  // (matching the drawing-sheet visual language).
+  const toolBtn = (mode, glyph, label) => {
+    const active = drawMode === mode;
+    return (
+      <button
+        key={mode}
+        onClick={() => { setDrawMode(mode); setTempBox(null); setTempPolyPts([]); setTempPolyMouse(null); setTempLine(null); setTempLineShape(null); setTempCircle(null); }}
+        title={label}
+        style={{ ...styles.tool, ...(active ? styles.toolActive : null) }}
+      >
+        <span style={styles.toolGlyph}>{glyph}</span>
+        <span>{label}</span>
+        {active && <span style={styles.toolUnderline} />}
+      </button>
+    );
+  };
+
+  // Dimension-tick divider between tool groups.
+  const tick = (k) => (
+    <span key={k} style={styles.tick}>
+      <span style={{ ...styles.tickCap, top: 0 }} />
+      <span style={{ ...styles.tickCap, bottom: 0 }} />
+    </span>
   );
 
   return (
@@ -3797,13 +3917,39 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         <div style={styles.settingsOverlay} onClick={() => setShowSettings(false)}>
           <div style={styles.settingsModal} onClick={e => e.stopPropagation()}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-              <span style={{ color: "#c8f0fa", fontWeight: 700, fontSize: 13, letterSpacing: 2 }}>SETTINGS</span>
+              <span style={{ color: "var(--tx-title)", fontWeight: 700, fontSize: 13, letterSpacing: 2 }}>SETTINGS</span>
               <button onClick={() => setShowSettings(false)} style={styles.tinyBtn}>✕</button>
             </div>
-            <div style={{ color: "#7a9aaa", fontSize: 11, marginBottom: 6 }}>
+
+            <div style={{ color: "var(--tx-muted)", fontSize: 11, marginBottom: 8 }}>Theme</div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+              {[
+                { id: "dark",      label: "Dark",      sw: "#0e1422", ac: "#44aaff" },
+                { id: "blueprint", label: "Blueprint", sw: "#eef3f9", ac: "#1e74d0" },
+              ].map(t => (
+                <button
+                  key={t.id}
+                  onClick={() => setTheme(t.id)}
+                  style={{
+                    flex: 1, display: "flex", alignItems: "center", gap: 8, cursor: "pointer",
+                    padding: "8px 10px", borderRadius: 6, textAlign: "left",
+                    background: theme === t.id ? "var(--bg-btn)" : "var(--bg-input)",
+                    border: `1px solid ${theme === t.id ? "var(--bd-focus)" : "var(--bd-input)"}`,
+                    color: theme === t.id ? "var(--tx-title)" : "var(--tx-muted)", fontSize: 12,
+                  }}
+                >
+                  <span style={{ width: 16, height: 16, borderRadius: 4, background: t.sw, border: `2px solid ${t.ac}`, flex: "none" }} />
+                  {t.label}
+                  {theme === t.id && <span style={{ marginLeft: "auto", color: "var(--tx-ratio)" }}>✓</span>}
+                </button>
+              ))}
+            </div>
+            <div style={{ borderTop: "1px solid var(--bd-divider)", margin: "12px 0 12px" }} />
+
+            <div style={{ color: "var(--tx-muted)", fontSize: 11, marginBottom: 6 }}>
               Automatic polygon simplification distance
             </div>
-            <div style={{ color: "#4a6a7a", fontSize: 10, marginBottom: 10 }}>
+            <div style={{ color: "var(--tx-faint)", fontSize: 10, marginBottom: 10 }}>
               Applied to zone polygons after inference. 0 = disabled.
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -3819,10 +3965,10 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                 }}
                 style={{ ...styles.smallInput, width: 64, fontSize: 14 }}
               />
-              <span style={{ color: "#5a7a9a", fontSize: 11 }}>px  (0–999)</span>
+              <span style={{ color: "var(--tx-label)", fontSize: 11 }}>px  (0–999)</span>
             </div>
 
-            <div style={{ borderTop: "1px solid #1a2e50", margin: "14px 0 12px" }} />
+            <div style={{ borderTop: "1px solid var(--bd-divider)", margin: "14px 0 12px" }} />
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
               <label style={{ display: "flex", alignItems: "center", gap: 7, cursor: "pointer", userSelect: "none" }}>
                 <input
@@ -3831,12 +3977,12 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                   onChange={e => setAutoSave(e.target.checked)}
                   style={{ cursor: "pointer" }}
                 />
-                <span style={{ color: "#7a9aaa", fontSize: 11 }}>Auto-save</span>
+                <span style={{ color: "var(--tx-muted)", fontSize: 11 }}>Auto-save</span>
               </label>
             </div>
             {autoSave && (
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, paddingLeft: 22 }}>
-                <span style={{ color: "#4a6a7a", fontSize: 11 }}>Every</span>
+                <span style={{ color: "var(--tx-faint)", fontSize: 11 }}>Every</span>
                 <input
                   type="number"
                   min="10"
@@ -3850,12 +3996,12 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                   }}
                   style={{ ...styles.smallInput, width: 56 }}
                 />
-                <span style={{ color: "#4a6a7a", fontSize: 11 }}>seconds</span>
+                <span style={{ color: "var(--tx-faint)", fontSize: 11 }}>seconds</span>
               </div>
             )}
 
-            <div style={{ borderTop: "1px solid #1a2e50", margin: "14px 0 10px" }} />
-            <div style={{ color: "#7a9aaa", fontSize: 11, marginBottom: 10 }}>Overlay text colors</div>
+            <div style={{ borderTop: "1px solid var(--bd-divider)", margin: "14px 0 10px" }} />
+            <div style={{ color: "var(--tx-muted)", fontSize: 11, marginBottom: 10 }}>Overlay text colors</div>
 
             {[
               { label: "Area (m²)",      value: areaTextColor,    set: setAreaTextColor },
@@ -3869,7 +4015,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                   onChange={e => set(e.target.value)}
                   style={{ width: 32, height: 26, padding: 2, border: "none", background: "none", cursor: "pointer" }}
                 />
-                <span style={{ color: "#8aabbb", fontSize: 11 }}>{label}</span>
+                <span style={{ color: "var(--tx-muted2)", fontSize: 11 }}>{label}</span>
                 <span style={{ color: value, fontSize: 11, marginLeft: "auto", fontFamily: "monospace" }}>{value}</span>
               </div>
             ))}
@@ -3882,16 +4028,16 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         <div style={styles.settingsOverlay} onClick={() => setShowExcelPicker(false)}>
           <div style={{ ...styles.settingsModal, minWidth: 620, maxWidth: "90vw", maxHeight: "80vh", display: "flex", flexDirection: "column" }} onClick={e => e.stopPropagation()}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-              <span style={{ color: "#cfaa6c", fontWeight: 700, fontSize: 13, letterSpacing: 2 }}>EXCEL EXPORT</span>
+              <span style={{ color: "var(--tx-gold)", fontWeight: 700, fontSize: 13, letterSpacing: 2 }}>EXCEL EXPORT</span>
               <button onClick={() => setShowExcelPicker(false)} style={styles.tinyBtn}>✕</button>
             </div>
 
             {/* Column toggles */}
             <div style={{ marginBottom: 12 }}>
-              <div style={{ color: "#7a9aaa", fontSize: 11, marginBottom: 8, letterSpacing: 1 }}>SELECT COLUMNS</div>
+              <div style={{ color: "var(--tx-muted)", fontSize: 11, marginBottom: 8, letterSpacing: 1 }}>SELECT COLUMNS</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px" }}>
                 {EXCEL_COLUMNS.map(col => (
-                  <label key={col.key} style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", color: excelEnabledCols.has(col.key) ? "#c8f0fa" : "#4a6a7a", fontSize: 11, userSelect: "none" }}>
+                  <label key={col.key} style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", color: excelEnabledCols.has(col.key) ? "var(--tx-title)" : "var(--tx-faint)", fontSize: 11, userSelect: "none" }}>
                     <input
                       type="checkbox"
                       checked={excelEnabledCols.has(col.key)}
@@ -3900,7 +4046,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                         next.has(col.key) ? next.delete(col.key) : next.add(col.key);
                         return next;
                       })}
-                      style={{ accentColor: "#1e50a0" }}
+                      style={{ accentColor: "var(--bg-primary)" }}
                     />
                     {col.label}
                   </label>
@@ -3912,18 +4058,18 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
               </div>
             </div>
 
-            <div style={{ borderTop: "1px solid #1a2e50", marginBottom: 10 }} />
+            <div style={{ borderTop: "1px solid var(--bd-divider)", marginBottom: 10 }} />
 
             {/* Data preview */}
             <div style={{ flex: 1, overflowY: "auto", overflowX: "auto", marginBottom: 12 }}>
               {excelRows.length === 0 ? (
-                <div style={{ color: "#4a6a7a", fontSize: 12, padding: 10 }}>No annotations to export.</div>
+                <div style={{ color: "var(--tx-faint)", fontSize: 12, padding: 10 }}>No annotations to export.</div>
               ) : (
                 <table style={{ borderCollapse: "collapse", fontSize: 10, whiteSpace: "nowrap", width: "100%" }}>
                   <thead>
                     <tr>
                       {EXCEL_COLUMNS.filter(c => excelEnabledCols.has(c.key)).map(col => (
-                        <th key={col.key} style={{ background: "#1e3050", color: "#c8f0fa", padding: "4px 8px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid #2a4070", position: "sticky", top: 0 }}>
+                        <th key={col.key} style={{ background: "var(--bg-th)", color: "var(--tx-title)", padding: "4px 8px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid var(--bd-btn)", position: "sticky", top: 0 }}>
                           {col.label}
                         </th>
                       ))}
@@ -3931,9 +4077,9 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                   </thead>
                   <tbody>
                     {excelRows.map((row, i) => (
-                      <tr key={i} style={{ background: i % 2 === 0 ? "#0d1e38" : "#0a1628" }}>
+                      <tr key={i} style={{ background: i % 2 === 0 ? "var(--bg-row-alt)" : "var(--bg-row-alt2)" }}>
                         {EXCEL_COLUMNS.filter(c => excelEnabledCols.has(c.key)).map(col => (
-                          <td key={col.key} style={{ padding: "3px 8px", color: "#a0c0d0", borderBottom: "1px solid #12243c", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis" }}>
+                          <td key={col.key} style={{ padding: "3px 8px", color: "var(--tx-cell)", borderBottom: "1px solid var(--bd-cell)", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis" }}>
                             {String(row[col.key] ?? "")}
                           </td>
                         ))}
@@ -3949,7 +4095,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
               <button
                 onClick={() => exportXLSX(excelEnabledCols)}
                 disabled={excelEnabledCols.size === 0 || excelRows.length === 0}
-                style={{ ...styles.tinyBtn, background: "#1e50a0", color: "#fff", fontWeight: 700, opacity: (excelEnabledCols.size === 0 || excelRows.length === 0) ? 0.4 : 1 }}
+                style={{ ...styles.tinyBtn, background: "var(--bg-primary)", color: "var(--tx-on-primary)", fontWeight: 700, opacity: (excelEnabledCols.size === 0 || excelRows.length === 0) ? 0.4 : 1 }}
               >
                 Export XLSX
               </button>
@@ -3963,16 +4109,16 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         <div style={styles.settingsOverlay} onClick={() => setShowPdfPicker(false)}>
           <div style={{ ...styles.settingsModal, minWidth: 620, maxWidth: "90vw", maxHeight: "80vh", display: "flex", flexDirection: "column" }} onClick={e => e.stopPropagation()}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-              <span style={{ color: "#cfaa6c", fontWeight: 700, fontSize: 13, letterSpacing: 2 }}>PDF REPORT EXPORT</span>
+              <span style={{ color: "var(--tx-gold)", fontWeight: 700, fontSize: 13, letterSpacing: 2 }}>PDF REPORT EXPORT</span>
               <button onClick={() => setShowPdfPicker(false)} style={styles.tinyBtn}>✕</button>
             </div>
 
             {/* Column toggles */}
             <div style={{ marginBottom: 12 }}>
-              <div style={{ color: "#7a9aaa", fontSize: 11, marginBottom: 8, letterSpacing: 1 }}>SELECT COLUMNS TO INCLUDE IN REPORT</div>
+              <div style={{ color: "var(--tx-muted)", fontSize: 11, marginBottom: 8, letterSpacing: 1 }}>SELECT COLUMNS TO INCLUDE IN REPORT</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px" }}>
                 {EXCEL_COLUMNS.map(col => (
-                  <label key={col.key} style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", color: pdfEnabledCols.has(col.key) ? "#c8f0fa" : "#4a6a7a", fontSize: 11, userSelect: "none" }}>
+                  <label key={col.key} style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", color: pdfEnabledCols.has(col.key) ? "var(--tx-title)" : "var(--tx-faint)", fontSize: 11, userSelect: "none" }}>
                     <input
                       type="checkbox"
                       checked={pdfEnabledCols.has(col.key)}
@@ -3981,7 +4127,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                         next.has(col.key) ? next.delete(col.key) : next.add(col.key);
                         return next;
                       })}
-                      style={{ accentColor: "#1e50a0" }}
+                      style={{ accentColor: "var(--bg-primary)" }}
                     />
                     {col.label}
                   </label>
@@ -3993,18 +4139,18 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
               </div>
             </div>
 
-            <div style={{ borderTop: "1px solid #1a2e50", marginBottom: 10 }} />
+            <div style={{ borderTop: "1px solid var(--bd-divider)", marginBottom: 10 }} />
 
             {/* Data preview */}
             <div style={{ flex: 1, overflowY: "auto", overflowX: "auto", marginBottom: 12 }}>
               {pdfPickerRows.length === 0 ? (
-                <div style={{ color: "#4a6a7a", fontSize: 12, padding: 10 }}>No annotations to export.</div>
+                <div style={{ color: "var(--tx-faint)", fontSize: 12, padding: 10 }}>No annotations to export.</div>
               ) : (
                 <table style={{ borderCollapse: "collapse", fontSize: 10, whiteSpace: "nowrap", width: "100%" }}>
                   <thead>
                     <tr>
                       {EXCEL_COLUMNS.filter(c => pdfEnabledCols.has(c.key)).map(col => (
-                        <th key={col.key} style={{ background: "#1e3050", color: "#c8f0fa", padding: "4px 8px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid #2a4070", position: "sticky", top: 0 }}>
+                        <th key={col.key} style={{ background: "var(--bg-th)", color: "var(--tx-title)", padding: "4px 8px", textAlign: "left", fontWeight: 700, borderBottom: "1px solid var(--bd-btn)", position: "sticky", top: 0 }}>
                           {col.label}
                         </th>
                       ))}
@@ -4012,9 +4158,9 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                   </thead>
                   <tbody>
                     {pdfPickerRows.map((row, i) => (
-                      <tr key={i} style={{ background: i % 2 === 0 ? "#0d1e38" : "#0a1628" }}>
+                      <tr key={i} style={{ background: i % 2 === 0 ? "var(--bg-row-alt)" : "var(--bg-row-alt2)" }}>
                         {EXCEL_COLUMNS.filter(c => pdfEnabledCols.has(c.key)).map(col => (
-                          <td key={col.key} style={{ padding: "3px 8px", color: "#a0c0d0", borderBottom: "1px solid #12243c", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis" }}>
+                          <td key={col.key} style={{ padding: "3px 8px", color: "var(--tx-cell)", borderBottom: "1px solid var(--bd-cell)", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis" }}>
                             {String(row[col.key] ?? "")}
                           </td>
                         ))}
@@ -4030,7 +4176,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
               <button
                 onClick={() => exportReport(pdfEnabledCols)}
                 disabled={pdfEnabledCols.size === 0 || pdfPickerRows.length === 0}
-                style={{ ...styles.tinyBtn, background: "#1e50a0", color: "#fff", fontWeight: 700, opacity: (pdfEnabledCols.size === 0 || pdfPickerRows.length === 0) ? 0.4 : 1 }}
+                style={{ ...styles.tinyBtn, background: "var(--bg-primary)", color: "var(--tx-on-primary)", fontWeight: 700, opacity: (pdfEnabledCols.size === 0 || pdfPickerRows.length === 0) ? 0.4 : 1 }}
               >
                 Export PDF
               </button>
@@ -4044,11 +4190,11 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         <div style={styles.settingsOverlay} onClick={() => setShowImportAnns(false)}>
           <div style={{ ...styles.settingsModal, minWidth: 400, maxWidth: 500, maxHeight: "70vh", display: "flex", flexDirection: "column" }} onClick={e => e.stopPropagation()}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-              <span style={{ color: "#cfaa6c", fontWeight: 700, fontSize: 13, letterSpacing: 2 }}>IMPORT ANNOTATIONS</span>
+              <span style={{ color: "var(--tx-gold)", fontWeight: 700, fontSize: 13, letterSpacing: 2 }}>IMPORT ANNOTATIONS</span>
               <button onClick={() => setShowImportAnns(false)} style={styles.tinyBtn}>✕</button>
             </div>
 
-            {importLoading && <div style={{ color: "#7a9aaa", fontSize: 11 }}>Loading...</div>}
+            {importLoading && <div style={{ color: "var(--tx-muted)", fontSize: 11 }}>Loading...</div>}
 
             {/* Step 1: Project list */}
             {!importSelectedProject && !importLoading && (
@@ -4056,7 +4202,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                 {/* Current project pages */}
                 {importCurrentProjectPages.length > 0 && (
                   <>
-                    <div style={{ color: "#cfaa6c", fontSize: 10, fontWeight: 700, letterSpacing: 1, marginBottom: 6 }}>THIS PROJECT</div>
+                    <div style={{ color: "var(--tx-gold)", fontSize: 10, fontWeight: 700, letterSpacing: 1, marginBottom: 6 }}>THIS PROJECT</div>
                     {importCurrentProjectPages.map((page, idx) => {
                       const annCount = (page.annotations || []).length;
                       const label = page.label || (page.pdfPageNumber != null ? `Page ${page.pdfPageNumber}` : `Page ${page.pageIndex + 1}`);
@@ -4065,12 +4211,12 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                         <div
                           key={idx}
                           onClick={() => annCount > 0 && setImportCurrentSelectedPage(isSelected ? null : idx)}
-                          style={{ padding: "8px 10px", marginBottom: 4, background: isSelected ? "#1a3056" : "#111e30", border: `1px solid ${isSelected ? "#3a6ab0" : "#1e3050"}`, borderRadius: 4, cursor: annCount > 0 ? "pointer" : "not-allowed", opacity: annCount > 0 ? 1 : 0.45 }}
-                          onMouseEnter={e => { if (annCount > 0) e.currentTarget.style.borderColor = "#3a6ab0"; }}
-                          onMouseLeave={e => { if (!isSelected) e.currentTarget.style.borderColor = "#1e3050"; }}
+                          style={{ padding: "8px 10px", marginBottom: 4, background: isSelected ? "var(--bg-sel)" : "var(--bg-row)", border: `1px solid ${isSelected ? "var(--bd-focus)" : "var(--bd-input)"}`, borderRadius: 4, cursor: annCount > 0 ? "pointer" : "not-allowed", opacity: annCount > 0 ? 1 : 0.45 }}
+                          onMouseEnter={e => { if (annCount > 0) e.currentTarget.style.borderColor = "var(--bd-focus)"; }}
+                          onMouseLeave={e => { if (!isSelected) e.currentTarget.style.borderColor = "var(--bd-input)"; }}
                         >
-                          <div style={{ color: "#c8d0e0", fontSize: 12 }}>{label}</div>
-                          <div style={{ color: "#5a7a9a", fontSize: 10 }}>
+                          <div style={{ color: "var(--tx-body)", fontSize: 12 }}>{label}</div>
+                          <div style={{ color: "var(--tx-label)", fontSize: 10 }}>
                             {annCount} annotation{annCount !== 1 ? "s" : ""}
                             {annCount > 0 && (() => {
                               const classes = {};
@@ -4084,24 +4230,24 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                     {importCurrentSelectedPage != null && (
                       <button
                         onClick={confirmImportCurrentPage}
-                        style={{ ...styles.smallBtn, width: "100%", marginBottom: 10, background: "#1a3a1a", borderColor: "#2a6a2a", color: "#6caa6c", fontWeight: 700 }}
+                        style={{ ...styles.smallBtn, width: "100%", marginBottom: 10, background: "var(--ok-bg4)", borderColor: "var(--ok-bd3)", color: "var(--ok-tx)", fontWeight: 700 }}
                       >Import {importCurrentProjectPages[importCurrentSelectedPage].annotations.length} annotations</button>
                     )}
-                    <div style={{ borderTop: "1px solid #1a2e50", margin: "10px 0 10px" }} />
-                    <div style={{ color: "#7a9aaa", fontSize: 10, fontWeight: 700, letterSpacing: 1, marginBottom: 6 }}>OTHER PROJECTS</div>
+                    <div style={{ borderTop: "1px solid var(--bd-divider)", margin: "10px 0 10px" }} />
+                    <div style={{ color: "var(--tx-muted)", fontSize: 10, fontWeight: 700, letterSpacing: 1, marginBottom: 6 }}>OTHER PROJECTS</div>
                   </>
                 )}
-                {importProjects.length === 0 && importCurrentProjectPages.length === 0 && <div style={{ color: "#4a6a7a", fontSize: 11 }}>No other pages or projects found.</div>}
+                {importProjects.length === 0 && importCurrentProjectPages.length === 0 && <div style={{ color: "var(--tx-faint)", fontSize: 11 }}>No other pages or projects found.</div>}
                 {importProjects.map(p => (
                   <div
                     key={p.id}
                     onClick={() => selectImportProject(p)}
-                    style={{ padding: "8px 10px", marginBottom: 4, background: "#111e30", border: "1px solid #1e3050", borderRadius: 4, cursor: "pointer" }}
-                    onMouseEnter={e => e.currentTarget.style.borderColor = "#3a6ab0"}
-                    onMouseLeave={e => e.currentTarget.style.borderColor = "#1e3050"}
+                    style={{ padding: "8px 10px", marginBottom: 4, background: "var(--bg-row)", border: "1px solid var(--bd-input)", borderRadius: 4, cursor: "pointer" }}
+                    onMouseEnter={e => e.currentTarget.style.borderColor = "var(--bd-focus)"}
+                    onMouseLeave={e => e.currentTarget.style.borderColor = "var(--bd-input)"}
                   >
-                    <div style={{ color: "#c8d0e0", fontSize: 12, fontWeight: 600 }}>{p.name}</div>
-                    <div style={{ color: "#5a7a9a", fontSize: 10 }}>
+                    <div style={{ color: "var(--tx-body)", fontSize: 12, fontWeight: 600 }}>{p.name}</div>
+                    <div style={{ color: "var(--tx-label)", fontSize: 10 }}>
                       {p.pageCount || 1} page{(p.pageCount || 1) > 1 ? "s" : ""} — {new Date(p.lastEdited).toLocaleDateString()}
                     </div>
                   </div>
@@ -4113,7 +4259,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
             {importSelectedProject && importProjectData && !importLoading && (
               <div style={{ overflowY: "auto", flex: 1 }}>
                 <button onClick={() => { setImportSelectedProject(null); setImportProjectData(null); setImportSelectedPage(null); }} style={{ ...styles.tinyBtn, marginBottom: 10 }}>← Back to projects</button>
-                <div style={{ color: "#8aabbb", fontSize: 11, marginBottom: 8 }}>{importSelectedProject.name}</div>
+                <div style={{ color: "var(--tx-muted2)", fontSize: 11, marginBottom: 8 }}>{importSelectedProject.name}</div>
                 {(importProjectData.pages || []).map((page, idx) => {
                   const annCount = (page.annotations || []).length;
                   const label = page.label || (page.pdfPageNumber != null ? `Page ${page.pdfPageNumber}` : `Page ${page.pageIndex + 1}`);
@@ -4122,10 +4268,10 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                     <div
                       key={idx}
                       onClick={() => annCount > 0 && setImportSelectedPage(idx)}
-                      style={{ padding: "8px 10px", marginBottom: 4, background: isSelected ? "#1a3056" : "#111e30", border: `1px solid ${isSelected ? "#3a6ab0" : "#1e3050"}`, borderRadius: 4, cursor: annCount > 0 ? "pointer" : "not-allowed", opacity: annCount > 0 ? 1 : 0.5 }}
+                      style={{ padding: "8px 10px", marginBottom: 4, background: isSelected ? "var(--bg-sel)" : "var(--bg-row)", border: `1px solid ${isSelected ? "var(--bd-focus)" : "var(--bd-input)"}`, borderRadius: 4, cursor: annCount > 0 ? "pointer" : "not-allowed", opacity: annCount > 0 ? 1 : 0.5 }}
                     >
-                      <div style={{ color: "#c8d0e0", fontSize: 12 }}>{label}</div>
-                      <div style={{ color: "#5a7a9a", fontSize: 10 }}>
+                      <div style={{ color: "var(--tx-body)", fontSize: 12 }}>{label}</div>
+                      <div style={{ color: "var(--tx-label)", fontSize: 10 }}>
                         {annCount} annotation{annCount !== 1 ? "s" : ""}
                         {annCount > 0 && (() => {
                           const classes = {};
@@ -4139,7 +4285,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                 {importSelectedPage != null && (
                   <button
                     onClick={confirmImportAnnotations}
-                    style={{ ...styles.smallBtn, width: "100%", marginTop: 10, background: "#1a3a1a", borderColor: "#2a6a2a", color: "#6caa6c", fontWeight: 700 }}
+                    style={{ ...styles.smallBtn, width: "100%", marginTop: 10, background: "var(--ok-bg4)", borderColor: "var(--ok-bd3)", color: "var(--ok-tx)", fontWeight: 700 }}
                   >Import {importProjectData.pages[importSelectedPage].annotations.length} annotations</button>
                 )}
               </div>
@@ -4150,17 +4296,17 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
 
       {/* Share panel — Enterprise QS only */}
       {showSharePanel && project?.id && (
-        <div style={{ background: "#0d1f0d", borderBottom: "1px solid #2a5a2a", padding: "12px 20px", fontFamily: "monospace", fontSize: 12 }}>
-          <div style={{ color: "#6caa6c", fontWeight: 700, marginBottom: 10 }}>🔗 Share project with a Manager</div>
+        <div style={{ background: "var(--ok-bg)", borderBottom: "1px solid var(--ok-bd)", padding: "12px 20px", fontFamily: "monospace", fontSize: 12 }}>
+          <div style={{ color: "var(--ok-tx)", fontWeight: 700, marginBottom: 10 }}>🔗 Share project with a Manager</div>
 
           {/* Current grants */}
           {shareGrants.length > 0 && (
             <div style={{ marginBottom: 10 }}>
-              <div style={{ color: "#4a7a4a", fontSize: 10, marginBottom: 6 }}>Currently shared with:</div>
+              <div style={{ color: "var(--ok-tx2)", fontSize: 10, marginBottom: 6 }}>Currently shared with:</div>
               {shareGrants.map(g => (
                 <div key={g.managerId} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                  <span style={{ color: "#8abb8a" }}>{g.managerName || g.managerEmail}</span>
-                  <span style={{ color: "#4a7a4a", fontSize: 10 }}>{g.managerEmail}</span>
+                  <span style={{ color: "var(--ok-tx3)" }}>{g.managerName || g.managerEmail}</span>
+                  <span style={{ color: "var(--ok-tx2)", fontSize: 10 }}>{g.managerEmail}</span>
                   <button
                     onClick={async () => {
                       try {
@@ -4168,7 +4314,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                         setShareGrants(prev => prev.filter(x => x.managerId !== g.managerId));
                       } catch (e) { setShareError(e.message); }
                     }}
-                    style={{ marginLeft: "auto", background: "none", border: "1px solid #5a2a2a", color: "#c06060", borderRadius: 4, padding: "1px 8px", cursor: "pointer", fontSize: 10 }}
+                    style={{ marginLeft: "auto", background: "none", border: "1px solid var(--err-bd2)", color: "var(--err-tx2)", borderRadius: 4, padding: "1px 8px", cursor: "pointer", fontSize: 10 }}
                   >Revoke</button>
                 </div>
               ))}
@@ -4182,7 +4328,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
               placeholder="Manager's email address"
               value={shareEmail}
               onChange={e => { setShareEmail(e.target.value); setShareError(null); setShareSuccess(null); }}
-              style={{ flex: 1, background: "#0a1a0a", border: "1px solid #2a5a2a", borderRadius: 4, padding: "5px 10px", color: "#b0d0b0", fontSize: 12, fontFamily: "monospace" }}
+              style={{ flex: 1, background: "var(--ok-bg2)", border: "1px solid var(--ok-bd)", borderRadius: 4, padding: "5px 10px", color: "var(--ok-tx4)", fontSize: 12, fontFamily: "monospace" }}
             />
             <button
               disabled={shareLoading || !shareEmail.trim()}
@@ -4202,38 +4348,65 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                   setShareLoading(false);
                 }
               }}
-              style={{ background: "#1a4a1a", border: "1px solid #3a7a3a", color: "#6caa6c", borderRadius: 4, padding: "5px 14px", cursor: "pointer", fontSize: 12, fontFamily: "monospace" }}
+              style={{ background: "var(--ok-bg3)", border: "1px solid var(--ok-bd2)", color: "var(--ok-tx)", borderRadius: 4, padding: "5px 14px", cursor: "pointer", fontSize: 12, fontFamily: "monospace" }}
             >{shareLoading ? "…" : "Grant Access"}</button>
           </div>
 
-          {shareError && <div style={{ color: "#c06060", fontSize: 11, marginTop: 6 }}>✕ {shareError}</div>}
-          {shareSuccess && <div style={{ color: "#6caa6c", fontSize: 11, marginTop: 6 }}>✓ {shareSuccess}</div>}
+          {shareError && <div style={{ color: "var(--err-tx2)", fontSize: 11, marginTop: 6 }}>✕ {shareError}</div>}
+          {shareSuccess && <div style={{ color: "var(--ok-tx)", fontSize: 11, marginTop: 6 }}>✓ {shareSuccess}</div>}
         </div>
       )}
 
       {/* View Only banner for Enterprise Managers */}
       {isReadOnly && (
-        <div style={{ background: "#1a1000", borderBottom: "1px solid #5a4010", padding: "6px 16px", display: "flex", alignItems: "center", gap: 10, fontFamily: "monospace", fontSize: 11 }}>
-          <span style={{ color: "#c0a040", fontWeight: 700, letterSpacing: 1 }}>👁 VIEW ONLY</span>
-          <span style={{ color: "#7a6030" }}>You have read-only access to this project. Editing and saving are disabled.</span>
+        <div style={{ background: "var(--warn-bg)", borderBottom: "1px solid var(--warn-bd)", padding: "6px 16px", display: "flex", alignItems: "center", gap: 10, fontFamily: "monospace", fontSize: 11 }}>
+          <span style={{ color: "var(--warn-tx)", fontWeight: 700, letterSpacing: 1 }}>👁 VIEW ONLY</span>
+          <span style={{ color: "var(--warn-tx2)" }}>You have read-only access to this project. Editing and saving are disabled.</span>
           <span style={{ marginLeft: "auto", color: tierColor(userTierInfo.tier, userTierInfo.role), fontWeight: 600 }}>{tierLabel(userTierInfo.tier, userTierInfo.role)}</span>
         </div>
       )}
 
-      {/* Header */}
+      {/* Header — title-block cartouche + actions */}
       <div style={styles.header}>
-        <span style={styles.logo}>⬡ QUANT 1.0 </span>
+        {/* The cartouche mirrors a real drawing sheet's title block: identity on
+            the left, live SCALE / ZOOM / STATE readouts in the cells, revision
+            strip underneath. */}
+        <div style={styles.cartouche}>
+          <div style={styles.cartName}>
+            <span style={styles.cartNameMain}>QUANT</span>
+            <span style={styles.cartNameSub}>Takeoff &amp; Estimation</span>
+          </div>
+          <div style={styles.cartCells}>
+            <div style={styles.cartCell}>
+              <div style={styles.cartK}>Scale</div>
+              <div style={styles.cartV}>{ratio ? `1:${ratio.toFixed(4)}` : "—"}</div>
+            </div>
+            <div style={styles.cartCell}>
+              <div style={styles.cartK}>Zoom</div>
+              <div style={styles.cartV}>{(scale * 100).toFixed(0)}%</div>
+            </div>
+            <div style={{ ...styles.cartCell, borderRight: 0 }}>
+              <div style={styles.cartK}>State</div>
+              <div style={{ ...styles.cartV, color: saveStatus === 'error' ? "var(--err-tx)" : saveStatus === 'saved' ? "var(--ok-save-tx)" : "var(--accent2)" }}>
+                {saveStatus === 'saving' ? "SAVING" : saveStatus === 'saved' ? "SAVED" : saveStatus === 'error' ? "ERROR" : isReadOnly ? "VIEW" : "READY"}
+              </div>
+            </div>
+          </div>
+          <div style={styles.cartRev}>
+            REV 1.0{lastSaveTime ? ` · ${lastSaveTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : ""}
+          </div>
+        </div>
         <span style={styles.statusBar}>{status}</span>
         {!isReadOnly && <label style={styles.uploadBtn}>
           📂 Load Image
           <input type="file" accept="image/*" onChange={handleFileChange} style={{ display: "none" }} />
         </label>}
-        {!isReadOnly && <label style={{ ...styles.uploadBtn, background: "#0d2e4a", borderColor: "#1a5070", color: "#6cf" }}>
+        {!isReadOnly && <label style={styles.uploadBtn}>
           📄 Import PDF
           <input type="file" accept="application/pdf,.pdf" onChange={handlePdfChange} style={{ display: "none" }} />
         </label>}
         {!isReadOnly && (
-          <button onClick={openImportAnnotations} style={{ ...styles.uploadBtn, background: "#2a1a0d", borderColor: "#705a1a", color: "#cfaa6c" }}>
+          <button onClick={openImportAnnotations} style={styles.uploadBtn}>
             Import Annotations
           </button>
         )}
@@ -4244,19 +4417,14 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
               disabled={saveStatus === 'saving'}
               style={{
                 ...styles.uploadBtn,
-                background: saveStatus === 'error' ? '#3a0f0f' : saveStatus === 'saved' ? '#0d2a1a' : '#0d1e38',
-                borderColor: saveStatus === 'error' ? '#6a1a1a' : saveStatus === 'saved' ? '#1a5a3a' : '#1e3a6a',
-                color: saveStatus === 'error' ? '#e05555' : saveStatus === 'saved' ? '#4ada8a' : '#6acf',
+                background: saveStatus === 'error' ? 'var(--err-bg)' : saveStatus === 'saved' ? 'var(--ok-save-bg)' : 'var(--bg-row-alt)',
+                borderColor: saveStatus === 'error' ? 'var(--err-bd)' : saveStatus === 'saved' ? 'var(--ok-save-bd)' : 'var(--bg-active)',
+                color: saveStatus === 'error' ? 'var(--err-tx)' : saveStatus === 'saved' ? 'var(--ok-save-tx)' : 'var(--tx-save-idle)',
                 cursor: saveStatus === 'saving' ? 'not-allowed' : 'pointer',
               }}
             >
               {saveStatus === 'saving' ? '⟳ Saving…' : saveStatus === 'saved' ? '✓ Saved' : saveStatus === 'error' ? '✕ Error' : '💾 Save'}
             </button>
-            {lastSaveTime && (
-              <span style={{ color: "#3a5a6a", fontSize: 9, whiteSpace: "nowrap" }}>
-                {lastSaveTime.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-              </span>
-            )}
           </div>
         )}
         {/* Share button — Enterprise QS only */}
@@ -4274,13 +4442,13 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
               }
             }}
             title="Share with Manager"
-            style={{ ...styles.uploadBtn, background: showSharePanel ? '#1a2f1a' : '#0f2010', borderColor: showSharePanel ? '#3a7a3a' : '#1a4a1a', color: '#6caa6c' }}
+            style={{ ...styles.uploadBtn, background: 'var(--amber)', borderColor: 'var(--amber)', color: 'var(--on-amber)', fontWeight: 600 }}
           >🔗 Share</button>
         )}
         <button
           onClick={() => setShowSettings(v => !v)}
           title="Settings"
-          style={{ ...styles.uploadBtn, padding: "4px 9px", fontSize: 14, lineHeight: 1, background: showSettings ? "#1a3060" : "#152240", borderColor: showSettings ? "#3a6ab0" : "#2a4070" }}
+          style={{ ...styles.uploadBtn, padding: "4px 9px", fontSize: 14, lineHeight: 1, background: showSettings ? "var(--bg-badge)" : "var(--bg-btn)", borderColor: showSettings ? "var(--bd-focus)" : "var(--bd-btn)" }}
         >⚙</button>
       </div>
 
@@ -4288,22 +4456,24 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         {/* ── Left canvas area ── */}
         <div style={styles.canvasPanel}>
           <div style={styles.canvasToolbar}>
-            {toolBtn("select", "↖ Select")}
-            {toolBtn("lineShape", "─ Line")}
-            {toolBtn("box", "⬜ Box")}
-            {toolBtn("polygon", "⬡ Polygon")}
-            {toolBtn("circle", "⬤ Circle")}
-            {toolBtn("measure", "📏 Measure")}
-            {toolBtn("line", "📐 Scale Cal.")}
+            {toolBtn("select", "↖", "Select")}
+            {tick("t1")}
+            {toolBtn("lineShape", "╱", "Line")}
+            {toolBtn("box", "▭", "Box")}
+            {toolBtn("polygon", "⬠", "Polygon")}
+            {toolBtn("circle", "◯", "Circle")}
+            {tick("t2")}
+            {toolBtn("measure", "↔", "Measure")}
+            {toolBtn("line", "▤", "Scale cal.")}
             {/* Image Search button — hidden until backend is deployed
             <button
               onClick={() => { setDrawMode("imageSearch"); setTempBox(null); setTempPolyPts([]); setTempPolyMouse(null); setTempLine(null); setStatus("Image Search: draw a box around the object to find similar ones."); }}
               disabled={!originalImg || imageSearching}
               style={{
                 ...styles.toolBtn,
-                background: drawMode === "imageSearch" ? "#004444" : "#1a2035",
-                border: drawMode === "imageSearch" ? `1px solid ${IMAGE_SEARCH_COLOR}` : "1px solid #2d3a52",
-                color: drawMode === "imageSearch" ? IMAGE_SEARCH_COLOR : "#9ab",
+                background: drawMode === "imageSearch" ? "var(--search-bg)" : "var(--bg-btn2)",
+                border: drawMode === "imageSearch" ? `1px solid ${IMAGE_SEARCH_COLOR}` : "1px solid var(--bd-btn2)",
+                color: drawMode === "imageSearch" ? IMAGE_SEARCH_COLOR : "var(--tx-btn2)",
                 opacity: (!originalImg || imageSearching) ? 0.5 : 1,
               }}
             >
@@ -4311,12 +4481,12 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
             </button>
             */}
             {drawMode === "polygon" && tempPolyPts.length >= 3 && (
-              <button onClick={finishPolygon} style={{ ...styles.toolBtn, background: "#006633" }}>✓ Finish Poly</button>
+              <button onClick={finishPolygon} style={{ ...styles.toolBtn, background: "var(--poly-ok-bg)" }}>✓ Finish Poly</button>
             )}
             {drawMode === "polygon" && tempPolyPts.length > 0 && (
-              <button onClick={() => { setTempPolyPts([]); setTempPolyMouse(null); }} style={{ ...styles.toolBtn, background: "#660022" }}>✕ Cancel</button>
+              <button onClick={() => { setTempPolyPts([]); setTempPolyMouse(null); }} style={{ ...styles.toolBtn, background: "var(--err-bg3)" }}>✕ Cancel</button>
             )}
-            <div style={{ flex: 1 }} />
+            {tick("t3")}
             <button
               onClick={duplicateSelected}
               disabled={selectedIdx == null}
@@ -4356,7 +4526,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
               title="Flip vertical"
               style={{ ...styles.toolBtn, opacity: (selectedIdx == null || !annotations[selectedIdx]?.points) ? 0.35 : 1 }}
             >⇕</button>
-            <div style={{ width: 12 }} />
+            <div style={{ flex: 1 }} />
             <button
               onClick={undo}
               disabled={history.length === 0}
@@ -4369,10 +4539,11 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
               title="Redo (Ctrl+Y)"
               style={{ ...styles.toolBtn, opacity: future.length === 0 ? 0.35 : 1 }}
             >↪ Redo{future.length > 0 ? ` (${future.length})` : ""}</button>
-            <button onClick={() => setZoom(z => clamp(z * 1.2, 0.1, 8))} style={styles.toolBtn}>＋</button>
-            <button onClick={() => setZoom(1)} style={styles.toolBtn}>⟳ Reset</button>
-            <button onClick={() => setZoom(z => clamp(z / 1.2, 0.1, 8))} style={styles.toolBtn}>－</button>
+            {tick("t4")}
+            <button onClick={() => setZoom(z => clamp(z / 1.2, 0.1, 8))} style={styles.toolBtn} title="Zoom out">－</button>
             <span style={styles.zoomLabel}>{(scale * 100).toFixed(0)}%</span>
+            <button onClick={() => setZoom(z => clamp(z * 1.2, 0.1, 8))} style={styles.toolBtn} title="Zoom in">＋</button>
+            <button onClick={() => setZoom(1)} style={styles.toolBtn} title="Reset zoom">⟳ Reset</button>
           </div>
 
           {/* ── Page switcher bar (multi-page only) ── */}
@@ -4392,9 +4563,9 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                     onClick={() => switchPage(p.pageIndex)}
                     style={{
                       ...styles.pageTabBtn,
-                      background: isActive ? "#1e3a6a" : "#0c1428",
-                      borderColor: isActive ? "#3a6ab0" : "#1a2a40",
-                      color: isActive ? "#8cf" : "#5a7a9a",
+                      background: isActive ? "var(--bg-active)" : "var(--bg-tab)",
+                      borderColor: isActive ? "var(--bd-focus)" : "var(--bd-tab)",
+                      color: isActive ? "var(--tx-active)" : "var(--tx-label)",
                     }}
                   >
                     {p.label || (p.pdfPageNumber != null ? `Page ${p.pdfPageNumber}` : `Page ${p.pageIndex + 1}`)}
@@ -4419,7 +4590,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                 <div>Click to upload</div>
                 <div style={styles.dropSub}>PNG · JPG · TIFF</div>
                 <input type="file" accept="image/*" onChange={handleFileChange} style={{ display: "none" }} />
-                <div style={{ marginTop: 12, color: "#2a5070", fontSize: 11 }}>— or —</div>
+                <div style={{ marginTop: 12, color: "var(--tx-hint)", fontSize: 11 }}>— or —</div>
                 <label style={{ ...styles.uploadBtn, marginTop: 6, cursor: "pointer" }} onClick={e => e.stopPropagation()}>
                   📄 Import PDF
                   <input type="file" accept="application/pdf,.pdf" onChange={handlePdfChange} style={{ display: "none" }} />
@@ -4444,18 +4615,45 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
             <button onClick={() => runInference(false)} disabled={inferring || !originalImg} style={styles.inferBtn}>
               {inferring ? "⟳ Running…" : "▶ ⊞ Run Inference"}
             </button> */}
-            <button onClick={() => runInference(true)} disabled={inferring || !originalImg || isReadOnly} style={{ ...styles.inferBtn, background: "#0e4d6e", opacity: isReadOnly ? 0.4 : 1, cursor: isReadOnly ? "not-allowed" : "pointer" }}>
-              ▶ Run Analysis
+            <button
+              onClick={() => runInference(true)}
+              disabled={inferring || !originalImg || isReadOnly}
+              style={{ ...styles.runBtn, opacity: (inferring || !originalImg || isReadOnly) ? 0.45 : 1, cursor: (inferring || !originalImg || isReadOnly) ? "not-allowed" : "pointer" }}
+            >
+              {inferring ? "⟳ Running…" : "▶ Run analysis"}
             </button>
-            <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", color: "#5a7a9a", fontSize: 11, userSelect: "none" }}>
-              <input type="checkbox" checked={showConfidence} onChange={e => setShowConfidence(e.target.checked)} style={{ cursor: "pointer" }} />
-              Show confidence
-            </label>
-            <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", color: "#5a7a9a", fontSize: 11, userSelect: "none" }}>
-              <input type="checkbox" checked={showZoneLabels} onChange={e => setShowZoneLabels(e.target.checked)} style={{ cursor: "pointer" }} />
-              Show zone labels
-            </label>
-            {zoneSummary && <span style={styles.zoneSummary}>{zoneSummary}</span>}
+
+            {/* Switch-style toggles — quieter than checkboxes, reads as instrumentation */}
+            {[
+              { on: showConfidence, set: setShowConfidence, label: "Show confidence" },
+              { on: showZoneLabels, set: setShowZoneLabels, label: "Show zone labels" },
+            ].map(({ on, set, label }) => (
+              <label key={label} style={{ ...styles.swLabel, color: on ? "var(--tx-body)" : "var(--tx-label)" }}>
+                <input type="checkbox" checked={on} onChange={e => set(e.target.checked)} style={{ position: "absolute", opacity: 0, width: 0, height: 0 }} />
+                <span style={{ ...styles.sw, ...(on ? styles.swOn : null) }}>
+                  <span style={{ ...styles.swKnob, ...(on ? styles.swKnobOn : null) }} />
+                </span>
+                {label}
+              </label>
+            ))}
+
+            {/* Instrument readout — totals set large in mono, like a calculator display */}
+            {zoneTotals && (
+              <div style={styles.readout}>
+                <div style={styles.readoutGrp}>
+                  <span style={styles.readoutK}>Total zone</span>
+                  <span style={styles.readoutV}>{zoneTotals.area} <span style={styles.readoutU}>m²</span></span>
+                </div>
+                <span style={styles.tick}>
+                  <span style={{ ...styles.tickCap, top: 0 }} />
+                  <span style={{ ...styles.tickCap, bottom: 0 }} />
+                </span>
+                <div style={styles.readoutGrp}>
+                  <span style={styles.readoutK}>Perimeter</span>
+                  <span style={styles.readoutV}>{zoneTotals.perim} <span style={styles.readoutU}>m</span></span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -4463,16 +4661,17 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         <div
           onMouseDown={onPanelDragStart}
           style={{ width: 5, cursor: "col-resize", background: "transparent", flexShrink: 0, zIndex: 10 }}
-          onMouseEnter={e => e.currentTarget.style.background = "#2a4a7a"}
+          onMouseEnter={e => e.currentTarget.style.background = "var(--bg-hover)"}
           onMouseLeave={e => e.currentTarget.style.background = "transparent"}
         />
         {/* ── Right panel ── */}
         <div style={{ ...styles.rightPanel, width: rightPanelWidth }}>
           {/* Class visibility */}
           <div style={styles.section}>
-            <div style={styles.sectionTitle}>LAYERS</div>
+            <div style={styles.sectionTitle}><span style={styles.eyebrowTick} /> CLASSES</div>
             {allClasses.map(cls => {
               const color = allClassColors[cls] || DEFAULT_COLOR;
+              const isVisible = visibleClasses.has(cls);
               return (
                 <label key={cls} style={styles.visRow}>
                   <input
@@ -4501,7 +4700,11 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                       });
                     }}
                   />
-                  <span style={{ ...styles.classChip, borderColor: color, color }}>{cls} ({annotations.filter(a => a.clsName === cls).length})</span>
+                  {/* colour dot + plain name + right-aligned count (the swatch
+                      carries the colour, so the label stays legible) */}
+                  <span style={{ ...styles.classDot, background: color }} />
+                  <span style={{ ...styles.className, color: isVisible ? "var(--tx-body)" : "var(--tx-faint)" }}>{cls}</span>
+                  <span style={styles.classCount}>{annotations.filter(a => a.clsName === cls).length}</span>
                 </label>
               );
             })}
@@ -4509,7 +4712,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
 
           {/* Draw class */}
           <div style={styles.section}>
-            <div style={styles.sectionTitle}>NEW SHAPE CLASS</div>
+            <div style={styles.sectionTitle}><span style={styles.eyebrowTick} /> NEW SHAPE CLASS</div>
             <select value={newClass} onChange={e => setNewClass(e.target.value)} style={styles.select}>
               {allClasses.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
@@ -4517,7 +4720,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
 
           {/* Edit selected */}
           <div style={styles.section}>
-            <div style={styles.sectionTitle}>EDIT SELECTED</div>
+            <div style={styles.sectionTitle}><span style={styles.eyebrowTick} /> EDIT SELECTED</div>
             <div style={styles.row}>
               <select value={editClass} onChange={e => setEditClass(e.target.value)} style={{ ...styles.select, flex: 1 }}>
                 {allClasses.map(c => <option key={c} value={c}>{c}</option>)}
@@ -4532,9 +4735,9 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
               </select>
               <button onClick={applyTag} style={styles.smallBtn}>Set</button>
             </div>
-            <button onClick={deleteSelected} style={{ ...styles.smallBtn, background: "#5c1010", width: "100%", marginTop: 4 }}>Delete</button>
+            <button onClick={deleteSelected} style={{ ...styles.smallBtn, background: "transparent", borderColor: "var(--err-bd)", color: "var(--err-tx)", width: "100%", marginTop: 4, padding: "5px 7px" }}>Delete</button>
             <div style={{ ...styles.row, marginTop: 6 }}>
-              <span style={styles.label} title="RDP tolerance in image pixels">Shape Simplification (px):</span>
+              <span style={{ ...styles.label, minWidth: 0 }} title="RDP tolerance in image pixels">Simplify (px)</span>
               <input
                 value={simplifyEpsilon}
                 onChange={e => setSimplifyEpsilon(e.target.value)}
@@ -4544,13 +4747,19 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
               />
               <button onClick={simplifySelected} style={styles.smallBtn} title="Simplify selected polygon(s) with Ramer-Douglas-Peucker">Simplify</button>
             </div>
+            <button
+              onClick={combineZones}
+              disabled={[...selectedIndices].filter(i => annotations[i]?.shapeType === "polygon" && annotations[i]?.clsName === "zone").length < 2}
+              style={{ ...styles.smallBtn, width: "100%", marginTop: 4, padding: "5px 7px", background: "transparent", borderColor: "var(--amber-bd)", color: "var(--amber)" }}
+              title="Merge selected zone polygons into one (boolean union). Needs 2+ overlapping or adjacent zones."
+            >Combine zones</button>
           </div>
 
           {/* Tag manager */}
           <div style={styles.section}>
-            <div style={{ ...styles.sectionTitle, display: "flex", justifyContent: "space-between" }}>
-              TAGS
-              <button onClick={() => setShowTagManager(v => !v)} style={styles.tinyBtn}>{showTagManager ? "▲" : "▼"}</button>
+            <div style={styles.sectionTitle}>
+              <span style={styles.eyebrowTick} /> TAGS
+              <button onClick={() => setShowTagManager(v => !v)} style={{ ...styles.tinyBtn, marginLeft: "auto" }}>{showTagManager ? "▲" : "▼"}</button>
             </div>
             {showTagManager && (
               <div>
@@ -4572,17 +4781,17 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
 
           {/* Custom class manager */}
           <div style={styles.section}>
-            <div style={{ ...styles.sectionTitle, display: "flex", justifyContent: "space-between" }}>
-              CUSTOM LAYERS{!canUseCustomClasses && <span style={{ fontSize: 9, color: "#c0a040", letterSpacing: 0 }}>🔒 Pro</span>}
-              {canUseCustomClasses && <button onClick={() => setShowClassManager(v => !v)} style={styles.tinyBtn}>{showClassManager ? "▲" : "▼"}</button>}
+            <div style={styles.sectionTitle}>
+              <span style={styles.eyebrowTick} /> CUSTOM LAYERS{!canUseCustomClasses && <span style={{ fontSize: 9, color: "var(--warn-tx)", letterSpacing: 0, marginLeft: "auto" }}>🔒 Pro</span>}
+              {canUseCustomClasses && <button onClick={() => setShowClassManager(v => !v)} style={{ ...styles.tinyBtn, marginLeft: "auto" }}>{showClassManager ? "▲" : "▼"}</button>}
             </div>
             {!canUseCustomClasses && (
-              <div style={{ fontSize: 10, color: "#4a6a7a", fontStyle: "italic" }}>Upgrade to Pro to add custom layers.</div>
+              <div style={{ fontSize: 10, color: "var(--tx-faint)", fontStyle: "italic" }}>Upgrade to Pro to add custom layers.</div>
             )}
             {canUseCustomClasses && showClassManager && (
               <div>
                 {customClasses.length === 0 && (
-                  <div style={{ color: "#3a5070", fontSize: 10, marginBottom: 4 }}>No custom layers yet.</div>
+                  <div style={{ color: "var(--tx-drop)", fontSize: 10, marginBottom: 4 }}>No custom layers yet.</div>
                 )}
                 {customClasses.map(cc => (
                   <div key={cc.name} style={{ ...styles.row, marginBottom: 2 }}>
@@ -4630,12 +4839,12 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
 
           {/* Scale calibration */}
           <div style={styles.section}>
-            <div style={styles.sectionTitle}>SCALE CALIBRATION</div>
-            <div style={{ color: "#4a6a7a", fontSize: 10, marginBottom: 6 }}>
+            <div style={styles.sectionTitle}><span style={styles.eyebrowTick} /> SCALE CALIBRATION</div>
+            <div style={{ color: "var(--tx-faint)", fontSize: 10, marginBottom: 6 }}>
               Draw a line with 📐, then enter its real length below.
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 6 }}>
-              <span style={{ color: "#00ccff", fontSize: 12, whiteSpace: "nowrap" }}>Scale</span>
+              <span style={{ color: "var(--tx-labelbright)", fontSize: 12, whiteSpace: "nowrap" }}>Scale</span>
               <input
                 value={realLength}
                 onChange={e => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setRealLength(v); }}
@@ -4643,7 +4852,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                 placeholder=""
                 title="Real-world length"
               />
-              <span style={{ color: "#5a7a9a", fontSize: 12 }}>:</span>
+              <span style={{ color: "var(--tx-label)", fontSize: 12 }}>:</span>
               <input
                 value={pixelLength}
                 onChange={e => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setPixelLength(v); }}
@@ -4669,7 +4878,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                 else if (val === "dxf-auto" && canExportDXF) handleAutoDxfClick();
                 else if (val === "report") openPdfPicker();
               }}
-              style={{ ...styles.select, cursor: "pointer", fontWeight: 700, color: "#c8f0fa", letterSpacing: 1 }}
+              style={{ ...styles.select, cursor: "pointer", fontWeight: 700, color: "var(--tx-title)", letterSpacing: 1 }}
             >
               <option value="" disabled>EXPORT</option>
               <option value="json">JSON</option>
@@ -4682,22 +4891,22 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
 
           {/* Annotation list */}
           <div style={{ ...styles.section, flex: 1, minHeight: 0 }}>
-            <div style={styles.sectionTitle}>ANNOTATIONS ({visAnns.length})</div>
+            <div style={styles.sectionTitle}><span style={styles.eyebrowTick} /> ANNOTATIONS ({visAnns.length})</div>
             <div style={styles.annList}>
               {visAnns.map(({ ann, origIdx }) => {
                 const [x1, y1, x2, y2] = annotationBbox(ann);
                 const isSel = selectedIdx === origIdx;
                 return (
                   <div key={ann.id} onClick={() => { setSelectedIdx(origIdx); setSelectedIndices(new Set([origIdx])); setEditClass(ann.clsName); setEditConf(ann.confidence != null ? String(ann.confidence) : ""); }}
-                    style={{ ...styles.annRow, background: isSel ? "#1a3056" : "transparent", borderLeft: `3px solid ${getClassColor(ann.clsName)}` }}>
-                    {ann.numId != null && <span style={{ color: "#8ab", fontWeight: 700, fontSize: 12, marginRight: 5 }}>#{ann.numId}</span>}
+                    style={{ ...styles.annRow, background: isSel ? "var(--bg-sel)" : "transparent", borderLeft: `3px solid ${getClassColor(ann.clsName)}` }}>
+                    {ann.numId != null && <span style={{ color: "var(--tx-btn)", fontWeight: 700, fontSize: 12, marginRight: 5 }}>#{ann.numId}</span>}
                     <span style={{ color: getClassColor(ann.clsName), fontWeight: 600, fontSize: 12 }}>{ann.clsName}</span>
-                    {ann.zoneTag && <span style={{ color: "#aaa", fontSize: 11 }}> :{ann.zoneTag}</span>}
+                    {ann.zoneTag && <span style={{ color: "var(--tx-faint2)", fontSize: 11 }}> :{ann.zoneTag}</span>}
                     {(ann.clsName === "External_Wall" || ann.clsName === "Internal_Wall") && ratio != null && (
-                      <><br /><span style={{ color: "#ffffff", fontSize: 11 }}>L: {(wallLengthFromAreaPerim(annotationAreaPx(ann), annotationPerimeterPx(ann)) * ratio).toFixed(2)} m</span></>
+                      <><br /><span style={{ color: "var(--tx-strong)", fontSize: 11 }}>L: {(wallLengthFromAreaPerim(annotationAreaPx(ann), annotationPerimeterPx(ann)) * ratio).toFixed(2)} m</span></>
                     )}
                     {ann.clsName === "zone" && (
-                      <><br /><span style={{ color: "#ffffff", fontSize: 11 }}>
+                      <><br /><span style={{ color: "var(--tx-strong)", fontSize: 11 }}>
                         {ratio != null ? `A: ${(annotationAreaPx(ann) * ratio * ratio).toFixed(2)} m²` : `A: ${annotationAreaPx(ann).toFixed(0)} px²`}
                         {" | "}
                         {ratio != null ? `P: ${(annotationPerimeterPx(ann) * ratio).toFixed(2)} m` : `P: ${annotationPerimeterPx(ann).toFixed(0)} px`}
@@ -4709,17 +4918,17 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                       if (cc.measureType === "area" && ratio != null) {
                         const a = annotationAreaPx(ann) * ratio * ratio;
                         const p = annotationPerimeterPx(ann) * ratio;
-                        return <><br /><span style={{ color: "#ffffff", fontSize: 11 }}>A: {a.toFixed(2)} m² | P: {p.toFixed(2)} m</span></>;
+                        return <><br /><span style={{ color: "var(--tx-strong)", fontSize: 11 }}>A: {a.toFixed(2)} m² | P: {p.toFixed(2)} m</span></>;
                       }
                       if (cc.measureType === "length" && ratio != null) {
                         let lenPx;
                         if (ann.shapeType === "line") lenPx = Math.hypot(ann.x2 - ann.x1, ann.y2 - ann.y1);
                         else lenPx = wallLengthFromAreaPerim(annotationAreaPx(ann), annotationPerimeterPx(ann));
-                        return <><br /><span style={{ color: "#ffffff", fontSize: 11 }}>L: {(lenPx * ratio).toFixed(2)} m</span></>;
+                        return <><br /><span style={{ color: "var(--tx-strong)", fontSize: 11 }}>L: {(lenPx * ratio).toFixed(2)} m</span></>;
                       }
                       return null;
                     })()}
-                    {showConfidence && ann.confidence != null && <span style={{ color: "#556", fontSize: 9 }}> {ann.confidence.toFixed(2)}</span>}
+                    {showConfidence && ann.confidence != null && <span style={{ color: "var(--tx-conf)", fontSize: 9 }}> {ann.confidence.toFixed(2)}</span>}
                   </div>
                 );
               })}
@@ -4733,43 +4942,81 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
 
 // ─── STYLES ───────────────────────────────────────────────────────────────────
 const styles = {
-  app: { display: "flex", flexDirection: "column", height: "100vh", background: "#0b0f1a", color: "#c8d0e0", fontFamily: "'IBM Plex Mono', 'Fira Mono', monospace", fontSize: 12, overflow: "hidden" },
-  header: { display: "flex", alignItems: "center", gap: 12, padding: "6px 14px", background: "#0e1422", borderBottom: "3px solid #1c2540" },
-  logo: { color: "#4af", fontWeight: 700, fontSize: 14, letterSpacing: 2, whiteSpace: "nowrap" },
-  statusBar: { flex: 1, color: "#7a8faa", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  uploadBtn: { background: "#152240", border: "1px solid #2a4070", borderRadius: 4, padding: "4px 10px", cursor: "pointer", color: "#8ab", fontSize: 11, whiteSpace: "nowrap" },
+  app: { display: "flex", flexDirection: "column", flex: 1, minHeight: 0, height: "100%", background: "var(--bg-app)", color: "var(--tx-body)", fontFamily: "var(--font-ui)", fontSize: 12, overflow: "hidden" },
+  header: { display: "flex", alignItems: "center", gap: 12, padding: "6px 14px", background: "var(--bg-bar)", borderBottom: "3px solid var(--bd-bar)" },
+  statusBar: { flex: 1, color: "var(--tx-status)", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  uploadBtn: { background: "var(--bg-btn)", border: "1px solid var(--bd-btn)", borderRadius: 4, padding: "4px 10px", cursor: "pointer", color: "var(--tx-btn)", fontSize: 11, whiteSpace: "nowrap" },
   body: { display: "flex", flex: 1, overflow: "hidden" },
   canvasPanel: { display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" },
-  canvasToolbar: { display: "flex", alignItems: "center", gap: 4, padding: "4px 8px", background: "#0e1422", borderBottom: "1px solid #1c2540" },
-  toolBtn: { background: "#1a2035", border: "1px solid #2d3a52", borderRadius: 3, color: "#9ab", padding: "3px 8px", cursor: "pointer", fontSize: 11 },
-  zoomLabel: { color: "#4a7a9b", fontSize: 11, minWidth: 40, textAlign: "right" },
-  canvasContainer: { flex: 1, overflow: "auto", background: "#0d1120", display: "flex", alignItems: "flex-start", justifyContent: "flex-start", padding: 8 },
-  dropZone: { width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, cursor: "pointer", color: "#3a5070", border: "2px dashed #1c2f50", borderRadius: 8, minHeight: 300 },
-  dropIcon: { fontSize: 48, color: "#1e3a58" },
-  dropSub: { fontSize: 10, color: "#2a4060" },
-  inferenceBar: { display: "flex", alignItems: "center", gap: 8, padding: "15px 10px", background: "#0e1422", borderTop: "3px solid #1c2540" },
-  confLabel: { color: "#5a7a9a", fontSize: 11 },
-  confInput: { width: 60, background: "#0d1625", border: "1px solid #1e3050", borderRadius: 3, color: "#8ab", padding: "2px 6px", fontSize: 11 },
-  inferBtn: { background: "#0f3460", border: "1px solid #1e5a9a", borderRadius: 3, color: "#7af", padding: "3px 10px", cursor: "pointer", fontSize: 11 },
-  zoneSummary: { color: "#5a8a6a", fontSize: 11, marginLeft: 8 },
-  rightPanel: { width: 320, display: "flex", flexDirection: "column", background: "#0c1020", borderLeft: "1px solid #1a2540", overflow: "auto" },
-  section: { padding: "8px 10px", borderBottom: "1px solid #141e30" },
-  sectionTitle: { color: "#c8f0fa", fontSize: 13, letterSpacing: 2, marginBottom: 6, fontWeight: 700 },
-  visRow: { display: "flex", alignItems: "center", gap: 6, marginBottom: 3, cursor: "pointer" },
-  classChip: { border: "1px solid", borderRadius: 2, padding: "1px 5px", fontSize: 10 },
-  select: { background: "#0d1625", border: "1px solid #1e3050", borderRadius: 3, color: "#8ab", padding: "3px 5px", fontSize: 11, width: "100%" },
+  canvasToolbar: { display: "flex", alignItems: "center", gap: 4, padding: "4px 8px", background: "var(--bg-bar)", borderBottom: "1px solid var(--bd-bar)" },
+  toolBtn: { background: "var(--bg-btn2)", border: "1px solid var(--bd-btn2)", borderRadius: 3, color: "var(--tx-btn2)", padding: "3px 8px", cursor: "pointer", fontSize: 11 },
+  zoomLabel: { fontFamily: "var(--font-mono)", color: "var(--tx-dim)", fontSize: 11, minWidth: 40, textAlign: "right" },
+  canvasContainer: { flex: 1, overflow: "auto", background: "var(--bg-canvas)", display: "flex", alignItems: "flex-start", justifyContent: "flex-start", padding: 8 },
+  dropZone: { width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, cursor: "pointer", color: "var(--tx-drop)", border: "2px dashed var(--bd-drop)", borderRadius: 8, minHeight: 300 },
+  dropIcon: { fontSize: 48, color: "var(--tx-dropicon)" },
+  dropSub: { fontSize: 10, color: "var(--tx-dropsub)" },
+  inferenceBar: { display: "flex", alignItems: "center", gap: 8, padding: "15px 10px", background: "var(--bg-bar)", borderTop: "3px solid var(--bd-bar)" },
+  confLabel: { color: "var(--tx-label)", fontSize: 11 },
+  confInput: { fontFamily: "var(--font-mono)", width: 60, background: "var(--bg-input)", border: "1px solid var(--bd-input)", borderRadius: 3, color: "var(--tx-btn)", padding: "2px 6px", fontSize: 11 },
+  inferBtn: { background: "var(--bg-accent)", border: "1px solid var(--bd-accent)", borderRadius: 3, color: "var(--tx-accent)", padding: "3px 10px", cursor: "pointer", fontSize: 11 },
+  rightPanel: { width: 320, display: "flex", flexDirection: "column", background: "var(--bg-panel)", borderLeft: "1px solid var(--bd-panel)", overflow: "auto" },
+  section: { padding: "8px 10px", borderBottom: "1px solid var(--bd-section)" },
+  // Section eyebrow: condensed uppercase label preceded by an amber tick.
+  sectionTitle: { fontFamily: "var(--font-disp)", fontWeight: 600, fontSize: 10.5, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--tx-status)", display: "flex", alignItems: "center", gap: 7, marginBottom: 7 },
+  visRow: { display: "flex", alignItems: "center", gap: 9, padding: "4px 2px", cursor: "pointer" },
+  classDot: { width: 9, height: 9, borderRadius: 2, flexShrink: 0 },
+  className: { flex: 1, fontSize: 12, fontFamily: "var(--font-ui)" },
+  classCount: { fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--tx-label)" },
+  classChip: { fontFamily: "var(--font-mono)", border: "1px solid", borderRadius: 2, padding: "1px 5px", fontSize: 10 },
+  select: { fontFamily: "var(--font-mono)", background: "var(--bg-input)", border: "1px solid var(--bd-input)", borderRadius: 3, color: "var(--tx-btn)", padding: "3px 5px", fontSize: 11, width: "100%" },
   row: { display: "flex", alignItems: "center", gap: 4, marginBottom: 4 },
-  label: { color: "#00ccff", fontSize: 12, whiteSpace: "nowrap", minWidth: 55 },
-  smallBtn: { background: "#152240", border: "1px solid #2a4070", borderRadius: 3, color: "#8ab", padding: "3px 7px", cursor: "pointer", fontSize: 11, whiteSpace: "nowrap" },
-  tinyBtn: { background: "#0d1625", border: "1px solid #1e3050", borderRadius: 2, color: "#5a7a9a", padding: "1px 5px", cursor: "pointer", fontSize: 10 },
-  smallInput: { background: "#0d1625", border: "1px solid #1e3050", borderRadius: 3, color: "#8ab", padding: "2px 5px", fontSize: 11, width: 70 },
-  ratioDisplay: { color: "#3a8a5a", fontSize: 10, marginTop: 3 },
+  label: { color: "var(--tx-labelbright)", fontSize: 12, whiteSpace: "nowrap", minWidth: 55 },
+  smallBtn: { background: "var(--bg-btn)", border: "1px solid var(--bd-btn)", borderRadius: 3, color: "var(--tx-btn)", padding: "3px 7px", cursor: "pointer", fontSize: 11, whiteSpace: "nowrap" },
+  tinyBtn: { fontFamily: "var(--font-mono)", background: "var(--bg-input)", border: "1px solid var(--bd-input)", borderRadius: 2, color: "var(--tx-label)", padding: "1px 5px", cursor: "pointer", fontSize: 10 },
+  smallInput: { fontFamily: "var(--font-mono)", background: "var(--bg-input)", border: "1px solid var(--bd-input)", borderRadius: 3, color: "var(--tx-btn)", padding: "2px 5px", fontSize: 11, width: 70 },
+  ratioDisplay: { fontFamily: "var(--font-mono)", color: "var(--tx-ratio)", fontSize: 10, marginTop: 3 },
   annList: { maxHeight: 300, overflowY: "auto" },
-  annRow: { padding: "4px 6px", cursor: "pointer", borderRadius: 2, marginBottom: 1, paddingLeft: 6 },
+  annRow: { fontFamily: "var(--font-mono)", padding: "4px 6px", cursor: "pointer", borderRadius: 2, marginBottom: 1, paddingLeft: 6 },
   settingsOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 9000, display: "flex", alignItems: "flex-start", justifyContent: "flex-end" },
-  settingsModal: { marginTop: 48, marginRight: 14, background: "#0e1728", border: "1px solid #2a4070", borderRadius: 8, padding: "16px 18px", minWidth: 300, boxShadow: "0 8px 32px rgba(0,0,0,0.7)", zIndex: 9001 },
-  pageSwitcher: { display: "flex", alignItems: "center", gap: 4, padding: "3px 8px", background: "#0a1018", borderBottom: "1px solid #141e30", overflowX: "auto" },
-  pageNavBtn: { background: "#152240", border: "1px solid #2a4070", borderRadius: 3, color: "#8ab", padding: "2px 8px", cursor: "pointer", fontSize: 12, flexShrink: 0 },
-  pageTabBtn: { background: "#0c1428", border: "1px solid #1a2a40", borderRadius: 3, color: "#5a7a9a", padding: "3px 10px", cursor: "pointer", fontSize: 11, fontFamily: "monospace", flexShrink: 0, display: "flex", alignItems: "center", gap: 5 },
-  pageBadge: { background: "#1a3060", color: "#6af", borderRadius: 8, padding: "0 5px", fontSize: 9, fontWeight: 700, lineHeight: "16px" },
+  settingsModal: { marginTop: 48, marginRight: 14, background: "var(--bg-modal)", border: "1px solid var(--bd-btn)", borderRadius: 8, padding: "16px 18px", minWidth: 300, boxShadow: "0 8px 32px rgba(0,0,0,0.7)", zIndex: 9001 },
+  pageSwitcher: { display: "flex", alignItems: "center", gap: 4, padding: "3px 8px", background: "var(--bg-app2)", borderBottom: "1px solid var(--bd-section)", overflowX: "auto" },
+  pageNavBtn: { background: "var(--bg-btn)", border: "1px solid var(--bd-btn)", borderRadius: 3, color: "var(--tx-btn)", padding: "2px 8px", cursor: "pointer", fontSize: 12, flexShrink: 0 },
+  pageTabBtn: { background: "var(--bg-tab)", border: "1px solid var(--bd-tab)", borderRadius: 3, color: "var(--tx-label)", padding: "3px 10px", cursor: "pointer", fontSize: 11, fontFamily: "var(--font-mono)", flexShrink: 0, display: "flex", alignItems: "center", gap: 5 },
+  pageBadge: { fontFamily: "var(--font-mono)", background: "var(--bg-badge)", color: "var(--tx-badge)", borderRadius: 8, padding: "0 5px", fontSize: 9, fontWeight: 700, lineHeight: "16px" },
+
+  // ── Title-block cartouche (the signature element) ──────────────────────────
+  cartouche: { display: "grid", gridTemplateColumns: "auto auto", alignSelf: "center", border: "1px solid var(--cart-bd)", borderRadius: 4, overflow: "hidden", background: "var(--cart-bg)", flexShrink: 0 },
+  cartName: { gridRow: "1 / 3", display: "flex", flexDirection: "column", justifyContent: "center", padding: "5px 12px", borderRight: "1px solid var(--cart-cellbd)" },
+  cartNameMain: { fontFamily: "var(--font-disp)", fontWeight: 700, fontSize: 19, letterSpacing: "0.14em", lineHeight: 1, color: "var(--cart-tx)" },
+  cartNameSub: { fontFamily: "var(--font-disp)", fontWeight: 500, fontSize: 8, letterSpacing: "0.2em", color: "var(--cart-tx2)", marginTop: 3, textTransform: "uppercase" },
+  cartCells: { display: "flex" },
+  cartCell: { padding: "4px 10px", minWidth: 66, borderRight: "1px solid var(--cart-cellbd)" },
+  cartK: { fontFamily: "var(--font-disp)", fontSize: 8, letterSpacing: "0.18em", color: "var(--cart-tx2)", textTransform: "uppercase" },
+  cartV: { fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--cart-tx)", marginTop: 1 },
+  cartRev: { gridRow: 2, display: "flex", alignItems: "center", padding: "0 10px", borderTop: "1px solid var(--cart-cellbd)", fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--cart-tx2)" },
+
+  // ── Icon tool rail ─────────────────────────────────────────────────────────
+  tool: { position: "relative", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, padding: "5px 10px 4px", borderRadius: 5, cursor: "pointer", color: "var(--tx-btn2)", background: "transparent", border: "1px solid transparent", minWidth: 52, fontFamily: "var(--font-disp)", fontSize: 9.5, letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, lineHeight: 1.2, whiteSpace: "nowrap" },
+  toolActive: { color: "var(--amber)", background: "var(--amber-soft)", borderColor: "var(--amber-bd)" },
+  toolGlyph: { fontSize: 14, lineHeight: 1 },
+  toolUnderline: { position: "absolute", left: 8, right: 8, bottom: -1, height: 2, background: "var(--amber)", borderRadius: 2 },
+  // dimension-tick divider — the I-beam mark from a real drawing sheet
+  tick: { position: "relative", width: 1, height: 22, background: "var(--tick)", margin: "0 7px", flexShrink: 0 },
+  tickCap: { position: "absolute", left: -2, width: 5, height: 1, background: "var(--tick)" },
+
+  // ── Instrument status bar ──────────────────────────────────────────────────
+  runBtn: { background: "var(--amber)", border: "1px solid var(--amber)", borderRadius: 4, color: "var(--on-amber)", padding: "5px 13px", cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap", fontFamily: "var(--font-ui)", letterSpacing: "0.02em" },
+  sw: { width: 30, height: 17, borderRadius: 9, background: "var(--sw-off-bg)", border: "1px solid var(--sw-off-bd)", position: "relative", transition: "background .15s, border-color .15s", flexShrink: 0 },
+  swOn: { background: "var(--sw-on-bg)", borderColor: "var(--accent2)" },
+  swKnob: { position: "absolute", top: 1.5, left: 1.5, width: 12, height: 12, borderRadius: "50%", background: "var(--sw-knob-off)", transition: "left .15s, background .15s" },
+  swKnobOn: { left: 14, background: "var(--accent2)" },
+  swLabel: { display: "flex", alignItems: "center", gap: 7, cursor: "pointer", color: "var(--tx-label)", fontSize: 11, userSelect: "none" },
+  readout: { marginLeft: "auto", display: "flex", alignItems: "center", gap: 14, paddingRight: 4 },
+  readoutGrp: { display: "flex", flexDirection: "column", alignItems: "flex-end" },
+  readoutK: { fontFamily: "var(--font-disp)", fontSize: 8.5, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--tx-faint3)" },
+  readoutV: { fontFamily: "var(--font-mono)", fontSize: 14, color: "var(--tx-body)", lineHeight: 1.1 },
+  readoutU: { color: "var(--tx-faint3)", fontSize: 10 },
+
+  // Amber tick that opens every section eyebrow.
+  eyebrowTick: { width: 12, height: 2, background: "var(--amber)", flexShrink: 0, display: "inline-block" },
 };

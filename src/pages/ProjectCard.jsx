@@ -11,11 +11,11 @@
 
 import "./ProjectsPage.css";
 
-// Status badge colour mapping
+// Status badge colour mapping — theme tokens so badges follow dark/blueprint.
 const STATUS_STYLES = {
-  Draft:       { bg: "#1a2035", color: "#5a7a9a", border: "#2a3a55" },
-  "In Progress": { bg: "#0f2a1a", color: "#3a9a6a", border: "#1a4a2a" },
-  Complete:    { bg: "#0f1e3a", color: "#4a8adf", border: "#1a3060" },
+  Draft:         { bg: "var(--bg-btn2)",  color: "var(--tx-label)", border: "var(--bd-btn2)" },
+  "In Progress": { bg: "var(--ok-bg4)",   color: "var(--ok-tx)",    border: "var(--ok-bd)" },
+  Complete:      { bg: "var(--amber-soft)", color: "var(--amber)",  border: "var(--amber-bd)" },
 };
 
 // Count icons

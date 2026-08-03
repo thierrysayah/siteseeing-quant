@@ -8,8 +8,8 @@ html, body, #root {
 }
 
 body {
-  background: #08111f;
-  font-family: Arial, sans-serif;
+  background: var(--bg-app, #0e1216);
+  font-family: var(--font-ui, Arial, sans-serif);
 }
 
 .auth-page {
@@ -190,26 +190,31 @@ body {
 .top-bar {
   padding: 10px 16px;
   text-align: right;
-  background: #08111f;
-  border-bottom: 1px solid rgba(70, 120, 220, 0.2);
+  background: var(--bg-app2, #0b0e12);
+  border-bottom: 1px solid var(--bd-bar, #232c36);
+  font-family: var(--font-ui, system-ui, sans-serif);
 }
 
 .username {
   margin-right: 12px;
-  color: #cfe6ff;
+  color: var(--tx-body, #e8edf2);
   font-weight: 500;
 }
 
 .signout-btn {
-  background: transparent;
-  border: 1px solid rgba(100,150,255,0.3);
-  color: #cfe6ff;
+  background: var(--bg-btn, #232c36);
+  border: 1px solid var(--bd-btn, #3c4a58);
+  color: var(--tx-btn, #c4cfda);
   padding: 6px 12px;
   border-radius: 6px;
   cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  transition: border-color .15s, background .15s;
 }
 
 .signout-btn:hover {
-  background: rgba(100,150,255,0.1);
+  background: var(--bg-hover, #2a3540);
+  border-color: var(--bd-focus, #4a5c6e);
 }
 

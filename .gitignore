@@ -44,3 +44,6 @@ amplifytools.xcconfig
 **.sample
 #amplify-do-not-edit-end
 .claude/
+
+# Downloaded installers / large binaries (never commit)
+*.pkg

@@ -1,6 +1,10 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import './index.css';
+// Theme tokens must load app-wide (not just inside the editor) so shared chrome
+// like the top bar and the projects page can consume them.
+import './theme.css';
+import { applyTheme, readTheme } from './hooks/useTheme';
 import App from './App';
 import reportWebVitals from './reportWebVitals';
 
@@ -11,6 +15,10 @@ import awsExports from './aws-exports';
 
 
 Amplify.configure(awsExports);
+
+// Apply the saved theme before first paint so shared chrome (top bar, projects
+// page, login) is themed immediately — the editor re-asserts this on mount.
+applyTheme(readTheme());
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(

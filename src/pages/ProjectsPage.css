@@ -11,22 +11,22 @@
 
 /* ── CSS Variables ─────────────────────────────────────────────────────────── */
 :root {
-  --pp-bg:           #0b0f1a;
-  --pp-surface:      #0e1422;
-  --pp-surface-2:    #111827;
-  --pp-surface-3:    #151d2e;
-  --pp-border:       #1c2540;
-  --pp-border-2:     #232f4a;
-  --pp-accent:       #1e6fff;
-  --pp-accent-dim:   #0f3460;
-  --pp-accent-glow:  rgba(30, 111, 255, 0.12);
-  --pp-text:         #c8d0e0;
-  --pp-text-dim:     #6a7a9a;
-  --pp-text-faint:   #3a4a6a;
-  --pp-mono:         'IBM Plex Mono', 'Fira Mono', monospace;
-  --pp-sans:         'IBM Plex Sans', system-ui, sans-serif;
-  --pp-danger:       #8b2020;
-  --pp-danger-hover: #b03030;
+  --pp-bg:           var(--bg-app);
+  --pp-surface:      var(--bg-bar);
+  --pp-surface-2:    var(--bg-row);
+  --pp-surface-3:    var(--bg-btn);
+  --pp-border:       var(--bd-bar);
+  --pp-border-2:     var(--bd-btn2);
+  --pp-accent:       var(--amber);
+  --pp-accent-dim:   var(--bg-btn);
+  --pp-accent-glow:  var(--amber-soft);
+  --pp-text:         var(--tx-body);
+  --pp-text-dim:     var(--tx-label);
+  --pp-text-faint:   var(--tx-faint);
+  --pp-mono:         var(--font-mono);
+  --pp-sans:         var(--font-ui);
+  --pp-danger:       var(--err-bd);
+  --pp-danger-hover: var(--err-tx2);
   --pp-radius:       6px;
   --pp-radius-lg:    10px;
   --pp-shadow:       0 4px 24px rgba(0, 0, 0, 0.4);
@@ -68,7 +68,7 @@
   font-weight: 700;
   font-size: 14px;
   letter-spacing: 3px;
-  color: #4aaeff;
+  color: var(--accent2);
   white-space: nowrap;
 }
 
@@ -104,9 +104,9 @@
 .pp-upgrade-hint {
   font-family: var(--pp-mono);
   font-size: 10px;
-  color: #c0a040;
+  color: var(--warn-tx);
   letter-spacing: 0.5px;
-  border: 1px solid #5a4a10;
+  border: 1px solid var(--warn-bd);
   border-radius: 4px;
   padding: 3px 8px;
   background: rgba(192, 160, 64, 0.08);
@@ -140,7 +140,7 @@
 }
 
 .pp-loading { color: var(--pp-text-dim); }
-.pp-error   { color: #e05555; }
+.pp-error   { color: var(--err-tx); }
 
 /* ── Empty State ───────────────────────────────────────────────────────────── */
 .pp-empty {
@@ -182,7 +182,7 @@
   background: var(--pp-accent);
   border: none;
   border-radius: var(--pp-radius);
-  color: #fff;
+  color: var(--on-amber);
   font-family: var(--pp-mono);
   font-size: 12px;
   font-weight: 600;
@@ -194,7 +194,7 @@
 }
 
 .pp-btn-primary:hover:not(:disabled) {
-  background: #3080ff;
+  background: var(--amber-press);
   transform: translateY(-1px);
 }
 
@@ -220,7 +220,7 @@
 }
 
 .pp-btn-ghost:hover {
-  border-color: #4a5a7a;
+  border-color: var(--bd-focus);
   color: var(--pp-text);
 }
 
@@ -295,9 +295,9 @@
 .pc-page-badge {
   display: inline-block;
   margin-left: 6px;
-  background: #0f1e3a;
-  color: #4a8adf;
-  border: 1px solid #1a3060;
+  background: var(--bg-tab);
+  color: var(--accent2);
+  border: 1px solid var(--bd-btn2);
   border-radius: 8px;
   padding: 0 6px;
   font-size: 9px;
@@ -395,16 +395,16 @@
 }
 
 .pc-btn-delete:hover {
-  color: #e05555;
-  border-color: #5a1a1a;
+  color: var(--err-tx);
+  border-color: var(--err-bd);
   background: rgba(139, 32, 32, 0.15);
 }
 
 .pc-btn-open {
   background: var(--pp-accent-dim);
-  border: 1px solid #1a3a6a;
+  border: 1px solid var(--bd-focus);
   border-radius: var(--pp-radius);
-  color: #7aaeff;
+  color: var(--accent2);
   font-family: var(--pp-mono);
   font-size: 11px;
   font-weight: 600;
@@ -415,9 +415,9 @@
 }
 
 .pc-btn-open:hover {
-  background: #1a4a88;
-  border-color: #2a5a9a;
-  color: #aad4ff;
+  background: var(--bg-btn);
+  border-color: var(--bd-btn);
+  color: var(--tx-body);
 }
 
 /* =============================================================================
@@ -503,7 +503,7 @@
 }
 
 .modal-required {
-  color: #e05555;
+  color: var(--err-tx);
   margin-left: 2px;
 }
 
@@ -516,7 +516,7 @@
 }
 
 .modal-input {
-  background: #0d1625;
+  background: var(--bg-input);
   border: 1px solid var(--pp-border-2);
   border-radius: var(--pp-radius);
   color: var(--pp-text);
@@ -540,7 +540,7 @@
 
 /* ── Drop zone ── */
 .modal-dropzone {
-  background: #0a1020;
+  background: var(--bg-app2);
   border: 1px dashed var(--pp-border-2);
   border-radius: var(--pp-radius);
   padding: 28px 20px;
@@ -561,8 +561,8 @@
 
 .modal-dropzone--filled {
   border-style: solid;
-  border-color: #1a3a6a;
-  background: #0a1828;
+  border-color: var(--bd-focus);
+  background: var(--bg-row);
 }
 
 .modal-dropzone-icon {
@@ -579,7 +579,7 @@
 }
 
 .modal-dropzone-text u {
-  color: #5a9aff;
+  color: var(--accent2);
 }
 
 .modal-dropzone-hint {
@@ -592,7 +592,7 @@
   font-family: var(--pp-mono);
   font-size: 12px;
   font-weight: 600;
-  color: #7aaeff;
+  color: var(--accent2);
   word-break: break-all;
 }
 
@@ -605,7 +605,7 @@
 .modal-error {
   font-family: var(--pp-mono);
   font-size: 11px;
-  color: #e05555;
+  color: var(--err-tx);
   margin: 10px 0 0 0;
 }
 
