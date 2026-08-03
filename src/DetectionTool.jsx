@@ -30,6 +30,7 @@ const EXCEL_COLUMNS = [
 ];
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
+redesign-themes
 // Model URLs and bearer tokens live server-side in the inferProxy Lambda and
 // AWS Secrets Manager — the frontend only knows a short model key ('wall' |
 // 'zone' | 'zoneseg') and posts to quantApi /infer.
@@ -37,6 +38,11 @@ const WALL_MODEL_DATA     = { conf: 0.5,  iou: 0.7, imgsz: 640 };
 const ZONE_MODEL_DATA     = { conf: 0.25, iou: 0.7, imgsz: 640 };
 // Instance segmentation model — zones only (returns polygons, not boxes)
 const ZONE_SEG_MODEL_DATA = { conf: 0.25, iou: 0.7, imgsz: 640 };
+
+const WALL_MODEL_URL = "";
+const WALL_MODEL_HEADERS = { Authorization: "" };
+const WALL_MODEL_DATA = { conf: 0.5, iou: 0.7, imgsz: 640 };
+main
 
 const IMAGE_SEARCH_URL   = ""; // set after ECS deployment — e.g. https://your-alb.amazonaws.com/search
 const IMAGE_SEARCH_TOKEN = ""; // API_TOKEN env var value set on the ECS task
