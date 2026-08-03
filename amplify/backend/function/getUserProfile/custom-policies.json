@@ -1,0 +1,23 @@
+[
+  {
+    "Action": [
+      "dynamodb:GetItem",
+      "dynamodb:Query"
+    ],
+    "Resource": [
+      "arn:aws:dynamodb:eu-west-3:851725386383:table/UserProfiles",
+      "arn:aws:dynamodb:eu-west-3:851725386383:table/OrgMemberships",
+      "arn:aws:dynamodb:eu-west-3:851725386383:table/ProjectGrants",
+      "arn:aws:dynamodb:eu-west-3:851725386383:table/ProjectGrants/index/managerId-index"
+    ]
+  },
+  {
+    "Action": [
+      "cognito-idp:ListUsers",
+      "cognito-idp:AdminListGroupsForUser"
+    ],
+    "Resource": [
+      "arn:aws:cognito-idp:eu-west-3:851725386383:userpool/eu-west-3_jpxbGzhTX"
+    ]
+  }
+]

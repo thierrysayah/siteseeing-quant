@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "paths": {
+    "/user/profile": {
+      "name": "/user/profile",
+      "lambdaFunction": "getUserProfile",
+      "permissions": {
+        "setting": "private",
+        "auth": [
+          "read"
+        ]
+      }
+    },
+    "/org/grant-access": {
+      "name": "/org/grant-access",
+      "lambdaFunction": "grantProjectAccess",
+      "permissions": {
+        "setting": "private",
+        "auth": [
+          "read",
+          "create",
+          "update",
+          "delete"
+        ]
+      }
+    },
+    "/infer": {
+      "name": "/infer",
+      "lambdaFunction": "inferProxy",
+      "permissions": {
+        "setting": "private",
+        "auth": [
+          "create"
+        ]
+      }
+    },
+    "/session/claim": {
+      "name": "/session/claim",
+      "lambdaFunction": "sessionGuard",
+      "permissions": {
+        "setting": "private",
+        "auth": [
+          "create"
+        ]
+      }
+    },
+    "/session/heartbeat": {
+      "name": "/session/heartbeat",
+      "lambdaFunction": "sessionGuard",
+      "permissions": {
+        "setting": "private",
+        "auth": [
+          "create"
+        ]
+      }
+    }
+  }
+}

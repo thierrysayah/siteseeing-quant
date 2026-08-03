@@ -1,0 +1,332 @@
+/*
+ * QUANT theme tokens.
+ *
+ * Two themes, switched via `data-theme` on <html> (see useEffect in DetectionTool).
+ * DARK is the "precision instrument" graphite palette — deliberately NEUTRAL
+ * (cool grey, not navy) so the redlined drawing is the only saturated thing on
+ * screen. BLUEPRINT is the light "blueprint bright" palette.
+ *
+ * NOTE: canvas (ctx), PDF (jsPDF), DXF and XLSX colors are NOT tokenized here —
+ * those contexts can't consume CSS variables. Only CSS chrome is themed.
+ * Annotation class colors (CLASS_COLORS) are data, not chrome, and stay literal.
+ */
+
+:root,
+[data-theme="dark"] {
+  /* ── surfaces (graphite, neutral) ─────────────────────────── */
+  --bg-app:      #0e1216;
+  --bg-app2:     #0b0e12;
+  --bg-bar:      #141a20;
+  --bg-canvas:   #0e1216;
+  --bg-panel:    #141a20;
+  --bg-modal:    #1b222a;
+  --bg-input:    #1b222a;
+  --bg-btn:      #232c36;
+  --bg-btn2:     #1e262e;
+  --bg-tab:      #1b222a;
+  --bg-badge:    #2a3540;
+  --bg-accent:   #232c36;
+  --bg-row:      #1b222a;
+  --bg-row-alt:  #171d24;
+  --bg-row-alt2: #141a20;
+  --bg-sel:      #2a3540;
+  --bg-active:   #2a3540;
+  --bg-th:       #232c36;
+  --bg-primary:  #ffb020;
+  --bg-thumb:    #141a20;
+  --bg-thumb-on: #232c36;
+  --bg-thumb-ph: #1b222a;
+  --bg-thumb-in: #1b222a;
+  --bg-infer2:   #232c36;
+  --bg-hover:    #2a3540;
+  --bg-modal2:   #141a20;
+  --bg-canvaswrap: #0e1216;
+
+  /* ── borders (steel hairlines) ────────────────────────────── */
+  --bd-bar:      #232c36;
+  --bd-btn:      #3c4a58;
+  --bd-btn2:     #2e3945;
+  --bd-input:    #2e3945;
+  --bd-accent:   #3c4a58;
+  --bd-panel:    #232c36;
+  --bd-section:  #1e262e;
+  --bd-drop:     #2e3945;
+  --bd-tab:      #2e3945;
+  --bd-divider:  #232c36;
+  --bd-focus:    #4a5c6e;
+  --bd-cell:     #232c36;
+  --bd-thumb:    #2e3945;
+  --bd-thumb-in: #2e3945;
+
+  /* ── text ─────────────────────────────────────────────────── */
+  --tx-body:        #e8edf2;
+  --tx-logo:        #e8edf2;
+  --tx-status:      #9aa7b4;
+  --tx-btn:         #c4cfda;
+  --tx-btn2:        #9aa7b4;
+  --tx-dim:         #9aa7b4;
+  --tx-drop:        #657585;
+  --tx-dropicon:    #3c4a58;
+  --tx-dropsub:     #4a5a6a;
+  --tx-label:       #9aa7b4;
+  --tx-accent:      #e8edf2;
+  --tx-summary:     #3fb57a;
+  --tx-title:       #e8edf2;
+  --tx-labelbright: #9aa7b4;
+  --tx-ratio:       #4fc3e8;
+  --tx-badge:       #4fc3e8;
+  --tx-muted:       #9aa7b4;
+  --tx-muted2:      #b4c0cc;
+  --tx-faint:       #657585;
+  --tx-faint2:      #657585;
+  --tx-faint3:      #657585;
+  --tx-strong:      #e8edf2;
+  --tx-conf:        #4a5a6a;
+  --tx-cell:        #c4cfda;
+  --tx-active:      #ffb020;
+  --tx-gold:        #ffb020;
+  --tx-empty:       #657585;
+  --tx-hint:        #4a5a6a;
+  --tx-crop:        #3fb57a;
+  --tx-cropwarn:    #ffb020;
+  --tx-on-primary:  #241800;
+  --tx-save-idle:   #9aa7b4;
+  --tx-thumb-err:   #657585;
+
+  /* ── secondary modal buttons ──────────────────────────────── */
+  --ok-btn-bg:      #16281f;
+  --ok-btn-bd:      #2c5540;
+  --ok-btn-tx:      #3fb57a;
+  --neu-btn-bg:     #1e262e;
+  --neu-btn-bd:     #2e3945;
+  --neu-btn-tx:     #9aa7b4;
+  --cancel-bg:      #2a1618;
+  --cancel-bd:      #5a2a2e;
+  --cancel-tx:      #e07a72;
+
+  /* ── semantic: success / share (green) ────────────────────── */
+  --ok-bg:       #121a15;
+  --ok-bg2:      #101812;
+  --ok-bg3:      #1c3527;
+  --ok-bg4:      #16281f;
+  --ok-bg5:      #131c17;
+  --ok-bg6:      #1a2c22;
+  --ok-bd:       #2c5540;
+  --ok-bd2:      #3d7a5a;
+  --ok-bd3:      #2c5540;
+  --ok-tx:       #3fb57a;
+  --ok-tx2:      #5d8a72;
+  --ok-tx3:      #7fc9a0;
+  --ok-tx4:      #a8dcc0;
+  --ok-save-bg:  #16281f;
+  --ok-save-bd:  #2c5540;
+  --ok-save-tx:  #3fb57a;
+
+  /* ── semantic: warning / read-only (amber) ────────────────── */
+  --warn-bg:     #241a08;
+  --warn-bg2:    #2a1f0c;
+  --warn-bd:     #5a4212;
+  --warn-bd2:    #6b4f16;
+  --warn-tx:     #ffb020;
+  --warn-tx2:    #b08a45;
+
+  /* ── semantic: danger (red) ───────────────────────────────── */
+  --err-bg:      #2a1618;
+  --err-bg2:     #3a1a1c;
+  --err-bg3:     #3a1622;
+  --err-bd:      #5a2a2e;
+  --err-bd2:     #5a2a2e;
+  --err-tx:      #e8635a;
+  --err-tx2:     #d4746c;
+  --err-tx3:     #8a6460;
+
+  /* ── semantic: import / misc ──────────────────────────────── */
+  --imp-bg:      #232c36;
+  --imp-bd:      #3c4a58;
+  --imp-tx:      #c4cfda;
+  --poly-ok-bg:  #1c3527;
+  --search-bg:   #123038;
+  --bg-mode-on:  #2a3540;
+  --dxf-bg:      #241c33;
+  --dxf-bd:      #453a5e;
+  --dxf-tx:      #b89ce0;
+
+  /* ── accent / structural ──────────────────────────────────── */
+  --amber:          #ffb020;
+  --amber-press:    #e89a0c;
+  --amber-soft:     rgba(255,176,32,0.09);
+  --amber-bd:       rgba(255,176,32,0.30);
+  --on-amber:       #241800;
+  --accent2:        #4fc3e8;
+  --cart-bg:        #1b222a;
+  --cart-bd:        #3c4a58;
+  --cart-cellbd:    #2e3945;
+  --cart-tx:        #e8edf2;
+  --cart-tx2:       #657585;
+  --sw-off-bg:      #232c36;
+  --sw-off-bd:      #2e3945;
+  --sw-knob-off:    #657585;
+  --sw-on-bg:       rgba(79,195,232,0.25);
+  --tick:           #2e3945;
+
+  /* ── typefaces ────────────────────────────────────────────── */
+  --font-ui:   'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', 'Fira Mono', ui-monospace, monospace;
+  --font-disp: 'Saira Semi Condensed', system-ui, sans-serif;
+}
+
+[data-theme="blueprint"] {
+  /* ── surfaces ─────────────────────────────────────────────── */
+  --bg-app:      #eef3f9;
+  --bg-app2:     #e7eef6;
+  --bg-bar:      #e3ebf4;
+  --bg-canvas:   #e4edf7;
+  --bg-panel:    #e3ebf4;
+  --bg-modal:    #ffffff;
+  --bg-input:    #ffffff;
+  --bg-btn:      #ffffff;
+  --bg-btn2:     #f1f5fa;
+  --bg-tab:      #eef3f9;
+  --bg-badge:    #d6e6fa;
+  --bg-accent:   #1e74d0;
+  --bg-row:      #f5f8fc;
+  --bg-row-alt:  #ffffff;
+  --bg-row-alt2: #f2f6fb;
+  --bg-sel:      #d6e6fa;
+  --bg-active:   #d0e3f8;
+  --bg-th:       #dce8f5;
+  --bg-primary:  #1e74d0;
+  --bg-thumb:    #f5f8fc;
+  --bg-thumb-on: #d6e6fa;
+  --bg-thumb-ph: #e7eef6;
+  --bg-thumb-in: #ffffff;
+  --bg-infer2:   #1a6aa8;
+  --bg-hover:    #c9dcf3;
+
+  /* ── borders ──────────────────────────────────────────────── */
+  --bd-bar:      #c9d6e6;
+  --bd-btn:      #b7c8db;
+  --bd-btn2:     #cbd8e6;
+  --bd-input:    #c4d2e2;
+  --bd-accent:   #1e74d0;
+  --bd-panel:    #c9d6e6;
+  --bd-section:  #d2deeb;
+  --bd-drop:     #b7c8db;
+  --bd-tab:      #c9d6e6;
+  --bd-divider:  #d2deeb;
+  --bd-focus:    #1e74d0;
+  --bd-cell:     #dce6f1;
+  --bd-thumb:    #c4d2e2;
+  --bd-thumb-in: #c4d2e2;
+
+  /* ── text ─────────────────────────────────────────────────── */
+  --tx-body:        #14283d;
+  --tx-logo:        #1e74d0;
+  --tx-status:      #516375;
+  --tx-btn:         #274058;
+  --tx-btn2:        #3a4b5e;
+  --tx-dim:         #6b7b8c;
+  --tx-drop:        #8496a8;
+  --tx-dropicon:    #aec0d4;
+  --tx-dropsub:     #a0b0c2;
+  --tx-label:       #516375;
+  --tx-accent:      #ffffff;
+  --tx-summary:     #1f7a50;
+  --tx-title:       #15324f;
+  --tx-labelbright: #445a70;
+  --tx-ratio:       #1f7a50;
+  --tx-badge:       #1e74d0;
+  --tx-muted:       #516375;
+  --tx-muted2:      #445a70;
+  --tx-faint:       #6b7b8c;
+  --tx-faint2:      #7d8b99;
+  --tx-faint3:      #8496a8;
+  --tx-strong:      #14283d;
+  --tx-conf:        #94a3b3;
+  --tx-cell:        #2d4358;
+  --tx-active:      #15324f;
+  --tx-gold:        #a86a10;
+  --tx-empty:       #8496a8;
+  --tx-hint:        #94a3b3;
+  --tx-crop:        #1f7a50;
+  --tx-cropwarn:    #c96a10;
+  --tx-on-primary:  #ffffff;
+  --tx-save-idle:   #1a5f9e;
+  --tx-thumb-err:   #8496a8;
+  --bg-modal2:      #ffffff;
+  --bg-canvaswrap:  #e4edf7;
+  --ok-btn-bg:      #e4f6ea;
+  --ok-btn-bd:      #8fd2ab;
+  --ok-btn-tx:      #16794a;
+  --neu-btn-bg:     #f1f5fa;
+  --neu-btn-bd:     #cbd8e6;
+  --neu-btn-tx:     #516375;
+  --cancel-bg:      #fbe0de;
+  --cancel-bd:      #e8b4ae;
+  --cancel-tx:      #b8362a;
+  --dxf-bg:         #f0e8fb;
+  --dxf-bd:         #c9adea;
+  --dxf-tx:         #5f3a99;
+  --bg-mode-on:     #1e74d0;
+
+  /* ── Pass 3: structural / accent ──────────────────────────── */
+  --amber:          #f2960c;
+  --amber-press:    #d98209;
+  --amber-soft:     rgba(242,150,12,0.13);
+  --amber-bd:       rgba(242,150,12,0.42);
+  --on-amber:       #2b1800;
+  --accent2:        #1e74d0;
+  --cart-bg:        #15324f;
+  --cart-bd:        #15324f;
+  --cart-cellbd:    rgba(255,255,255,0.14);
+  --cart-tx:        #eaf2fb;
+  --cart-tx2:       rgba(234,242,251,0.6);
+  --sw-off-bg:      #ffffff;
+  --sw-off-bd:      #b7c8db;
+  --sw-knob-off:    #8496a8;
+  --sw-on-bg:       rgba(30,116,208,0.22);
+  --tick:           #b7c8db;
+
+  /* ── semantic: success / share (green) ────────────────────── */
+  --ok-bg:       #eaf7ef;
+  --ok-bg2:      #f2fbf5;
+  --ok-bg3:      #d6f0e0;
+  --ok-bg4:      #e4f6ea;
+  --ok-bg5:      #eef9f2;
+  --ok-bg6:      #ddf2e5;
+  --ok-bd:       #a8dcbd;
+  --ok-bd2:      #6cbf90;
+  --ok-bd3:      #8fd2ab;
+  --ok-tx:       #1a7a4a;
+  --ok-tx2:      #4a8a68;
+  --ok-tx3:      #17693f;
+  --ok-tx4:      #1a5c3a;
+  --ok-save-bg:  #e4f6ea;
+  --ok-save-bd:  #8fd2ab;
+  --ok-save-tx:  #16794a;
+
+  /* ── semantic: warning / read-only (gold) ─────────────────── */
+  --warn-bg:     #fdf4e0;
+  --warn-bg2:    #fbf0d8;
+  --warn-bd:     #e5c98a;
+  --warn-bd2:    #dcbb72;
+  --warn-tx:     #8a6410;
+  --warn-tx2:    #a07c28;
+
+  /* ── semantic: danger (red) ───────────────────────────────── */
+  --err-bg:      #fdeceb;
+  --err-bg2:     #fbe0de;
+  --err-bg3:     #fbdde4;
+  --err-bd:      #eeb0aa;
+  --err-bd2:     #e8b4ae;
+  --err-tx:      #c0271a;
+  --err-tx2:     #b8362a;
+  --err-tx3:     #a4655e;
+
+  /* ── semantic: import (blue) / misc ───────────────────────── */
+  --imp-bg:      #e2eefb;
+  --imp-bd:      #a9cbec;
+  --imp-tx:      #1a5f9e;
+  --poly-ok-bg:  #1a7a4a;
+  --search-bg:   #d3ecec;
+}

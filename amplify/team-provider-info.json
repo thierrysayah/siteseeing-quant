@@ -9,7 +9,8 @@
       "UnauthRoleName": "amplify-estimationplatform-dev-20748-unauthRole",
       "StackName": "amplify-estimationplatform-dev-20748",
       "StackId": "arn:aws:cloudformation:eu-west-3:851725386383:stack/amplify-estimationplatform-dev-20748/bbfd4000-2633-11f1-ae76-06b1c15126d7",
-      "AmplifyAppId": "d28h0kazpkiv4s"
+      "AmplifyAppId": "d28h0kazpkiv4s",
+      "APIGatewayAuthURL": "https://s3.amazonaws.com/amplify-estimationplatform-dev-20748-deployment/amplify-cfn-templates/api/APIGatewayAuthStack.json"
     },
     "categories": {
       "hosting": {
@@ -20,6 +21,38 @@
       },
       "auth": {
         "estimationplatformece78c7f": {}
+      },
+      "storage": {
+        "estimationplatform54fe8981": {
+          "bucketName": "estimation-platform-user-data",
+          "region": "eu-west-3"
+        },
+        "usersessions": {}
+      },
+      "function": {
+        "assignDefaultGroup": {
+          "deploymentBucketName": "amplify-estimationplatform-dev-20748-deployment",
+          "s3Key": "amplify-builds/assignDefaultGroup-395736776d4d77626446-build.zip"
+        },
+        "getUserProfile": {
+          "deploymentBucketName": "amplify-estimationplatform-dev-20748-deployment",
+          "s3Key": "amplify-builds/getUserProfile-574c646b374963667148-build.zip"
+        },
+        "grantProjectAccess": {
+          "deploymentBucketName": "amplify-estimationplatform-dev-20748-deployment",
+          "s3Key": "amplify-builds/grantProjectAccess-6c4b2f41547555356863-build.zip"
+        },
+        "inferProxy": {
+          "deploymentBucketName": "amplify-estimationplatform-dev-20748-deployment",
+          "s3Key": "amplify-builds/inferProxy-73495a384f4b64636376-build.zip"
+        },
+        "sessionGuard": {
+          "deploymentBucketName": "amplify-estimationplatform-dev-20748-deployment",
+          "s3Key": "amplify-builds/sessionGuard-675246704c6a46674b36-build.zip"
+        }
+      },
+      "api": {
+        "quantApi": {}
       }
     }
   }

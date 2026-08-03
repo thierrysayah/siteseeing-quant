@@ -1,4 +1,44 @@
 {
+  "api": {
+    "quantApi": {
+      "dependsOn": [
+        {
+          "attributes": [
+            "Name",
+            "Arn"
+          ],
+          "category": "function",
+          "resourceName": "getUserProfile"
+        },
+        {
+          "attributes": [
+            "Name",
+            "Arn"
+          ],
+          "category": "function",
+          "resourceName": "grantProjectAccess"
+        },
+        {
+          "attributes": [
+            "Name",
+            "Arn"
+          ],
+          "category": "function",
+          "resourceName": "inferProxy"
+        },
+        {
+          "attributes": [
+            "Name",
+            "Arn"
+          ],
+          "category": "function",
+          "resourceName": "sessionGuard"
+        }
+      ],
+      "providerPlugin": "awscloudformation",
+      "service": "API Gateway"
+    }
+  },
   "auth": {
     "estimationplatformece78c7f": {
       "customAuth": false,
@@ -25,6 +65,46 @@
       "service": "Cognito"
     }
   },
+  "function": {
+    "assignDefaultGroup": {
+      "build": true,
+      "providerPlugin": "awscloudformation",
+      "service": "Lambda"
+    },
+    "getUserProfile": {
+      "build": true,
+      "dependsOn": [],
+      "providerPlugin": "awscloudformation",
+      "service": "Lambda"
+    },
+    "grantProjectAccess": {
+      "build": true,
+      "dependsOn": [],
+      "providerPlugin": "awscloudformation",
+      "service": "Lambda"
+    },
+    "inferProxy": {
+      "build": true,
+      "providerPlugin": "awscloudformation",
+      "service": "Lambda"
+    },
+    "sessionGuard": {
+      "build": true,
+      "dependsOn": [
+        {
+          "attributes": [
+            "Name",
+            "Arn",
+            "StreamArn"
+          ],
+          "category": "storage",
+          "resourceName": "usersessions"
+        }
+      ],
+      "providerPlugin": "awscloudformation",
+      "service": "Lambda"
+    }
+  },
   "hosting": {
     "amplifyhosting": {
       "providerPlugin": "awscloudformation",
@@ -33,6 +113,86 @@
     }
   },
   "parameters": {
+    "AMPLIFY_function_assignDefaultGroup_deploymentBucketName": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "assignDefaultGroup"
+        }
+      ]
+    },
+    "AMPLIFY_function_assignDefaultGroup_s3Key": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "assignDefaultGroup"
+        }
+      ]
+    },
+    "AMPLIFY_function_getUserProfile_deploymentBucketName": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "getUserProfile"
+        }
+      ]
+    },
+    "AMPLIFY_function_getUserProfile_s3Key": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "getUserProfile"
+        }
+      ]
+    },
+    "AMPLIFY_function_grantProjectAccess_deploymentBucketName": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "grantProjectAccess"
+        }
+      ]
+    },
+    "AMPLIFY_function_grantProjectAccess_s3Key": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "grantProjectAccess"
+        }
+      ]
+    },
+    "AMPLIFY_function_inferProxy_deploymentBucketName": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "inferProxy"
+        }
+      ]
+    },
+    "AMPLIFY_function_inferProxy_s3Key": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "inferProxy"
+        }
+      ]
+    },
+    "AMPLIFY_function_sessionGuard_deploymentBucketName": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "sessionGuard"
+        }
+      ]
+    },
+    "AMPLIFY_function_sessionGuard_s3Key": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "sessionGuard"
+        }
+      ]
+    },
     "AMPLIFY_hosting_amplifyhosting_appId": {
       "usedBy": [
         {
@@ -48,6 +208,34 @@
           "resourceName": "amplifyhosting"
         }
       ]
+    },
+    "AMPLIFY_storage_estimationplatform54fe8981_bucketName": {
+      "usedBy": [
+        {
+          "category": "storage",
+          "resourceName": "estimationplatform54fe8981"
+        }
+      ]
+    },
+    "AMPLIFY_storage_estimationplatform54fe8981_region": {
+      "usedBy": [
+        {
+          "category": "storage",
+          "resourceName": "estimationplatform54fe8981"
+        }
+      ]
+    }
+  },
+  "storage": {
+    "estimationplatform54fe8981": {
+      "dependsOn": [],
+      "providerPlugin": "awscloudformation",
+      "service": "S3",
+      "serviceType": "imported"
+    },
+    "usersessions": {
+      "providerPlugin": "awscloudformation",
+      "service": "DynamoDB"
     }
   }
 }
