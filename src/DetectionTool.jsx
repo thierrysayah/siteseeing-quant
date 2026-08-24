@@ -4917,6 +4917,30 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
             setAgentPreview(null);
             setStatus(`Agent added ${anns.length} detections to the project. Review and save.`);
           }}
+          // Adjust: promote the proposed detections into editable annotations now.
+          onAdjust={(anns) => {
+            if (anns && anns.length) {
+              pushHistory(annotations);
+              setAnnotations(prev => {
+                let nextId = nextNumId(prev);
+                const merged = anns.map(a => ({
+                  ...a, id: Math.random().toString(36).slice(2),
+                  numId: nextId++, sourceModel: a.sourceModel || "agent",
+                }));
+                return [...prev, ...merged];
+              });
+            }
+            setAgentPreview(null);
+            setStatus("Adjust the detections with the editor tools, then Continue in the agent panel.");
+          }}
+          // Current full annotation set, serialised for save-back (Option A:
+          // everything on the page is the takeoff).
+          getAgentDetections={() => annotations.map(a => ({
+            shapeType: a.shapeType, clsName: a.clsName,
+            confidence: a.confidence ?? null, zoneTag: a.zoneTag ?? null,
+            x1: a.x1 ?? null, y1: a.y1 ?? null, x2: a.x2 ?? null, y2: a.y2 ?? null,
+            points: a.points || null, sourceModel: a.sourceModel || "manual",
+          }))}
           onClose={() => { setShowAgent(false); setAgentPreview(null); }}
         />
       )}

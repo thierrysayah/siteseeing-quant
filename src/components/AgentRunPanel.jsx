@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  startRun, getRun, getDetections, approveStage, rejectStage, cancelRun, TERMINAL,
+  startRun, getRun, getDetections, putDetections,
+  approveStage, rejectStage, cancelRun, TERMINAL,
 } from '../services/agentService';
 
 /**
@@ -17,20 +18,37 @@ import {
  *   onClose()               — close the panel (also clears any preview)
  *   onPreview(annotations)  — show/replace the proposed overlay on the canvas
  *   onApply(annotations)    — merge detections into the editor (on finish)
+ *   onAdjust(annotations)   — promote detections into editable annotations now
+ *   getAgentDetections()    — current full annotation set (for save-back)
  */
 const POLL_MS = 1500;
 
-export default function AgentRunPanel({ projectId, pageId, onClose, onPreview, onApply }) {
+export default function AgentRunPanel({
+  projectId, pageId, onClose, onPreview, onApply, onAdjust, getAgentDetections,
+}) {
   const [run, setRun] = useState(null);
   const [error, setError] = useState(null);
-  const [busy, setBusy] = useState(false);       // an action is in flight
+  const [busy, setBusy] = useState(false);        // an action is in flight
+  const [adjusting, setAdjusting] = useState(false); // editing this stage's output
+  const [collapsed, setCollapsed] = useState(false); // minimized to free the screen
+  // Draggable position — starts centered on screen.
+  const [pos, setPos] = useState(() => {
+    if (typeof window === 'undefined') return { x: 400, y: 120 };
+    return {
+      x: Math.max(12, (window.innerWidth - 380) / 2),
+      y: Math.max(12, Math.min(window.innerHeight * 0.5 - 220, window.innerHeight - 260)),
+    };
+  });
   const [detCount, setDetCount] = useState(null); // # of proposed detections loaded
   const pollRef = useRef(null);
-  const detRef = useRef(null);       // cached detections (fetched once)
-  const appliedRef = useRef(false);  // guard so we merge only once
+  const detRef = useRef(null);       // latest fetched detections
+  const detKeyRef = useRef(null);    // which detectionsKey we last fetched
+  const appliedRef = useRef(false);  // detections now live in the editor (adjust or finish)
   // Callbacks come from the parent with fresh identity each render; hold them in
   // refs so our effects don't re-fire (and wipe the overlay) on every render.
   const onPreviewRef = useRef(onPreview); onPreviewRef.current = onPreview;
+  const onAdjustRef = useRef(onAdjust); onAdjustRef.current = onAdjust;
+  const getDetRef = useRef(getAgentDetections); getDetRef.current = getAgentDetections;
   const onApplyRef = useRef(onApply); onApplyRef.current = onApply;
 
   const stopPolling = () => {
@@ -65,17 +83,22 @@ export default function AgentRunPanel({ projectId, pageId, onClose, onPreview, o
     return undefined;
   }, [run?.status, run?.runId]);
 
-  // Once the run has detections, fetch them once and show as a canvas overlay.
+  // Fetch detections whenever the run's detectionsKey changes (detect writes it,
+  // then cleanup repoints it to the cleaned set) and refresh the canvas overlay.
   useEffect(() => {
-    if (!run?.detectionsKey || detRef.current) return;
+    if (!run?.detectionsKey || run.detectionsKey === detKeyRef.current) return;
+    const key = run.detectionsKey;
     let cancelled = false;
     (async () => {
       try {
         const { annotations } = await getDetections(run.runId);
         if (cancelled) return;
+        detKeyRef.current = key;
         detRef.current = annotations || [];
         setDetCount(detRef.current.length);
-        onPreviewRef.current?.(detRef.current);
+        // If the user already adjusted (detections live in the editor), don't
+        // re-show the overlay — that would double up with the real annotations.
+        if (!appliedRef.current) onPreviewRef.current?.(detRef.current);
       } catch { /* leave it; user still sees the summary text */ }
     })();
     return () => { cancelled = true; };
@@ -109,6 +132,52 @@ export default function AgentRunPanel({ projectId, pageId, onClose, onPreview, o
     }
   }, [run, busy]);
 
+  // Adjust: promote the detections into editable annotations and enter edit mode.
+  const startAdjust = useCallback(() => {
+    if (!run || busy) return;
+    onAdjustRef.current?.(detRef.current || []);
+    appliedRef.current = true;      // they're in the editor now; don't re-merge on finish
+    setAdjusting(true);
+  }, [run, busy]);
+
+  // Save & continue: push the edited annotations back, then approve → next stage.
+  const saveAndContinue = useCallback(async () => {
+    if (!run || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const anns = getDetRef.current ? getDetRef.current() : [];
+      const res = await putDetections(run.runId, anns);
+      if (res?.detectionsKey) detKeyRef.current = res.detectionsKey; // don't re-fetch our own edit
+      const r = await approveStage(run.runId, run.seq);
+      setRun(r);
+      setAdjusting(false);
+    } catch (e) {
+      setError(friendly(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [run, busy]);
+
+  // Drag the panel by its header. Clamped so it can't be lost off-screen.
+  const startDrag = useCallback((e) => {
+    e.preventDefault();
+    const startX = e.clientX, startY = e.clientY;
+    const orig = { ...pos };
+    const width = collapsed ? 260 : 380;
+    const move = (ev) => {
+      const nx = Math.max(-width + 80, Math.min(window.innerWidth - 80, orig.x + ev.clientX - startX));
+      const ny = Math.max(0, Math.min(window.innerHeight - 44, orig.y + ev.clientY - startY));
+      setPos({ x: nx, y: ny });
+    };
+    const up = () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  }, [pos, collapsed]);
+
   const isTerminal = run && TERMINAL.has(run.status);
   const canAct = run && run.status === 'awaiting_approval' && !busy;
 
@@ -116,17 +185,37 @@ export default function AgentRunPanel({ projectId, pageId, onClose, onPreview, o
     // Backdrop does NOT close on click — an accidental outside click must not
     // abandon a run mid-flow. Close only via the ✕ button.
     <div style={styles.overlay}>
-      <div style={styles.modal}>
-        {/* header */}
-        <div style={styles.header}>
-          <span style={styles.eyebrow}><span style={styles.tick} /> AGENT · FULL TAKEOFF</span>
-          <button onClick={onClose} style={styles.close} title="Close">✕</button>
+      <div style={{ ...styles.modal, width: collapsed ? 260 : 380, left: pos.x, top: pos.y }}>
+        {/* header — drag handle */}
+        <div style={styles.header} onMouseDown={startDrag}>
+          <span style={styles.eyebrow}>
+            <span style={styles.tick} /> {collapsed && run ? `${run.stageLabel}` : 'AGENT · FULL TAKEOFF'}
+          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }} onMouseDown={(e) => e.stopPropagation()}>
+            {run && collapsed && <StatusPill status={run.status} />}
+            <button onClick={() => setCollapsed(c => !c)} style={styles.close} title={collapsed ? 'Expand' : 'Collapse'}>
+              {collapsed ? '▢' : '—'}
+            </button>
+            <button onClick={onClose} style={styles.close} title="Close">✕</button>
+          </div>
         </div>
 
-        {!run && !error && <div style={styles.dim}>Starting run…</div>}
-        {error && <div style={styles.error}>⚠ {error}</div>}
+        {/* collapsed: one-line bar + the primary action, so editing has the whole
+            screen but you can still advance without expanding */}
+        {run && collapsed && canAct && (
+          <div style={{ ...styles.actions, marginTop: 10 }}>
+            {adjusting
+              ? <button onClick={saveAndContinue} style={styles.approve} disabled={busy}>{busy ? 'Saving…' : 'Save & continue →'}</button>
+              : <button onClick={() => act(approveStage)} style={styles.approve} disabled={busy}>
+                  {run.stageIndex >= run.totalStages - 1 ? 'Approve & finish' : 'Approve →'}
+                </button>}
+          </div>
+        )}
 
-        {run && (
+        {!run && !error && !collapsed && <div style={styles.dim}>Starting run…</div>}
+        {error && !collapsed && <div style={styles.error}>⚠ {error}</div>}
+
+        {run && !collapsed && (
           <>
             {/* progress */}
             <div style={styles.progressRow}>
@@ -152,23 +241,40 @@ export default function AgentRunPanel({ projectId, pageId, onClose, onPreview, o
                 <span style={styles.meta}>evidence: {run.evidence}</span>
                 <span style={styles.conf}>conf {Number(run.confidence).toFixed(2)}</span>
               </div>
-              {detCount != null && (
+              {detCount != null && !adjusting && run.stageKey === 'detect' && (
                 <div style={styles.previewNote}>
-                  ◈ {detCount} detections shown on the canvas
-                  {run.status === 'done' ? ' — added to your project' : ' (proposed — approve to keep)'}
+                  ◈ {detCount} shown on the canvas — proposed. Approve to keep, or Adjust to edit.
                 </div>
               )}
             </div>
 
-            {/* actions */}
-            {canAct && (
+            {/* actions — normal review */}
+            {canAct && !adjusting && (
               <div style={styles.actions}>
-                <button onClick={() => act(rejectStage)} style={styles.reject} disabled={busy}>Reject</button>
+                {run.stageKey === 'detect' && detRef.current
+                  ? <button onClick={startAdjust} style={styles.reject} disabled={busy}>Adjust</button>
+                  : <button onClick={() => act(rejectStage)} style={styles.reject} disabled={busy}>Reject</button>}
                 <button onClick={() => act(cancelRun)} style={styles.cancel} disabled={busy}>Cancel run</button>
                 <button onClick={() => act(approveStage)} style={styles.approve} disabled={busy}>
                   {run.stageIndex >= run.totalStages - 1 ? 'Approve & finish' : 'Approve →'}
                 </button>
               </div>
+            )}
+
+            {/* actions — adjusting: detections are live in the editor */}
+            {canAct && adjusting && (
+              <>
+                <div style={styles.adjustNote}>
+                  ✎ Editing on the canvas — add / move / delete / reclass with the normal
+                  tools. Your whole page becomes the takeoff.
+                </div>
+                <div style={styles.actions}>
+                  <button onClick={() => act(cancelRun)} style={styles.cancel} disabled={busy}>Cancel run</button>
+                  <button onClick={saveAndContinue} style={styles.approve} disabled={busy}>
+                    {busy ? 'Saving…' : 'Save & continue →'}
+                  </button>
+                </div>
+              </>
             )}
 
             {run.status === 'running' && <div style={styles.dim}>Working…</div>}
@@ -212,12 +318,12 @@ function friendly(e) {
 }
 
 const styles = {
-  // Light scrim + panel pinned to the top-right so the drawing (and the proposed
-  // overlay) stays visible while reviewing. Backdrop doesn't capture clicks
-  // meant for closing — only the ✕ closes.
-  overlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.12)', zIndex: 9500, display: 'flex', alignItems: 'flex-start', justifyContent: 'flex-end', padding: '64px 18px 0 0', pointerEvents: 'none' },
-  modal: { width: 380, maxWidth: '92vw', background: 'var(--bg-modal)', border: '1px solid var(--bd-panel)', borderRadius: 10, padding: 18, boxShadow: '0 12px 40px rgba(0,0,0,0.5)', fontFamily: 'var(--font-ui)', pointerEvents: 'auto' },
-  header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
+  // Light non-blocking scrim + panel pinned to the top-LEFT (over the canvas) so
+  // the right inspector — CLASSES, EDIT SELECTED (reclass), layers, tags — stays
+  // fully usable while adjusting. Backdrop never captures clicks; only ✕ closes.
+  overlay: { position: 'fixed', inset: 0, background: 'transparent', zIndex: 9500, display: 'flex', alignItems: 'flex-start', justifyContent: 'flex-start', padding: '64px 0 0 18px', pointerEvents: 'none' },
+  modal: { position: 'fixed', width: 380, maxWidth: '92vw', maxHeight: '82vh', overflowY: 'auto', background: 'var(--bg-modal)', border: '1px solid var(--bd-panel)', borderRadius: 10, padding: 18, boxShadow: '0 12px 40px rgba(0,0,0,0.5)', fontFamily: 'var(--font-ui)', pointerEvents: 'auto' },
+  header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, cursor: 'grab', userSelect: 'none' },
   eyebrow: { fontFamily: 'var(--font-disp)', fontWeight: 600, fontSize: 11, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--tx-status)', display: 'flex', alignItems: 'center', gap: 8 },
   tick: { width: 12, height: 2, background: 'var(--amber)', display: 'inline-block' },
   close: { background: 'transparent', border: 'none', color: 'var(--tx-faint)', cursor: 'pointer', fontSize: 14 },
@@ -233,6 +339,7 @@ const styles = {
   meta: { fontFamily: 'var(--font-mono)', fontSize: 10.5, color: 'var(--tx-faint)', lineHeight: 1.4 },
   conf: { fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--accent2)', whiteSpace: 'nowrap' },
   previewNote: { marginTop: 9, paddingTop: 9, borderTop: '1px solid var(--bd-section)', fontSize: 12, color: 'var(--accent2)' },
+  adjustNote: { marginBottom: 10, padding: 10, background: 'var(--amber-soft)', border: '1px solid var(--amber-bd)', borderRadius: 6, fontSize: 12, color: 'var(--tx-body)', lineHeight: 1.5 },
   actions: { display: 'flex', gap: 8, alignItems: 'center' },
   approve: { marginLeft: 'auto', background: 'var(--amber)', color: 'var(--on-amber)', border: '1px solid var(--amber)', borderRadius: 6, padding: '8px 14px', fontWeight: 600, cursor: 'pointer', fontFamily: 'var(--font-ui)' },
   reject: { background: 'transparent', color: 'var(--err-tx)', border: '1px solid var(--err-bd)', borderRadius: 6, padding: '8px 12px', cursor: 'pointer', fontFamily: 'var(--font-ui)' },

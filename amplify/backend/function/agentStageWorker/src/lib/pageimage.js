@@ -73,6 +73,43 @@ async function fetchPagePng(run) {
   throw new Error(`page image not found for project ${projectId}`);
 }
 
+/** Read the project's px→m scale from settings.json, or null if unset. */
+async function readProjectScale(run) {
+  const sub = run.userId;
+  const projectId = run.projectId;
+  const orgId = await resolveOrgId(sub);
+  for (const prefix of candidatePrefixes(sub, orgId, projectId)) {
+    try {
+      const obj = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: `${prefix}settings.json` }));
+      const data = JSON.parse(await obj.Body.transformToString());
+      const r = data?.scale?.pixelToMeter;
+      return (typeof r === 'number' && r > 0) ? r : null;
+    } catch { /* try next prefix */ }
+  }
+  return null;
+}
+
+/** Read the project's auto-simplify distance (px) from settings.json.
+ *  Matches the client's default of 20 when unset. */
+async function readAutoSimplifyDist(run) {
+  const orgId = await resolveOrgId(run.userId);
+  for (const prefix of candidatePrefixes(run.userId, orgId, run.projectId)) {
+    try {
+      const obj = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: `${prefix}settings.json` }));
+      const data = JSON.parse(await obj.Body.transformToString());
+      const v = parseInt(data?.settings?.autoSimplifyDist, 10);
+      return isNaN(v) ? 20 : v;   // unset → client default; '0' → disabled
+    } catch { /* try next prefix */ }
+  }
+  return 20;
+}
+
+/** Load a JSON artifact previously written under agent-runs/{runId}/…. */
+async function getJsonArtifact(key) {
+  const obj = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }));
+  return JSON.parse(await obj.Body.transformToString());
+}
+
 /** Persist a JSON artifact under agent-runs/{runId}/… and return its key. */
 async function putJsonArtifact(runId, name, data) {
   const key = `agent-runs/${runId}/${name}`;
@@ -83,4 +120,4 @@ async function putJsonArtifact(runId, name, data) {
   return key;
 }
 
-module.exports = { fetchPagePng, putJsonArtifact };
+module.exports = { fetchPagePng, putJsonArtifact, getJsonArtifact, readProjectScale, readAutoSimplifyDist };

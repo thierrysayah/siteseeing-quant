@@ -31,7 +31,7 @@ const {
   DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand,
 } = require('@aws-sdk/lib-dynamodb');
 const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');
-const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, GetObjectCommand, PutObjectCommand } = require('@aws-sdk/client-s3');
 const { randomUUID } = require('crypto');
 
 const ddb = DynamoDBDocumentClient.from(
@@ -60,8 +60,7 @@ async function invokeWorker(runId, stageIndex, expectedSeq) {
 const STAGES = [
   { key: 'understand_sheet', label: 'Understand sheet' },
   { key: 'calibrate_scale',  label: 'Calibrate scale' },
-  { key: 'detect',           label: 'Detect' },
-  { key: 'cleanup',          label: 'Clean up' },
+  { key: 'detect',           label: 'Detect & clean' },
   { key: 'classify_tag',     label: 'Classify & tag' },
   { key: 'quantify',         label: 'Quantify' },
   { key: 'qa',               label: 'QA pass' },
@@ -96,6 +95,7 @@ exports.handler = async (event) => {
 
       if (method === 'GET' && !action) return getRun(userId, runId);
       if (method === 'GET' && action === 'detections') return getDetections(userId, runId);
+      if (method === 'PUT' && action === 'detections') return putDetections(userId, runId, body);
       if (method === 'POST' && action === 'approve') return advanceRun(userId, runId, body, 'approve');
       if (method === 'POST' && action === 'reject')  return advanceRun(userId, runId, body, 'reject');
       if (method === 'POST' && action === 'cancel')  return advanceRun(userId, runId, body, 'cancel');
@@ -171,6 +171,35 @@ async function getDetections(userId, runId) {
   } catch (err) {
     console.error('[getDetections]', err);
     return resp(500, { error: 'could not read detections' });
+  }
+}
+
+// Save the user's edited detection set (Adjust). Writes a new artifact and
+// repoints detectionsKey so downstream stages (quantify, report) use the edits.
+async function putDetections(userId, runId, body) {
+  const item = await loadOwned(userId, runId);
+  if (!item) return resp(404, { error: 'run not found' });
+  if (item === 'forbidden') return resp(403, { error: 'not your run' });
+  const anns = body && Array.isArray(body.annotations) ? body.annotations : null;
+  if (!anns) return resp(400, { error: 'annotations array required' });
+  if (anns.length > 20000) return resp(413, { error: 'too many annotations' });
+
+  const key = `agent-runs/${runId}/detections-adjusted.json`;
+  try {
+    await s3.send(new PutObjectCommand({
+      Bucket: PROJECT_BUCKET, Key: key,
+      Body: JSON.stringify({ annotations: anns, adjustedAt: new Date().toISOString() }),
+      ContentType: 'application/json',
+    }));
+    await ddb.send(new UpdateCommand({
+      TableName: TABLE, Key: { runId },
+      UpdateExpression: 'SET detectionsKey = :k, updatedAt = :now',
+      ExpressionAttributeValues: { ':k': key, ':now': new Date().toISOString() },
+    }));
+    return resp(200, { ok: true, count: anns.length, detectionsKey: key });
+  } catch (err) {
+    console.error('[putDetections]', err);
+    return resp(500, { error: 'could not save detections' });
   }
 }
 

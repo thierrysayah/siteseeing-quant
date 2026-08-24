@@ -45,16 +45,17 @@ thin wrapper) or **[VLM]/[LLM]** (needs a model). Every stage ends in a
 |---|-------|------|--------------|
 | 1 | Understand sheet | **[VLM]** | Classify sheet type (electrical/plumbing/structural), read the title block (project, drawing no., revision). Routes which detection models to run. |
 | 2 | Calibrate scale | **[VLM]** | Read the scale bar / "1:100" note → derive px→m. **Hard-stops for human input if unreadable** (§6). |
-| 3 | Detect | **[tool]** | Run the existing detection models (`/infer`: wall / zone / zoneseg) per sheet type. |
-| 4 | Clean up | **[tool]** | **Non-destructive geometric hygiene only.** Dedupe tile-seam double-detections (very high IoU ≈ same object) and **flag** (never delete) low-confidence detections. **Does NOT auto-merge distinct zones** — that stays user-initiated (Combine button / later opt-in per-pair suggestion). Operates only on *this run's fresh detections*, never the user's existing annotations; presented as a reviewable diff, applied as one undo step on approval. |
-| 5 | Classify & tag | **[VLM]** | Map detections to classes/zone tags using the drawing legend + schedules. |
-| 6 | Quantify | **[tool]** | Compute counts, lengths, areas, perimeters in real units (existing logic). |
-| 7 | QA pass | **[VLM/LLM]** | Second-pass review: flag misses/hallucinations, overlapping/double-counted zones, obvious gaps ("outlets present, no distribution board"). Advisory — surfaces issues, doesn't silently fix. |
-| 8 | **Price** *(optional)* | **[tool]** | Multiply quantities × rate card → costed estimate. **Enterprise-only, and only if the rate library is populated AND the user opts in.** Otherwise the pipeline ends at Stage 7/9 with quantities only. |
-| 9 | Report | **[LLM]** | Draft the takeoff/estimate narrative: summary, inclusions, exclusions, assumptions. Pulls Stage 8 pricing if present, else quantities only. |
+| 1 | Understand sheet | **[VLM]** | Classify sheet type (electrical/plumbing/structural), read the title block (project, drawing no., revision). Routes which detection models to run. |
+| 2 | Calibrate scale | **[VLM]** | Read the scale bar / "1:100" note → derive px→m. **Hard-stops for human input if unreadable** (§6). |
+| 3 | **Detect & clean** | **[tool]** | Run detection (`/infer`: wall / zone / zoneseg), then immediately **trim zone overhangs** (the app's algorithm): remove the part of a zone poking into a neighbour so areas aren't double-counted, delete duplicate zones, **leave ambiguous pairs alone** (offender chosen from vertex-containment + compactness; never guessed), and **flag** (keep) low-confidence items. The user reviews/edits this cleaned set (Adjust). One step — detect and cleanup were merged. |
+| 4 | Classify & tag | **[VLM]** | Map detections to classes/zone tags using the drawing legend + schedules. |
+| 5 | Quantify | **[tool]** | Compute counts, lengths, areas, perimeters — real units from the project scale, else pixel-based. |
+| 6 | QA pass | **[VLM/LLM]** | Second-pass review: flag misses/hallucinations, overlapping/double-counted zones, obvious gaps. Advisory — surfaces issues, doesn't silently fix. **Must read the detections JSON as a required input** (the full annotation set from Detect & clean), so it can adjudicate the genuinely *ambiguous* overlap pairs the deterministic trim leaves alone, and cross-check against the drawing. |
+| 7 | **Price** *(optional)* | **[tool]** | Multiply quantities × rate card → costed estimate. **Enterprise-only, and only if the rate library is populated AND the user opts in.** Otherwise ends at quantities only. |
+| 8 | Report | **[LLM]** | Draft the takeoff/estimate narrative: summary, inclusions, exclusions, assumptions. Pulls Stage 7 pricing if present, else quantities only. |
 
-**Intelligence is concentrated in stages 1, 2, 5, 7, 9.** Stages 3, 4, 6, 8 are
-existing deterministic tools. This keeps v1 scoped.
+**8 stages** (detect+clean merged). Intelligence is concentrated in stages
+1, 2, 4, 6, 8; stages 3, 5, 7 are deterministic tools.
 
 ---
 
@@ -205,7 +206,7 @@ alongside the Amazon Payment Services integration if abuse proves material.
 | Rate library | Not a v1 blocker; quantities is the universal output |
 | Rejection loop (v1) | Hand-edit then resume; agent-resume-from-feedback deferred |
 | Checkpoint = canvas review | Each stage's output renders on the canvas as a **proposed overlay** (non-destructive); merged into the project only on finish |
-| "Adjust" replaces "Reject" | The action button is **Adjust**, opening a **per-stage adjust window** to tweak that stage's output before approving (planned; needs canvas preview first) |
+| "Adjust" replaces "Reject" | The action button is **Adjust**, opening a **per-stage editable window** for that stage's output before approving. Every stage surfaces what it produced in an editable form — e.g. **scale** shown in an editable field, **detected objects** editable on the canvas, **quantities** editable in a table — so nothing reaches the report stage unreviewed. (planned; canvas preview ✅ is the first piece) |
 | Scale failure | Mandatory human gate (hard-stop, never guess) |
 | Billable unit | Per sheet/page processed |
 | Quotas | Per-tier |
@@ -215,6 +216,8 @@ alongside the Amazon Payment Services integration if abuse proves material.
 | Trial abuse gate | **No card.** Verified email (Cognito) + 1 grant/account + 1 concurrent run + per-upload cap |
 | Billing provider | **Amazon Payment Services** (added later; not Stripe) |
 | Metering timing | Gate moves to **P1** (first real cost), not P4 |
+| Cleaning order | **Simplify (RDP) → NMS → trim overhangs, iterated to convergence.** Simplifying first disambiguates offender-detection. A single trim pass misses cascading overlaps (a pair's resolution can depend on a neighbour only clipped at pass end) — so trim runs **iteratively (≤6 passes) until no change**. This is why manual "Run trim" pressed twice fixed cases the agent's single pass missed (e.g. #5→#14). Deterministic, **no LLM**. |
+| Ambiguous pairs | The deterministic trim leaves genuinely ambiguous overlap pairs alone (never guesses). Those are adjudicated by the **QA stage (LLM)**, which **must read the detections JSON** as a required input. |
 | Cost model | **Pay-per-use, zero idle.** Bedrock **on-demand only** (no Provisioned Throughput), Lambda/DynamoDB on-demand (no provisioned concurrency/capacity), detection billed per call. Do **not** enable any hourly/provisioned option. Est. AI ~$0.05–0.20/sheet (mixed models). |
 
 ---

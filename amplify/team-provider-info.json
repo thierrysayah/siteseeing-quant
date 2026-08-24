@@ -53,11 +53,11 @@
         },
         "agentOrchestrator": {
           "deploymentBucketName": "amplify-estimationplatform-dev-20748-deployment",
-          "s3Key": "amplify-builds/agentOrchestrator-784e68424a617a716237-build.zip"
+          "s3Key": "amplify-builds/agentOrchestrator-52774b436c68676f4576-build.zip"
         },
         "agentStageWorker": {
           "deploymentBucketName": "amplify-estimationplatform-dev-20748-deployment",
-          "s3Key": "amplify-builds/agentStageWorker-7234776673664e635442-build.zip"
+          "s3Key": "amplify-builds/agentStageWorker-422f7a2f4d414f397258-build.zip"
         }
       },
       "api": {

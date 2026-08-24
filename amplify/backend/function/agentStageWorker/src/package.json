@@ -5,12 +5,13 @@
   "main": "index.js",
   "license": "Apache-2.0",
   "dependencies": {
+    "@aws-sdk/client-cognito-identity-provider": "^3.600.0",
     "@aws-sdk/client-dynamodb": "^3.600.0",
-    "@aws-sdk/lib-dynamodb": "^3.600.0",
     "@aws-sdk/client-s3": "^3.600.0",
     "@aws-sdk/client-secrets-manager": "^3.600.0",
-    "@aws-sdk/client-cognito-identity-provider": "^3.600.0",
-    "jimp": "^0.22.12"
+    "@aws-sdk/lib-dynamodb": "^3.600.0",
+    "jimp": "^0.22.12",
+    "polygon-clipping": "^0.15.7"
   },
   "devDependencies": {
     "@types/aws-lambda": "^8.10.92"

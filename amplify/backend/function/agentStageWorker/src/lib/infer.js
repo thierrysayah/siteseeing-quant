@@ -58,6 +58,34 @@ async function callModel(model, jpegBuffer) {
   return r.json();
 }
 
+// ── RDP polygon simplification (ported) — matches manual "Run Analysis" ───────
+function rdpSimplify(points, epsilon) {
+  if (points.length <= 2) return points;
+  let maxDist = 0, maxIdx = 0;
+  const [x1, y1] = points[0];
+  const [xn, yn] = points[points.length - 1];
+  for (let i = 1; i < points.length - 1; i++) {
+    const [px, py] = points[i];
+    const num = Math.abs((yn - y1) * px - (xn - x1) * py + xn * y1 - yn * x1);
+    const den = Math.hypot(yn - y1, xn - x1);
+    const dist = den < 1e-10 ? Math.hypot(px - x1, py - y1) : num / den;
+    if (dist > maxDist) { maxDist = dist; maxIdx = i; }
+  }
+  if (maxDist > epsilon) {
+    const left = rdpSimplify(points.slice(0, maxIdx + 1), epsilon);
+    const right = rdpSimplify(points.slice(maxIdx), epsilon);
+    return [...left.slice(0, -1), ...right];
+  }
+  return [points[0], points[points.length - 1]];
+}
+function rdpSimplifyPolygon(points, epsilon) {
+  if (points.length <= 3) return points;
+  const open = [...points, points[0]];
+  const simplified = rdpSimplify(open, epsilon);
+  const result = simplified.slice(0, -1);
+  return result.length >= 3 ? result : points;
+}
+
 // ── response parsing (ported) ────────────────────────────────────────────────
 function rid() { return Math.random().toString(36).slice(2); }
 
@@ -80,7 +108,7 @@ function parseBoxes(json, sourceModel) {
   return out;
 }
 
-function parsePolys(json, sourceModel) {
+function parsePolys(json, sourceModel, autoEps = 0) {
   const out = [];
   if (!json || !json.images) return out;
   for (const img of json.images) {
@@ -96,6 +124,7 @@ function parsePolys(json, sourceModel) {
         }
       }
       if (points && points.length >= 3) {
+        if (autoEps > 0) points = rdpSimplifyPolygon(points, autoEps);
         out.push({
           id: rid(), shapeType: 'polygon', clsName: cls,
           confidence: item.confidence ?? null, sourceModel, zoneTag: null,
@@ -150,7 +179,7 @@ function offset(a, tx, ty) {
 }
 
 // ── main: tile the page raster and detect ────────────────────────────────────
-async function detectPage(pngBuffer) {
+async function detectPage(pngBuffer, autoEps = 0) {
   const img = await Jimp.read(pngBuffer);
   const W = img.bitmap.width, H = img.bitmap.height;
   const stride = TILE_SIZE - TILE_OVERLAP;
@@ -173,7 +202,7 @@ async function detectPage(pngBuffer) {
       const tileAnns = [
         ...parseBoxes(wallRes, 'wall_model'),
         ...parseBoxes(zoneRes, 'zone_door_window_model').filter(a => a.clsName === 'door' || a.clsName === 'window'),
-        ...parsePolys(segRes, 'zone_seg_model'),
+        ...parsePolys(segRes, 'zone_seg_model', autoEps),
       ];
       for (const a of tileAnns) all.push(offset(a, x, y));
     }

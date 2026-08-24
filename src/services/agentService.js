@@ -1,4 +1,4 @@
-import { get, post } from 'aws-amplify/api';
+import { get, post, put } from 'aws-amplify/api';
 
 /**
  * Client for the Agentic Takeoff orchestrator (see AGENTIC-TAKEOFF-SPEC.md).
@@ -31,6 +31,15 @@ export function getRun(runId) {
 /** Fetch the detections a run produced → { annotations, meta }. */
 export function getDetections(runId) {
   return readJson(get({ apiName: 'quantApi', path: `/agent/runs/${runId}/detections` }));
+}
+
+/** Save the user's edited detections (Adjust) → { ok, count }. */
+export function putDetections(runId, annotations) {
+  return readJson(put({
+    apiName: 'quantApi',
+    path: `/agent/runs/${runId}/detections`,
+    options: { body: { annotations } },
+  }));
 }
 
 /** Approve the current stage → advance. `seq` is the last seq the client saw. */
