@@ -27,7 +27,8 @@
           "bucketName": "estimation-platform-user-data",
           "region": "eu-west-3"
         },
-        "usersessions": {}
+        "usersessions": {},
+        "takeoffruns": {}
       },
       "function": {
         "assignDefaultGroup": {
@@ -49,6 +50,14 @@
         "sessionGuard": {
           "deploymentBucketName": "amplify-estimationplatform-dev-20748-deployment",
           "s3Key": "amplify-builds/sessionGuard-675246704c6a46674b36-build.zip"
+        },
+        "agentOrchestrator": {
+          "deploymentBucketName": "amplify-estimationplatform-dev-20748-deployment",
+          "s3Key": "amplify-builds/agentOrchestrator-784e68424a617a716237-build.zip"
+        },
+        "agentStageWorker": {
+          "deploymentBucketName": "amplify-estimationplatform-dev-20748-deployment",
+          "s3Key": "amplify-builds/agentStageWorker-7234776673664e635442-build.zip"
         }
       },
       "api": {

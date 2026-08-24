@@ -1,0 +1,10 @@
+{
+  "resourceName": "takeoffruns",
+  "tableName": "TakeoffRuns",
+  "partitionKey": {
+    "fieldName": "runId",
+    "fieldType": "string"
+  },
+  "gsi": [],
+  "triggerFunctions": []
+}

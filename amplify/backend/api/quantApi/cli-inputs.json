@@ -53,6 +53,19 @@
           "create"
         ]
       }
+    },
+    "/agent": {
+      "name": "/agent",
+      "lambdaFunction": "agentOrchestrator",
+      "permissions": {
+        "setting": "private",
+        "auth": [
+          "create",
+          "read",
+          "update",
+          "delete"
+        ]
+      }
     }
   }
 }

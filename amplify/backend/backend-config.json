@@ -33,6 +33,14 @@
           ],
           "category": "function",
           "resourceName": "sessionGuard"
+        },
+        {
+          "attributes": [
+            "Name",
+            "Arn"
+          ],
+          "category": "function",
+          "resourceName": "agentOrchestrator"
         }
       ],
       "providerPlugin": "awscloudformation",
@@ -66,6 +74,45 @@
     }
   },
   "function": {
+    "agentOrchestrator": {
+      "build": true,
+      "dependsOn": [
+        {
+          "attributes": [
+            "Name",
+            "Arn",
+            "StreamArn"
+          ],
+          "category": "storage",
+          "resourceName": "takeoffruns"
+        },
+        {
+          "attributes": [
+            "Name"
+          ],
+          "category": "function",
+          "resourceName": "agentStageWorker"
+        }
+      ],
+      "providerPlugin": "awscloudformation",
+      "service": "Lambda"
+    },
+    "agentStageWorker": {
+      "build": true,
+      "dependsOn": [
+        {
+          "attributes": [
+            "Name",
+            "Arn",
+            "StreamArn"
+          ],
+          "category": "storage",
+          "resourceName": "takeoffruns"
+        }
+      ],
+      "providerPlugin": "awscloudformation",
+      "service": "Lambda"
+    },
     "assignDefaultGroup": {
       "build": true,
       "providerPlugin": "awscloudformation",
@@ -113,6 +160,38 @@
     }
   },
   "parameters": {
+    "AMPLIFY_function_agentOrchestrator_deploymentBucketName": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "agentOrchestrator"
+        }
+      ]
+    },
+    "AMPLIFY_function_agentOrchestrator_s3Key": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "agentOrchestrator"
+        }
+      ]
+    },
+    "AMPLIFY_function_agentStageWorker_deploymentBucketName": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "agentStageWorker"
+        }
+      ]
+    },
+    "AMPLIFY_function_agentStageWorker_s3Key": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "agentStageWorker"
+        }
+      ]
+    },
     "AMPLIFY_function_assignDefaultGroup_deploymentBucketName": {
       "usedBy": [
         {
@@ -232,6 +311,10 @@
       "providerPlugin": "awscloudformation",
       "service": "S3",
       "serviceType": "imported"
+    },
+    "takeoffruns": {
+      "providerPlugin": "awscloudformation",
+      "service": "DynamoDB"
     },
     "usersessions": {
       "providerPlugin": "awscloudformation",

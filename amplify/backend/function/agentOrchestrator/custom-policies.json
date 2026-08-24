@@ -1,0 +1,7 @@
+[
+  {
+    "Action": ["s3:GetObject"],
+    "Resource": ["arn:aws:s3:::estimation-platform-user-data/agent-runs/*"],
+    "Effect": "Allow"
+  }
+]

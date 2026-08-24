@@ -7,6 +7,7 @@ import { jsPDF } from "jspdf";
 import * as XLSX from "xlsx";
 import polygonClipping from "polygon-clipping";
 import { useTheme } from "./hooks/useTheme";
+import AgentRunPanel from "./components/AgentRunPanel";
 import "./theme.css";
 
 // ─── EXCEL COLUMNS ────────────────────────────────────────────────────────────
@@ -38,6 +39,23 @@ const ZONE_MODEL_DATA     = { conf: 0.25, iou: 0.7, imgsz: 640 };
 // Instance segmentation model — zones only (returns polygons, not boxes)
 const ZONE_SEG_MODEL_DATA = { conf: 0.25, iou: 0.7, imgsz: 640 };
 
+// ─── Detection Lab defaults ───────────────────────────────────────────────────
+// Knobs for tuning zone-segmentation quality. Defaults reproduce today's
+// behaviour exactly, so turning nothing on changes nothing.
+const LAB_KEY = "quant.detectionLab";
+const DEFAULT_LAB = {
+  tileZones: true,   // run zoneseg per-tile (current) vs once on the whole page
+  zoneImgsz: 640,    // model input size for zoneseg — higher = sharper masks
+  zoneConf: "",      // "" = use the model default (0.25)
+  repair: false,     // fix self-intersecting contours via boolean self-union
+};
+
+// Zone overhang trimming graduated out of the Detection Lab: it is on by
+// default for everyone and can be switched off in Settings. Stored per device
+// (like the theme) rather than in project settings, so reopening an old project
+// can't silently flip the user's choice back.
+const TRIM_KEY = "quant.trimZoneOverhangs";
+
 const IMAGE_SEARCH_URL   = ""; // set after ECS deployment — e.g. https://your-alb.amazonaws.com/search
 const IMAGE_SEARCH_TOKEN = ""; // API_TOKEN env var value set on the ECS task
 const IMAGE_SEARCH_COLOR = "#00FFEE"; // cyan — distinct from TEMP_COLOR red
@@ -67,6 +85,10 @@ const NMS_IOU_THRESH = 0.4;
 const DEFAULT_ZONE_TAGS = { bathroom: "#4FC3F7", kitchen: "#FFB74D" };
 const PDF_RENDER_DPI = 150; // matches Python: fitz.Matrix(150/72, 150/72)
 const PDF_SCALE = PDF_RENDER_DPI / 72; // pdf.js uses 72 dpi as base
+// One rendered pixel spans this many mm of paper (25.4mm/inch ÷ DPI). Combined
+// with a drawing scale 1:N it gives the real-world metres-per-pixel analytically,
+// with no line-drawing calibration: ratio = PAPER_MM_PER_PX/1000 × N.
+const PAPER_MM_PER_PX = 25.4 / PDF_RENDER_DPI;
 
 // ─── PDF.JS LOADER ────────────────────────────────────────────────────────────
 // Lazy-loads pdf.js from cdnjs. Returns the pdfjsLib global.
@@ -420,6 +442,186 @@ function rdpSimplifyPolygon(points, epsilon) {
   return result.length >= 3 ? result : points;
 }
 
+// ─── Polygon repair (Detection Lab) ──────────────────────────────────────────
+// Segmentation contours are sometimes self-intersecting (visible as crossing
+// "slashes" across a room). Running a polygon through a boolean union with
+// itself re-derives a clean, non-self-intersecting outline. We keep the largest
+// resulting ring — the room body — and drop the slivers the crossing produced.
+function ringSignedArea(ring) {
+  let a = 0;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    a += (ring[j][0] * ring[i][1]) - (ring[i][0] * ring[j][1]);
+  }
+  return a / 2;
+}
+
+function repairPolygonPoints(points) {
+  if (!points || points.length < 3) return points;
+  try {
+    const merged = polygonClipping.union([points.map(([x, y]) => [x, y])]);
+    if (!merged || !merged.length) return points;
+    let best = null, bestArea = -1;
+    for (const poly of merged) {
+      const ring = poly[0];
+      if (!ring || ring.length < 4) continue;
+      const a = Math.abs(ringSignedArea(ring));
+      if (a > bestArea) { bestArea = a; best = ring; }
+    }
+    if (!best) return points;
+    let pts = best.map(([x, y]) => [x, y]);
+    const [fx, fy] = pts[0], [lx, ly] = pts[pts.length - 1];
+    if (fx === lx && fy === ly) pts = pts.slice(0, -1);
+    return pts.length >= 3 ? pts : points;
+  } catch {
+    return points; // never let repair lose a detection
+  }
+}
+
+function repairAnnotation(ann) {
+  if (ann.shapeType !== "polygon" || !ann.points) return ann;
+  const pts = repairPolygonPoints(ann.points);
+  return pts === ann.points ? ann : { ...ann, points: pts };
+}
+
+// ─── Zone overhang trimming (Detection Lab) ──────────────────────────────────
+// Two zones that overlap are almost always one of two things:
+//   1. a DUPLICATE — one zone sits (almost) entirely inside another
+//   2. an OVERHANG — one zone's edge pokes across the wall into its neighbour
+//
+// For (2) we can tell *which* zone is doing the poking, from the geometry:
+//   • vertex containment — the offender has corners sitting inside the victim
+//   • compactness — removing a protrusion makes the offender's shape MORE
+//     compact, while biting a chunk out of the victim makes it LESS compact
+// Both signals are computed; when they disagree the pair is left alone and
+// reported, rather than guessed at.
+function ringPerimeterOf(r) {
+  let p = 0;
+  for (let i = 0; i < r.length; i++) {
+    const a = r[i], b = r[(i + 1) % r.length];
+    p += Math.hypot(b[0] - a[0], b[1] - a[1]);
+  }
+  return p;
+}
+const mpAreaOf = (mp) => (mp || []).reduce(
+  (s, poly) => s + poly.reduce((t, r, k) => t + (k === 0 ? Math.abs(ringSignedArea(r)) : -Math.abs(ringSignedArea(r))), 0), 0);
+const mpPerimeterOf = (mp) => (mp || []).reduce(
+  (s, poly) => s + poly.reduce((t, r) => t + ringPerimeterOf(r), 0), 0);
+// 1.0 = a circle; lower = more ragged. Notches lower it, removing a spike raises it.
+const compactnessOf = (mp) => {
+  const A = mpAreaOf(mp), P = mpPerimeterOf(mp);
+  return P > 0 ? (4 * Math.PI * A) / (P * P) : 0;
+};
+function pointInRingOf(pt, r) {
+  let c = false;
+  for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+    const [xi, yi] = r[i], [xj, yj] = r[j];
+    if ((yi > pt[1]) !== (yj > pt[1]) &&
+        pt[0] < ((xj - xi) * (pt[1] - yi)) / (yj - yi) + xi) c = !c;
+  }
+  return c;
+}
+function zoneRingOf(a) {
+  if (a.shapeType === "polygon" && a.points && a.points.length >= 3) {
+    return a.points.map(([x, y]) => [x, y]);
+  }
+  if (a.shapeType === "box" && a.x1 != null) {
+    const { x1, y1, x2, y2 } = a;
+    return [[x1, y1], [x2, y1], [x2, y2], [x1, y2]];
+  }
+  return null;
+}
+function dropClosingPt(r) {
+  if (r.length > 1) {
+    const [f, g] = r[0], [l, m] = r[r.length - 1];
+    if (f === l && g === m) return r.slice(0, -1);
+  }
+  return r;
+}
+
+/**
+ * Remove the parts of zones that overhang into their neighbours.
+ * Non-zone annotations pass through untouched.
+ * Returns { anns, trimmed, removed, ambiguous, notes }.
+ */
+function trimZoneOverhangs(anns, { duplicateFrac = 0.5, minKeepPx = 20 } = {}) {
+  const items = [];
+  anns.forEach((a, i) => {
+    const r = a.clsName === "zone" ? zoneRingOf(a) : null;
+    if (r) items.push({ i, a, ring: r, mp: [[r]], area: Math.abs(ringSignedArea(r)) });
+  });
+  if (items.length < 2) return { anns, trimmed: 0, removed: 0, ambiguous: 0, notes: [] };
+
+  const dead = new Set(), clippers = new Map(), notes = [];
+  let ambiguous = 0;
+
+  for (let x = 0; x < items.length; x++) {
+    for (let y = x + 1; y < items.length; y++) {
+      const P = items[x], Q = items[y];
+      if (dead.has(P.i) || dead.has(Q.i)) continue;
+      let inter;
+      try { inter = polygonClipping.intersection(P.mp, Q.mp); } catch { continue; }
+      const ia = mpAreaOf(inter);
+      if (ia < 1) continue;
+      const smaller = Math.min(P.area, Q.area);
+
+      // (1) duplicate → drop the smaller
+      if (ia / smaller > duplicateFrac) {
+        const drop = P.area <= Q.area ? P : Q;
+        const keep = drop === P ? Q : P;
+        dead.add(drop.i);
+        notes.push(`#${drop.a.numId} removed as duplicate (${(100 * ia / smaller).toFixed(0)}% inside #${keep.a.numId})`);
+        continue;
+      }
+
+      // (2) overhang → decide who is poking
+      const vP = P.ring.filter(pt => pointInRingOf(pt, Q.ring)).length;
+      const vQ = Q.ring.filter(pt => pointInRingOf(pt, P.ring)).length;
+      let dP, dQ;
+      try {
+        dP = compactnessOf(polygonClipping.difference(P.mp, Q.mp)) - compactnessOf(P.mp);
+        dQ = compactnessOf(polygonClipping.difference(Q.mp, P.mp)) - compactnessOf(Q.mp);
+      } catch { continue; }
+      const byVerts = vP > vQ ? P : (vQ > vP ? Q : null);
+      const byShape = dP > dQ ? P : Q;
+
+      let offender = null;
+      if (byVerts && byVerts === byShape) offender = byVerts;   // signals agree
+      else if (!byVerts) offender = byShape;                    // vertex tie → shape decides
+      else { ambiguous++; notes.push(`#${P.a.numId}/#${Q.a.numId} ambiguous — left untouched`); continue; }
+
+      const victim = offender === P ? Q : P;
+      if (!clippers.has(offender.i)) clippers.set(offender.i, []);
+      clippers.get(offender.i).push(victim.mp);
+      notes.push(`#${offender.a.numId} overhang into #${victim.a.numId} trimmed (${ia.toFixed(0)}px²)`);
+    }
+  }
+
+  let trimmed = 0, removed = dead.size;
+  const out = anns.map((a, i) => {
+    if (dead.has(i)) return null;
+    const cl = clippers.get(i);
+    if (!cl || !cl.length) return a;
+    const me = items.find(t => t.i === i);
+    let geom;
+    try { geom = polygonClipping.difference(me.mp, ...cl); } catch { return a; }
+    if (!geom || !geom.length) { removed++; return null; }
+    let best = null, bestA = -1;
+    for (const poly of geom) {
+      const r = poly[0];
+      if (!r || r.length < 4) continue;
+      const ar = Math.abs(ringSignedArea(r));
+      if (ar > bestA) { bestA = ar; best = r; }
+    }
+    if (!best || bestA < minKeepPx) { removed++; return null; }
+    const pts = dropClosingPt(best.map(([x, y]) => [x, y]));
+    if (pts.length < 3) return a;
+    trimmed++;
+    return { ...a, shapeType: "polygon", points: pts, x1: null, y1: null, x2: null, y2: null };
+  }).filter(Boolean);
+
+  return { anns: out, trimmed, removed, ambiguous, notes };
+}
+
 // IoU for NMS
 function iou(a, b) {
   const [ax1, ay1, ax2, ay2] = annotationBbox(a);
@@ -450,6 +652,37 @@ function nms(anns, thresh) {
 }
 
 // ─── CANVAS DRAW ──────────────────────────────────────────────────────────────
+// Agent proposed-detections overlay: dashed, semi-transparent, class-coloured,
+// drawn on top of the real annotations to signal "proposed, not yet accepted".
+function drawProposedOverlay(ctx, anns, scale, classColors) {
+  ctx.save();
+  ctx.lineWidth = 2;
+  ctx.setLineDash([6, 4]);
+  for (const a of anns) {
+    const color = (classColors && classColors[a.clsName]) || CLASS_COLORS[a.clsName] || DEFAULT_COLOR;
+    ctx.strokeStyle = color;
+    ctx.fillStyle = hexToRgba(color, 0.12);
+    if (a.shapeType === "polygon" && a.points && a.points.length >= 2) {
+      ctx.beginPath();
+      a.points.forEach(([x, y], i) => {
+        const px = x * scale, py = y * scale;
+        if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+      });
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+    } else if (a.shapeType === "line" && a.x1 != null) {
+      ctx.beginPath();
+      ctx.moveTo(a.x1 * scale, a.y1 * scale);
+      ctx.lineTo(a.x2 * scale, a.y2 * scale);
+      ctx.stroke();
+    } else if (a.x1 != null) {
+      const x = a.x1 * scale, y = a.y1 * scale;
+      const w = (a.x2 - a.x1) * scale, h = (a.y2 - a.y1) * scale;
+      ctx.fillRect(x, y, w, h); ctx.strokeRect(x, y, w, h);
+    }
+  }
+  ctx.restore();
+}
+
 function drawAnnotations(ctx, anns, scale, {
   ratio, hoverIdx, selectedIdx, selectedIndices,
   tempBox, tempPolyPts, tempPolyMouse, tempLine, tempLineShape, lastMeasureLine,
@@ -1414,6 +1647,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
   const [pixelLength, setPixelLength] = useState("");
   const [realLength, setRealLength] = useState("");
   const [ratio, setRatio] = useState(null);
+  const [drawingScaleDenom, setDrawingScaleDenom] = useState(""); // the N in 1:N
 
   // Zone tags
   const [zoneTags, setZoneTags] = useState({ ...DEFAULT_ZONE_TAGS });
@@ -1425,7 +1659,10 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
   // Inference
   const [inferring, setInferring] = useState(false);
   const [imageSearching, setImageSearching] = useState(false);
-  const [status, setStatus] = useState("Load an image to begin.");
+  // Start in a loading state when opening an existing project so the top bar
+  // reads "Loading project…" from first paint (not "Load an image to begin.").
+  const [status, setStatus] = useState(project?.id ? "Loading project…" : "Load an image to begin.");
+  const [projectLoading, setProjectLoading] = useState(!!project?.id);
 
   // PDF import state
   const [pdfModalData, setPdfModalData] = useState(null); // ArrayBuffer when modal is open
@@ -1438,6 +1675,8 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
 
   // Settings
   const [showSettings,      setShowSettings]      = useState(false);
+  const [showAgent,         setShowAgent]         = useState(false); // Agentic Takeoff panel (P0)
+  const [agentPreview,      setAgentPreview]      = useState(null);  // proposed detections overlay (P1b.2)
   // UI theme: 'dark' (default) or 'blueprint' (light). Persisted per device and
   // applied to <html data-theme> by the hook — see src/hooks/useTheme.js.
   const { theme, setTheme } = useTheme();
@@ -1446,6 +1685,31 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
   // index/class label off without affecting the area/perimeter overlay.
   const [showZoneLabels,    setShowZoneLabels]    = useState(true);
   const [autoSimplifyDist,  setAutoSimplifyDist]  = useState("20"); // px, applied after inference
+
+  // ─── Detection Lab ─────────────────────────────────────────────────────────
+  // Experiment knobs for tuning zone-segmentation quality. Persisted per device
+  // (localStorage), NOT into project settings — these are tuning preferences,
+  // not properties of a drawing.
+  const [trimOverhangs, setTrimOverhangs] = useState(() => {
+    try {
+      const v = localStorage.getItem(TRIM_KEY);
+      return v === null ? true : v === "true";   // default ON
+    } catch { return true; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(TRIM_KEY, String(trimOverhangs)); } catch { /* private mode */ }
+  }, [trimOverhangs]);
+
+  const [lab, setLab] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(LAB_KEY) || "{}");
+      return { ...DEFAULT_LAB, ...saved };
+    } catch { return { ...DEFAULT_LAB }; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(LAB_KEY, JSON.stringify(lab)); } catch { /* private mode */ }
+  }, [lab]);
+  const setLabField = (k, v) => setLab(prev => ({ ...prev, [k]: v }));
   const [areaTextColor,     setAreaTextColor]     = useState("#c0c0c0");
   const [perimTextColor,    setPerimTextColor]    = useState("#c0c0c0");
   const [measureTextColor,  setMeasureTextColor]  = useState("#00FFFF");
@@ -1684,6 +1948,8 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
     if (!project?.id) return;
     let cancelled = false;
 
+    setProjectLoading(true);
+    setStatus("Loading project…");
     setAnnotations([]);
     setOriginalImg(null);
     setImgNaturalSize({ w: 0, h: 0 });
@@ -1828,7 +2094,11 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
           }
         }
       })
-      .catch((err) => console.error('[DetectionTool] loadProject failed:', err));
+      .catch((err) => {
+        console.error('[DetectionTool] loadProject failed:', err);
+        if (!cancelled) setStatus("Failed to load project.");
+      })
+      .finally(() => { if (!cancelled) setProjectLoading(false); });
 
     return () => { cancelled = true; };
   }, [project?.id, computeBaseScale]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1945,9 +2215,15 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
       tempCircle, lastLineIsMeasure,
       areaTextColor, perimTextColor, measureTextColor, showConfidence, showZoneLabels,
     });
+
+    // Agent proposed-detections overlay (P1b.2) — drawn on top in a distinct
+    // dashed "proposed" style, not part of the user's annotations until merged.
+    if (agentPreview && agentPreview.length) {
+      drawProposedOverlay(ctx, agentPreview, scale, allClassColors);
+    }
   }, [originalImg, annotations, scale, visibleClasses, hoverIdx, selectedIdx, selectedIndices,
       tempBox, tempPolyPts, tempPolyMouse, tempLine, tempLineShape, lastMeasureLine, ratio, zoneTags, customClasses,
-      tempCircle, lastLineIsMeasure, areaTextColor, perimTextColor, measureTextColor, showConfidence, showZoneLabels]);
+      tempCircle, lastLineIsMeasure, areaTextColor, perimTextColor, measureTextColor, showConfidence, showZoneLabels, agentPreview]);
 
   // ─── Image upload ────────────────────────────────────────────────────────────
   const handleFileChange = (e) => {
@@ -2667,7 +2943,18 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
     const useConf = confVal != null && !isNaN(confVal) && confVal > 0 && confVal <= 1;
     const wallModelData = useConf ? { ...WALL_MODEL_DATA, conf: confVal } : WALL_MODEL_DATA;
     const zoneModelData = useConf ? { ...ZONE_MODEL_DATA, conf: confVal } : ZONE_MODEL_DATA;
-    const zoneSegModelData = useConf ? { ...ZONE_SEG_MODEL_DATA, conf: confVal } : ZONE_SEG_MODEL_DATA;
+    // Zone-seg params: global conf override first, then Detection Lab overrides
+    // (lab conf wins for zones, and lab imgsz always applies).
+    const labZoneConf = (() => {
+      const v = parseFloat(lab.zoneConf);
+      return !isNaN(v) && v > 0 && v <= 1 ? v : null;
+    })();
+    const zoneSegModelData = {
+      ...ZONE_SEG_MODEL_DATA,
+      ...(useConf ? { conf: confVal } : {}),
+      ...(labZoneConf != null ? { conf: labZoneConf } : {}),
+      imgsz: lab.zoneImgsz || ZONE_SEG_MODEL_DATA.imgsz,
+    };
 
     setInferring(true);
     setStatus(tiled ? `Running tiled inference on page ${targetPageIndex + 1}…` : `Running inference on page ${targetPageIndex + 1}…`);
@@ -2677,9 +2964,23 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
 
       const autoEps = (() => { const v = parseInt(autoSimplifyDist, 10); return !isNaN(v) && v > 0 ? v : 0; })();
       if (tiled && (imgNaturalSize.w > TILE_SIZE || imgNaturalSize.h > TILE_SIZE)) {
-        const allAnns = await runTiledInference(tempCanvas, blob, wallModelData, zoneModelData, zoneSegModelData, autoEps);
+        let allAnns = await runTiledInference(
+          tempCanvas, blob, wallModelData, zoneModelData, zoneSegModelData, autoEps, lab.tileZones,
+        );
+        // Lab: zones detected once on the whole page instead of per-tile. Avoids
+        // tile-seam fragments and duplicate/overlapping room pieces.
+        if (!lab.tileZones) {
+          setStatus("Detecting zones on the full page…");
+          const zoneSegRes = await postInference(blob, "zoneseg", zoneSegModelData);
+          allAnns = [...allAnns, ...parseSegmentationResponse(zoneSegRes, "zone_seg_model", autoEps)];
+        }
+        if (lab.repair) allAnns = allAnns.map(repairAnnotation);
+        let tz = { trimmed: 0, removed: 0, ambiguous: 0 };
+        if (trimOverhangs) { tz = trimZoneOverhangs(allAnns); allAnns = tz.anns; }
         applyInferenceResults(targetPageIndex, allAnns);
-        setStatus(`Tiled inference complete (page ${targetPageIndex + 1}) — ${allAnns.length} detections.`);
+        setStatus(`Tiled inference complete (page ${targetPageIndex + 1}) — ${allAnns.length} detections.`
+          + (lab.tileZones ? "" : " [whole-page zones]") + (lab.repair ? " [repaired]" : "")
+          + (trimOverhangs ? ` [overhangs: ${tz.trimmed} trimmed, ${tz.removed} dup removed${tz.ambiguous ? `, ${tz.ambiguous} ambiguous` : ""}]` : ""));
       } else {
         const [wallRes, doorWinRes, zoneSegRes] = await Promise.all([
           postInference(blob, "wall",    wallModelData),
@@ -2691,9 +2992,14 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         const doorWinAnns = parseModelResponse(doorWinRes, "zone_door_window_model")
           .filter(a => a.clsName === "door" || a.clsName === "window");
         const zoneSegAnns = parseSegmentationResponse(zoneSegRes, "zone_seg_model", autoEps2);
-        const allAnns = [...wallAnns, ...doorWinAnns, ...zoneSegAnns];
+        let allAnns = [...wallAnns, ...doorWinAnns, ...zoneSegAnns];
+        if (lab.repair) allAnns = allAnns.map(repairAnnotation);
+        let tz2 = { trimmed: 0, removed: 0, ambiguous: 0 };
+        if (trimOverhangs) { tz2 = trimZoneOverhangs(allAnns); allAnns = tz2.anns; }
         applyInferenceResults(targetPageIndex, allAnns);
-        setStatus(`Inference complete (page ${targetPageIndex + 1}) — ${allAnns.length} detections.`);
+        setStatus(`Inference complete (page ${targetPageIndex + 1}) — ${allAnns.length} detections.`
+          + (lab.repair ? " [repaired]" : "")
+          + (trimOverhangs ? ` [overhangs: ${tz2.trimmed} trimmed, ${tz2.removed} dup removed${tz2.ambiguous ? `, ${tz2.ambiguous} ambiguous` : ""}]` : ""));
       }
       // Only clear selection if still on the target page
       if (currentPageIndexRef.current === targetPageIndex) {
@@ -2733,7 +3039,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
     return body.json();
   };
 
-  const runTiledInference = async (canvas, _blob, wallModelData, zoneModelData, zoneSegModelData, autoEps = 0) => {
+  const runTiledInference = async (canvas, _blob, wallModelData, zoneModelData, zoneSegModelData, autoEps = 0, includeZoneSeg = true) => {
     const { w: W, h: H } = imgNaturalSize;
     const stride = TILE_SIZE - TILE_OVERLAP;
     const allAnns = [];
@@ -2752,12 +3058,12 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         const [wallRes, doorWinRes, zoneSegRes] = await Promise.all([
           postInference(tBlob, "wall",    wallModelData),
           postInference(tBlob, "zone",    zoneModelData),
-          postInference(tBlob, "zoneseg", zoneSegModelData),
+          includeZoneSeg ? postInference(tBlob, "zoneseg", zoneSegModelData) : Promise.resolve(null),
         ]);
         const tileAnns = [
           ...parseModelResponse(wallRes, "wall_model"),
           ...parseModelResponse(doorWinRes, "zone_door_window_model").filter(a => a.clsName === "door" || a.clsName === "window"),
-          ...parseSegmentationResponse(zoneSegRes, "zone_seg_model", autoEps),
+          ...(includeZoneSeg ? parseSegmentationResponse(zoneSegRes, "zone_seg_model", autoEps) : []),
         ];
         tileAnns.forEach(a => allAnns.push(offsetAnnotation(a, tx, ty)));
       } catch (_) {}
@@ -2924,6 +3230,20 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
       return [...kept, combined];
     });
     setStatus(`Combined ${idxs.length} zones into 1${hadHoles ? " (interior holes dropped)" : ""}.`);
+  };
+
+  // Detection Lab: run the overhang trim on the current page's zones without
+  // re-running inference. One history entry, so Undo reverts the whole pass.
+  const runTrimOverhangs = () => {
+    const { anns, trimmed, removed, ambiguous, notes } = trimZoneOverhangs(annotations);
+    if (!trimmed && !removed) { setStatus("No zone overhangs or duplicates found."); return; }
+    console.log("[trimZoneOverhangs]\n" + notes.join("\n"));
+    pushHistory(annotations);
+    setAnnotations(fillMissingNumIds(anns));
+    setSelectedIdx(null);
+    setSelectedIndices(new Set());
+    setStatus(`Overhangs: ${trimmed} trimmed, ${removed} duplicate(s) removed`
+      + (ambiguous ? `, ${ambiguous} ambiguous left alone` : "") + " — see console for details.");
   };
 
   const applyClass = () => {
@@ -3163,6 +3483,21 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
     const r = rl / px;
     setRatio(r);
     setStatus(`Ratio: ${r.toFixed(8)} m/px`);
+  };
+
+  // Set the scale analytically from the drawing's stated scale (1:N). Valid only
+  // when the page is a PDF rendered at our known DPI; for loaded images the DPI
+  // is unknown, so we compute but warn the user to verify.
+  const applyDrawingScale = () => {
+    const n = parseFloat(drawingScaleDenom);
+    if (!n || n <= 0) { setStatus("Enter the scale denominator, e.g. 100 for 1:100."); return; }
+    const r = (PAPER_MM_PER_PX / 1000) * n; // metres per pixel
+    setRatio(r);
+    setPixelLength("");
+    setRealLength("");
+    const isPdf = existingFileInfoRef.current.ext === "pdf";
+    setStatus(`Scale set from drawing 1:${n} → ${r.toFixed(6)} m/px`
+      + (isPdf ? "" : " — ⚠ image DPI unknown; verify by measuring a known dimension"));
   };
 
   // ─── Export ──────────────────────────────────────────────────────────────────
@@ -3968,6 +4303,108 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
               <span style={{ color: "var(--tx-label)", fontSize: 11 }}>px  (0–999)</span>
             </div>
 
+            {/* ── Zone overhang trimming (standard feature, on by default) ── */}
+            <div style={{ borderTop: "1px solid var(--bd-divider)", margin: "14px 0 12px" }} />
+            <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer", userSelect: "none" }}>
+              <input
+                type="checkbox"
+                checked={trimOverhangs}
+                onChange={e => setTrimOverhangs(e.target.checked)}
+                style={{ cursor: "pointer", marginTop: 2 }}
+              />
+              <span style={{ color: "var(--tx-muted)", fontSize: 11, lineHeight: 1.5 }} title="After analysis, detects which zone is poking into its neighbour (by vertex containment + shape compactness) and removes only the overhanging part. Near-total overlaps are treated as duplicate detections and deleted. Pairs where the two signals disagree are left untouched and reported.">
+                Trim zone overhangs after analysis
+                <span style={{ display: "block", color: "var(--tx-faint)", fontSize: 10 }}>
+                  Removes the part of a zone that pokes into a neighbour, so areas
+                  aren't double-counted. Deletes duplicate zones. Ambiguous pairs
+                  are left alone.
+                </span>
+              </span>
+            </label>
+            <button
+              onClick={runTrimOverhangs}
+              style={{ ...styles.smallBtn, width: "100%", marginTop: 8, padding: "5px 7px", background: "transparent", borderColor: "var(--amber-bd)", color: "var(--amber)" }}
+              title="Run the trim now on the current page, without re-running analysis."
+            >Run trim on current page</button>
+
+            {/* ── Detection Lab ─────────────────────────────────────────── */}
+            <div style={{ borderTop: "1px solid var(--bd-divider)", margin: "14px 0 12px" }} />
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <span style={{ ...styles.eyebrowTick }} />
+              <span style={{ fontFamily: "var(--font-disp)", fontSize: 11, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--tx-status)", fontWeight: 600 }}>
+                Detection Lab
+              </span>
+              <span style={{ fontSize: 9, color: "var(--amber)", border: "1px solid var(--amber-bd)", borderRadius: 3, padding: "1px 5px", letterSpacing: "0.06em" }}>EXPERIMENTAL</span>
+            </div>
+            <div style={{ color: "var(--tx-faint)", fontSize: 10, marginBottom: 10, lineHeight: 1.5 }}>
+              Tuning knobs for zone quality. Change one at a time and re-run Analysis
+              on the same drawing to compare. Saved on this device.
+            </div>
+
+            {/* zone imgsz */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              <span style={{ color: "var(--tx-muted)", fontSize: 11, flex: 1 }} title="Model input resolution for zone segmentation. Higher = sharper mask contours, slower.">
+                Zone detail (imgsz)
+              </span>
+              <select
+                value={lab.zoneImgsz}
+                onChange={e => setLabField("zoneImgsz", parseInt(e.target.value, 10))}
+                style={{ ...styles.select, width: 96 }}
+              >
+                <option value={640}>640 (default)</option>
+                <option value={1024}>1024</option>
+                <option value={1280}>1280</option>
+              </select>
+            </div>
+
+            {/* zone conf */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              <span style={{ color: "var(--tx-muted)", fontSize: 11, flex: 1 }} title="Confidence floor for zones only. Blank = model default (0.25). Higher = fewer, more certain rooms.">
+                Zone confidence
+              </span>
+              <input
+                value={lab.zoneConf}
+                onChange={e => {
+                  const v = e.target.value;
+                  if (v === "" || /^0?\.?\d*$/.test(v)) setLabField("zoneConf", v);
+                }}
+                placeholder="0.25"
+                style={{ ...styles.smallInput, width: 96, textAlign: "center" }}
+              />
+            </div>
+
+            {/* whole-page zones */}
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none", marginBottom: 8 }}>
+              <input
+                type="checkbox"
+                checked={!lab.tileZones}
+                onChange={e => setLabField("tileZones", !e.target.checked)}
+                style={{ cursor: "pointer" }}
+              />
+              <span style={{ color: "var(--tx-muted)", fontSize: 11 }} title="Detect zones once on the full page instead of per tile. Removes tile-seam fragments and duplicate room pieces.">
+                Detect zones on full page (no tiling)
+              </span>
+            </label>
+
+            {/* repair */}
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", userSelect: "none" }}>
+              <input
+                type="checkbox"
+                checked={lab.repair}
+                onChange={e => setLabField("repair", e.target.checked)}
+                style={{ cursor: "pointer" }}
+              />
+              <span style={{ color: "var(--tx-muted)", fontSize: 11 }} title="Rebuild self-intersecting outlines (the crossing 'slashes') into clean polygons.">
+                Repair self-intersecting polygons
+              </span>
+            </label>
+
+
+            <button
+              onClick={() => setLab({ ...DEFAULT_LAB })}
+              style={{ ...styles.smallBtn, marginTop: 10, width: "100%", padding: "5px 7px" }}
+            >Reset lab to defaults</button>
+
             <div style={{ borderTop: "1px solid var(--bd-divider)", margin: "14px 0 12px" }} />
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
               <label style={{ display: "flex", alignItems: "center", gap: 7, cursor: "pointer", userSelect: "none" }}>
@@ -4379,7 +4816,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
           <div style={styles.cartCells}>
             <div style={styles.cartCell}>
               <div style={styles.cartK}>Scale</div>
-              <div style={styles.cartV}>{ratio ? `1:${ratio.toFixed(4)}` : "—"}</div>
+              <div style={styles.cartV}>{ratio ? `${ratio.toFixed(4)} m/px` : "—"}</div>
             </div>
             <div style={styles.cartCell}>
               <div style={styles.cartK}>Zoom</div>
@@ -4388,7 +4825,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
             <div style={{ ...styles.cartCell, borderRight: 0 }}>
               <div style={styles.cartK}>State</div>
               <div style={{ ...styles.cartV, color: saveStatus === 'error' ? "var(--err-tx)" : saveStatus === 'saved' ? "var(--ok-save-tx)" : "var(--accent2)" }}>
-                {saveStatus === 'saving' ? "SAVING" : saveStatus === 'saved' ? "SAVED" : saveStatus === 'error' ? "ERROR" : isReadOnly ? "VIEW" : "READY"}
+                {projectLoading ? "LOADING" : saveStatus === 'saving' ? "SAVING" : saveStatus === 'saved' ? "SAVED" : saveStatus === 'error' ? "ERROR" : isReadOnly ? "VIEW" : "READY"}
               </div>
             </div>
           </div>
@@ -4445,12 +4882,44 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
             style={{ ...styles.uploadBtn, background: 'var(--amber)', borderColor: 'var(--amber)', color: 'var(--on-amber)', fontWeight: 600 }}
           >🔗 Share</button>
         )}
+        {project?.id && !isReadOnly && (
+          <button
+            onClick={() => setShowAgent(true)}
+            title="Run the Agentic Takeoff on this sheet"
+            style={{ ...styles.uploadBtn, background: "transparent", borderColor: "var(--accent2)", color: "var(--accent2)", fontWeight: 600 }}
+          >✦ Run Agent</button>
+        )}
         <button
           onClick={() => setShowSettings(v => !v)}
           title="Settings"
           style={{ ...styles.uploadBtn, padding: "4px 9px", fontSize: 14, lineHeight: 1, background: showSettings ? "var(--bg-badge)" : "var(--bg-btn)", borderColor: showSettings ? "var(--bd-focus)" : "var(--bd-btn)" }}
         >⚙</button>
       </div>
+
+      {showAgent && (
+        <AgentRunPanel
+          projectId={project.id}
+          pageId={pageCount > 1 ? currentPageLabel() : "0"}
+          onPreview={(anns) => setAgentPreview(anns && anns.length ? anns : null)}
+          onApply={(anns) => {
+            if (!anns || !anns.length) return;
+            pushHistory(annotations);
+            setAnnotations(prev => {
+              let nextId = nextNumId(prev);
+              const merged = anns.map(a => ({
+                ...a,
+                id: Math.random().toString(36).slice(2),
+                numId: nextId++,
+                sourceModel: a.sourceModel || "agent",
+              }));
+              return [...prev, ...merged];
+            });
+            setAgentPreview(null);
+            setStatus(`Agent added ${anns.length} detections to the project. Review and save.`);
+          }}
+          onClose={() => { setShowAgent(false); setAgentPreview(null); }}
+        />
+      )}
 
       <div style={styles.body}>
         {/* ── Left canvas area ── */}
@@ -4669,6 +5138,27 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
           {/* Class visibility */}
           <div style={styles.section}>
             <div style={styles.sectionTitle}><span style={styles.eyebrowTick} /> CLASSES</div>
+            {allClasses.length > 0 && (() => {
+              const allVisible = allClasses.every(c => visibleClasses.has(c));
+              const someVisible = allClasses.some(c => visibleClasses.has(c));
+              return (
+                <label style={{ ...styles.visRow, borderBottom: "1px solid var(--bd-section)", paddingBottom: 7, marginBottom: 3 }}>
+                  <input
+                    type="checkbox"
+                    checked={allVisible}
+                    ref={el => { if (el) el.indeterminate = someVisible && !allVisible; }}
+                    onChange={e => {
+                      const on = e.target.checked;
+                      setVisibleClasses(on ? new Set(allClasses) : new Set());
+                      if (!on) { setSelectedIndices(new Set()); setSelectedIdx(null); }
+                    }}
+                  />
+                  <span style={{ ...styles.className, color: "var(--tx-status)", fontWeight: 600, letterSpacing: "0.03em" }}>
+                    {allVisible ? "Unselect all" : "Select all"}
+                  </span>
+                </label>
+              );
+            })()}
             {allClasses.map(cls => {
               const color = allClassColors[cls] || DEFAULT_COLOR;
               const isVisible = visibleClasses.has(cls);
@@ -4840,26 +5330,50 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
           {/* Scale calibration */}
           <div style={styles.section}>
             <div style={styles.sectionTitle}><span style={styles.eyebrowTick} /> SCALE CALIBRATION</div>
+            {/* Option A — read the scale straight off the drawing (analytic) */}
+            <div style={{ color: "var(--tx-faint)", fontSize: 10, marginBottom: 6 }}>
+              Enter the drawing's stated scale (from the title block).
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 6 }}>
+              <span style={{ color: "var(--tx-label)", fontSize: 12 }}>1 :</span>
+              <input
+                value={drawingScaleDenom}
+                onChange={e => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setDrawingScaleDenom(v); }}
+                style={{ ...styles.smallInput, width: 64 }}
+                placeholder="100"
+                title="Scale denominator from the drawing, e.g. 100 for a 1:100 plan"
+              />
+              <button onClick={applyDrawingScale} style={{ ...styles.smallBtn, flex: 1 }}>Set from scale</button>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "8px 0" }}>
+              <div style={{ flex: 1, height: 1, background: "var(--bd-divider)" }} />
+              <span style={{ color: "var(--tx-faint)", fontSize: 10 }}>or measure</span>
+              <div style={{ flex: 1, height: 1, background: "var(--bd-divider)" }} />
+            </div>
+
+            {/* Option B — measure a known distance */}
             <div style={{ color: "var(--tx-faint)", fontSize: 10, marginBottom: 6 }}>
               Draw a line with 📐, then enter its real length below.
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 6 }}>
-              <span style={{ color: "var(--tx-labelbright)", fontSize: 12, whiteSpace: "nowrap" }}>Scale</span>
               <input
                 value={realLength}
                 onChange={e => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setRealLength(v); }}
-                style={{ ...styles.smallInput, width: 48 }}
+                style={{ ...styles.smallInput, width: 52 }}
                 placeholder=""
-                title="Real-world length"
+                title="Real-world length of the measured line, in metres"
               />
-              <span style={{ color: "var(--tx-label)", fontSize: 12 }}>:</span>
+              <span style={{ color: "var(--tx-label)", fontSize: 11 }}>m</span>
+              <span style={{ color: "var(--tx-faint)", fontSize: 12, margin: "0 2px" }}>=</span>
               <input
                 value={pixelLength}
                 onChange={e => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setPixelLength(v); }}
-                style={{ ...styles.smallInput, width: 48 }}
+                style={{ ...styles.smallInput, width: 52 }}
                 placeholder=""
-                title="Pixel length (auto-filled when you draw a line)"
+                title="Length of that line in image pixels (auto-filled when you draw with the Scale Cal. tool)"
               />
+              <span style={{ color: "var(--tx-label)", fontSize: 11 }}>px</span>
             </div>
             <button onClick={calculateRatio} style={{ ...styles.smallBtn, width: "100%" }}>Set Scale</button>
             {ratio != null && <div style={styles.ratioDisplay}>px = {ratio.toFixed(6)} m</div>}

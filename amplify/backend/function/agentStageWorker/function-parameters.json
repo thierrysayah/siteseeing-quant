@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "storage": {
+      "takeoffruns": [
+        "create",
+        "read",
+        "update",
+        "delete"
+      ]
+    }
+  },
+  "lambdaLayers": []
+}

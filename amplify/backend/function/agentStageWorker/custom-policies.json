@@ -1,0 +1,22 @@
+[
+  {
+    "Action": ["s3:ListBucket"],
+    "Resource": ["arn:aws:s3:::estimation-platform-user-data"],
+    "Effect": "Allow"
+  },
+  {
+    "Action": ["s3:GetObject", "s3:PutObject"],
+    "Resource": ["arn:aws:s3:::estimation-platform-user-data/*"],
+    "Effect": "Allow"
+  },
+  {
+    "Action": ["secretsmanager:GetSecretValue"],
+    "Resource": ["arn:aws:secretsmanager:eu-west-3:851725386383:secret:quant/inference/ultralytics*"],
+    "Effect": "Allow"
+  },
+  {
+    "Action": ["cognito-idp:ListUsers"],
+    "Resource": ["arn:aws:cognito-idp:eu-west-3:851725386383:userpool/eu-west-3_jpxbGzhTX"],
+    "Effect": "Allow"
+  }
+]

@@ -18,6 +18,20 @@ export type AmplifyDependentResourcesAttributes = {
     }
   },
   "function": {
+    "agentOrchestrator": {
+      "Arn": "string",
+      "LambdaExecutionRole": "string",
+      "LambdaExecutionRoleArn": "string",
+      "Name": "string",
+      "Region": "string"
+    },
+    "agentStageWorker": {
+      "Arn": "string",
+      "LambdaExecutionRole": "string",
+      "LambdaExecutionRoleArn": "string",
+      "Name": "string",
+      "Region": "string"
+    },
     "assignDefaultGroup": {
       "Arn": "string",
       "LambdaExecutionRole": "string",
@@ -55,6 +69,14 @@ export type AmplifyDependentResourcesAttributes = {
     }
   },
   "storage": {
+    "takeoffruns": {
+      "Arn": "string",
+      "Name": "string",
+      "PartitionKeyName": "string",
+      "PartitionKeyType": "string",
+      "Region": "string",
+      "StreamArn": "string"
+    },
     "usersessions": {
       "Arn": "string",
       "Name": "string",
