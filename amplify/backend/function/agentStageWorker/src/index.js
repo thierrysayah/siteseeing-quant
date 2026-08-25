@@ -85,6 +85,7 @@ exports.handler = async (event) => {
  */
 async function runStage(run, stageIndex) {
   const key = STAGES[stageIndex].key;
+  if (key === 'calibrate_scale') return calibrateStage(run);
   if (key === 'detect') return detectStage(run);   // detect + trim/clean in one
   if (key === 'quantify') return quantifyStage(run);
   const s = STAGES[stageIndex];
@@ -93,6 +94,27 @@ async function runStage(run, stageIndex) {
     evidence: 'No evidence — stub stage (implemented in a later slice).',
     confidence: 1,
     gate: 'approve',
+  };
+}
+
+// Stage 2 — Calibrate scale (manual, pre-VLM): seed the run's px→m from the
+// project scale so quantities are in real units. The user recalibrates by
+// drawing (Adjust → Scale Cal.), which sets run.scale via PUT /scale.
+async function calibrateStage(run) {
+  const { readProjectScale } = require('./lib/pageimage');
+  const ratio = await readProjectScale(run);
+  if (ratio) {
+    return {
+      output: `Scale: 1px = ${ratio} m (from the project). Approve, or Adjust to recalibrate.`,
+      evidence: 'Read from the project scale — areas/lengths will be in real units.',
+      confidence: 1, gate: 'approve',
+      fields: { scale: ratio },
+    };
+  }
+  return {
+    output: 'No scale set. Adjust to calibrate (draw a known length), or Approve for pixel-based quantities.',
+    evidence: 'No project scale found.',
+    confidence: 1, gate: 'approve',
   };
 }
 
@@ -152,7 +174,11 @@ async function quantifyStage(run) {
   if (!run.detectionsKey) throw new Error('no detections to quantify');
 
   const src = await getJsonArtifact(run.detectionsKey);
-  const ratio = await readProjectScale(run);
+  // Prefer the run's calibrated scale (set at Calibrate stage / Adjust); fall
+  // back to the project scale.
+  const ratio = (typeof run.scale === 'number' && run.scale > 0)
+    ? run.scale
+    : await readProjectScale(run);
   const q = quantify(src.annotations || [], ratio);
   const outKey = await putJsonArtifact(run.runId, 'quantities.json', q);
 

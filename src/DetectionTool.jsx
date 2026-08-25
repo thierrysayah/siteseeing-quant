@@ -4941,6 +4941,11 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
             x1: a.x1 ?? null, y1: a.y1 ?? null, x2: a.x2 ?? null, y2: a.y2 ?? null,
             points: a.points || null, sourceModel: a.sourceModel || "manual",
           }))}
+          scaleCal={{
+            drawingScaleDenom, setDrawingScaleDenom, applyDrawingScale,
+            realLength, setRealLength, pixelLength, setPixelLength, calculateRatio,
+            ratio,
+          }}
           onClose={() => { setShowAgent(false); setAgentPreview(null); }}
         />
       )}

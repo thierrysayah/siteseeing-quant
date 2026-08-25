@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  startRun, getRun, getDetections, putDetections,
+  startRun, getRun, getDetections, putDetections, putScale,
   approveStage, rejectStage, cancelRun, TERMINAL,
 } from '../services/agentService';
 
@@ -25,6 +25,7 @@ const POLL_MS = 1500;
 
 export default function AgentRunPanel({
   projectId, pageId, onClose, onPreview, onApply, onAdjust, getAgentDetections,
+  scaleCal,   // the editor's real Scale-Calibration state + handlers (both options)
 }) {
   const [run, setRun] = useState(null);
   const [error, setError] = useState(null);
@@ -132,23 +133,35 @@ export default function AgentRunPanel({
     }
   }, [run, busy]);
 
-  // Adjust: promote the detections into editable annotations and enter edit mode.
+  // Adjust: enter edit mode. For Detect, promote detections into editable
+  // annotations; for Calibrate scale, just open the scale editor.
   const startAdjust = useCallback(() => {
     if (!run || busy) return;
-    onAdjustRef.current?.(detRef.current || []);
-    appliedRef.current = true;      // they're in the editor now; don't re-merge on finish
+    if (run.stageKey === 'detect') {
+      onAdjustRef.current?.(detRef.current || []);
+      appliedRef.current = true;    // in the editor now; don't re-merge on finish
+    }
     setAdjusting(true);
   }, [run, busy]);
 
-  // Save & continue: push the edited annotations back, then approve → next stage.
+  // Save & continue: persist this stage's edit, then approve → next stage.
   const saveAndContinue = useCallback(async () => {
     if (!run || busy) return;
     setBusy(true);
     setError(null);
     try {
-      const anns = getDetRef.current ? getDetRef.current() : [];
-      const res = await putDetections(run.runId, anns);
-      if (res?.detectionsKey) detKeyRef.current = res.detectionsKey; // don't re-fetch our own edit
+      if (run.stageKey === 'calibrate_scale') {
+        const ratio = scaleCal?.ratio;
+        if (!ratio || !(ratio > 0)) {
+          setError('Set a scale first — enter a 1:XXX ratio, or measure a known length, then it appears below.');
+          setBusy(false); return;
+        }
+        await putScale(run.runId, ratio);
+      } else {
+        const anns = getDetRef.current ? getDetRef.current() : [];
+        const res = await putDetections(run.runId, anns);
+        if (res?.detectionsKey) detKeyRef.current = res.detectionsKey; // don't re-fetch our own edit
+      }
       const r = await approveStage(run.runId, run.seq);
       setRun(r);
       setAdjusting(false);
@@ -157,7 +170,7 @@ export default function AgentRunPanel({
     } finally {
       setBusy(false);
     }
-  }, [run, busy]);
+  }, [run, busy, scaleCal]);
 
   // Drag the panel by its header. Clamped so it can't be lost off-screen.
   const startDrag = useCallback((e) => {
@@ -239,7 +252,6 @@ export default function AgentRunPanel({
               <div style={styles.output}>{run.output}</div>
               <div style={styles.metaRow}>
                 <span style={styles.meta}>evidence: {run.evidence}</span>
-                <span style={styles.conf}>conf {Number(run.confidence).toFixed(2)}</span>
               </div>
               {detCount != null && !adjusting && run.stageKey === 'detect' && (
                 <div style={styles.previewNote}>
@@ -251,7 +263,7 @@ export default function AgentRunPanel({
             {/* actions — normal review */}
             {canAct && !adjusting && (
               <div style={styles.actions}>
-                {run.stageKey === 'detect' && detRef.current
+                {(run.stageKey === 'detect' && detRef.current) || run.stageKey === 'calibrate_scale'
                   ? <button onClick={startAdjust} style={styles.reject} disabled={busy}>Adjust</button>
                   : <button onClick={() => act(rejectStage)} style={styles.reject} disabled={busy}>Reject</button>}
                 <button onClick={() => act(cancelRun)} style={styles.cancel} disabled={busy}>Cancel run</button>
@@ -261,8 +273,8 @@ export default function AgentRunPanel({
               </div>
             )}
 
-            {/* actions — adjusting: detections are live in the editor */}
-            {canAct && adjusting && (
+            {/* actions — adjusting DETECT: detections are live in the editor */}
+            {canAct && adjusting && run.stageKey === 'detect' && (
               <>
                 <div style={styles.adjustNote}>
                   ✎ Editing on the canvas — add / move / delete / reclass with the normal
@@ -272,6 +284,57 @@ export default function AgentRunPanel({
                   <button onClick={() => act(cancelRun)} style={styles.cancel} disabled={busy}>Cancel run</button>
                   <button onClick={saveAndContinue} style={styles.approve} disabled={busy}>
                     {busy ? 'Saving…' : 'Save & continue →'}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* actions — adjusting SCALE: same two options as the right panel */}
+            {canAct && adjusting && run.stageKey === 'calibrate_scale' && scaleCal && (
+              <>
+                {/* Option A — stated drawing scale */}
+                <div style={styles.scaleHead}>Enter the drawing's stated scale (title block)</div>
+                <div style={{ ...styles.row, marginBottom: 8 }}>
+                  <span style={styles.scaleLbl}>1&nbsp;:</span>
+                  <input
+                    value={scaleCal.drawingScaleDenom}
+                    onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) scaleCal.setDrawingScaleDenom(v); }}
+                    placeholder="100"
+                    style={{ ...styles.scaleInput, maxWidth: 90 }}
+                  />
+                  <button onClick={scaleCal.applyDrawingScale} style={styles.smallGhost}>Set from scale</button>
+                </div>
+
+                <div style={styles.scaleOr}>
+                  <span style={styles.scaleRule} /> or measure <span style={styles.scaleRule} />
+                </div>
+
+                {/* Option B — measure a known length */}
+                <div style={styles.scaleHead}>Draw a line with <b>Scale Cal.</b>, then enter its real length</div>
+                <div style={{ ...styles.row, marginBottom: 8 }}>
+                  <input
+                    value={scaleCal.realLength}
+                    onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) scaleCal.setRealLength(v); }}
+                    style={{ ...styles.scaleInput, maxWidth: 56 }}
+                  />
+                  <span style={styles.scaleLbl}>m&nbsp;=</span>
+                  <input
+                    value={scaleCal.pixelLength}
+                    onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) scaleCal.setPixelLength(v); }}
+                    style={{ ...styles.scaleInput, maxWidth: 56 }}
+                  />
+                  <span style={styles.scaleLbl}>px</span>
+                  <button onClick={scaleCal.calculateRatio} style={styles.smallGhost}>Set scale</button>
+                </div>
+
+                {scaleCal.ratio != null
+                  ? <div style={styles.scaleCurrent}>✓ 1 px = {Number(scaleCal.ratio).toFixed(6)} m</div>
+                  : <div style={styles.scaleNone}>No scale set yet</div>}
+
+                <div style={styles.actions}>
+                  <button onClick={() => act(cancelRun)} style={styles.cancel} disabled={busy}>Cancel run</button>
+                  <button onClick={saveAndContinue} style={styles.approve} disabled={busy || scaleCal.ratio == null}>
+                    {busy ? 'Saving…' : 'Save scale & continue →'}
                   </button>
                 </div>
               </>
@@ -340,6 +403,14 @@ const styles = {
   conf: { fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--accent2)', whiteSpace: 'nowrap' },
   previewNote: { marginTop: 9, paddingTop: 9, borderTop: '1px solid var(--bd-section)', fontSize: 12, color: 'var(--accent2)' },
   adjustNote: { marginBottom: 10, padding: 10, background: 'var(--amber-soft)', border: '1px solid var(--amber-bd)', borderRadius: 6, fontSize: 12, color: 'var(--tx-body)', lineHeight: 1.5 },
+  scaleHead: { fontSize: 11, color: 'var(--tx-faint)', marginBottom: 5 },
+  scaleLbl: { fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--tx-label)', whiteSpace: 'nowrap' },
+  scaleInput: { flex: 1, minWidth: 44, background: 'var(--bg-input)', border: '1px solid var(--bd-input)', borderRadius: 5, color: 'var(--tx-body)', fontFamily: 'var(--font-mono)', fontSize: 12, padding: '6px 8px' },
+  smallGhost: { background: 'var(--bg-btn)', border: '1px solid var(--bd-btn)', borderRadius: 5, color: 'var(--tx-btn)', fontSize: 11, padding: '6px 10px', cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0 },
+  scaleOr: { display: 'flex', alignItems: 'center', gap: 8, margin: '4px 0 8px', color: 'var(--tx-faint)', fontSize: 10 },
+  scaleRule: { flex: 1, height: 1, background: 'var(--bd-divider)' },
+  scaleCurrent: { fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ok-tx)', marginBottom: 10 },
+  scaleNone: { fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--tx-faint)', marginBottom: 10 },
   actions: { display: 'flex', gap: 8, alignItems: 'center' },
   approve: { marginLeft: 'auto', background: 'var(--amber)', color: 'var(--on-amber)', border: '1px solid var(--amber)', borderRadius: 6, padding: '8px 14px', fontWeight: 600, cursor: 'pointer', fontFamily: 'var(--font-ui)' },
   reject: { background: 'transparent', color: 'var(--err-tx)', border: '1px solid var(--err-bd)', borderRadius: 6, padding: '8px 12px', cursor: 'pointer', fontFamily: 'var(--font-ui)' },

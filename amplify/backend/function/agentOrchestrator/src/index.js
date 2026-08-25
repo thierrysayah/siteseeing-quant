@@ -96,6 +96,7 @@ exports.handler = async (event) => {
       if (method === 'GET' && !action) return getRun(userId, runId);
       if (method === 'GET' && action === 'detections') return getDetections(userId, runId);
       if (method === 'PUT' && action === 'detections') return putDetections(userId, runId, body);
+      if (method === 'PUT' && action === 'scale') return putScale(userId, runId, body);
       if (method === 'POST' && action === 'approve') return advanceRun(userId, runId, body, 'approve');
       if (method === 'POST' && action === 'reject')  return advanceRun(userId, runId, body, 'reject');
       if (method === 'POST' && action === 'cancel')  return advanceRun(userId, runId, body, 'cancel');
@@ -171,6 +172,28 @@ async function getDetections(userId, runId) {
   } catch (err) {
     console.error('[getDetections]', err);
     return resp(500, { error: 'could not read detections' });
+  }
+}
+
+// Save the calibrated px→m scale for a run (Adjust on the Calibrate stage).
+// Stored on the run so quantify uses it.
+async function putScale(userId, runId, body) {
+  const item = await loadOwned(userId, runId);
+  if (!item) return resp(404, { error: 'run not found' });
+  if (item === 'forbidden') return resp(403, { error: 'not your run' });
+  const ratio = body && Number(body.ratio);
+  if (!ratio || !(ratio > 0) || !isFinite(ratio)) return resp(400, { error: 'ratio (px→m, > 0) required' });
+  try {
+    await ddb.send(new UpdateCommand({
+      TableName: TABLE, Key: { runId },
+      UpdateExpression: 'SET #scale = :r, updatedAt = :now',
+      ExpressionAttributeNames: { '#scale': 'scale' },
+      ExpressionAttributeValues: { ':r': ratio, ':now': new Date().toISOString() },
+    }));
+    return resp(200, { ok: true, scale: ratio });
+  } catch (err) {
+    console.error('[putScale]', err);
+    return resp(500, { error: 'could not save scale' });
   }
 }
 
@@ -352,6 +375,7 @@ function publicView(item) {
     status: item.status,
     seq: item.seq,
     detectionsKey: item.detectionsKey || null,
+    scale: item.scale ?? null,
     output: item.stageOutput,
     evidence: item.evidence,
     confidence: item.confidence,

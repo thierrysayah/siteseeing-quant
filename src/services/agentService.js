@@ -42,6 +42,15 @@ export function putDetections(runId, annotations) {
   }));
 }
 
+/** Save the calibrated px→m scale (Adjust on Calibrate scale) → { ok, scale }. */
+export function putScale(runId, ratio) {
+  return readJson(put({
+    apiName: 'quantApi',
+    path: `/agent/runs/${runId}/scale`,
+    options: { body: { ratio } },
+  }));
+}
+
 /** Approve the current stage → advance. `seq` is the last seq the client saw. */
 export function approveStage(runId, seq) {
   return readJson(post({

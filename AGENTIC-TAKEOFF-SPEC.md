@@ -206,7 +206,7 @@ alongside the Amazon Payment Services integration if abuse proves material.
 | Rate library | Not a v1 blocker; quantities is the universal output |
 | Rejection loop (v1) | Hand-edit then resume; agent-resume-from-feedback deferred |
 | Checkpoint = canvas review | Each stage's output renders on the canvas as a **proposed overlay** (non-destructive); merged into the project only on finish |
-| "Adjust" replaces "Reject" | The action button is **Adjust**, opening a **per-stage editable window** for that stage's output before approving. Every stage surfaces what it produced in an editable form — e.g. **scale** shown in an editable field, **detected objects** editable on the canvas, **quantities** editable in a table — so nothing reaches the report stage unreviewed. (planned; canvas preview ✅ is the first piece) |
+| "Adjust" replaces "Reject" | The action button is **Adjust**, opening a per-stage editable window for that stage's output before approving. **Detect ✅** (edit on canvas → push back) and **Calibrate scale ✅** (draw a known length with Scale Cal., or type m/px → push back) are done. **Quantities are NOT directly editable** — all quantities derive from the drawing (detections × scale), so you adjust the detections or the scale and they recompute; a manual quantities override would break traceability. |
 | Scale failure | Mandatory human gate (hard-stop, never guess) |
 | Billable unit | Per sheet/page processed |
 | Quotas | Per-tier |
