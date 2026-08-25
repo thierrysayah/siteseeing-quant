@@ -85,6 +85,7 @@ exports.handler = async (event) => {
  */
 async function runStage(run, stageIndex) {
   const key = STAGES[stageIndex].key;
+  if (key === 'understand_sheet') return understandSheetStage(run);
   if (key === 'calibrate_scale') return calibrateStage(run);
   if (key === 'detect') return detectStage(run);   // detect + trim/clean in one
   if (key === 'quantify') return quantifyStage(run);
@@ -97,20 +98,98 @@ async function runStage(run, stageIndex) {
   };
 }
 
+// Stage 1 — Understand sheet (VLM): classify the sheet and read the title block.
+// Advisory/informational; a VLM failure never blocks the pipeline.
+async function understandSheetStage(run) {
+  const { fetchPagePng } = require('./lib/pageimage');
+  const { askVlmImage, extractJson, MODEL } = require('./lib/vlm');
+  const prompt = 'You are reading one architectural/engineering drawing sheet. '
+    + 'Return ONLY compact JSON, no prose:\n'
+    + '{"sheetType": one of ["architectural","electrical","plumbing","structural","mechanical","other"],'
+    + ' "projectName": string|null, "drawingNumber": string|null, "revision": string|null,'
+    + ' "statedScale": string|null}\n'
+    + 'Read the title block for the fields. statedScale is the printed scale like "1:100" if present, else null. Use null when unsure.';
+
+  let data = null, text = '';
+  try {
+    const { buffer } = await fetchPagePng(run);
+    text = await askVlmImage(buffer, prompt, { maxTokens: 400 });
+    data = extractJson(text);
+  } catch (e) {
+    console.error('[understandSheet]', e);
+    return {
+      output: `Sheet analysis unavailable (${e.name || 'error'}) — Approve to continue.`,
+      evidence: String(e.message || e).slice(0, 160),
+      confidence: 1, gate: 'approve',
+    };
+  }
+  if (!data) {
+    return {
+      output: 'Read the sheet (structured fields unclear) — Approve to continue.',
+      evidence: (text || '').slice(0, 160) || 'no reply',
+      confidence: 1, gate: 'approve',
+    };
+  }
+  const bits = [];
+  if (data.sheetType) bits.push(data.sheetType);
+  if (data.drawingNumber) bits.push(`dwg ${data.drawingNumber}`);
+  if (data.revision) bits.push(`rev ${data.revision}`);
+  if (data.statedScale) bits.push(`scale ${data.statedScale}`);
+  return {
+    output: `Sheet: ${data.projectName || '(unnamed)'}${bits.length ? ' — ' + bits.join(' · ') : ''}.`,
+    evidence: `Read by ${MODEL.split('.').slice(-1)[0].split(':')[0]} (Bedrock).`,
+    confidence: 1, gate: 'approve',
+    fields: { sheetInfo: data },
+  };
+}
+
 // Stage 2 — Calibrate scale (manual, pre-VLM): seed the run's px→m from the
 // project scale so quantities are in real units. The user recalibrates by
 // drawing (Adjust → Scale Cal.), which sets run.scale via PUT /scale.
+// Architectural/engineering scales come in standard denominators — snap to the
+// nearest so a noisy 109 reads as 100.
+const STANDARD_SCALES = [1, 2, 5, 10, 20, 25, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 750, 1000, 1250, 1500, 2000, 2500, 5000];
+function snapStandard(d) {
+  if (!d || d <= 0) return null;
+  return STANDARD_SCALES.reduce((best, s) => (Math.abs(s - d) < Math.abs(best - d) ? s : best), STANDARD_SCALES[0]);
+}
+// Parse a "1:100" / "1:100 @ A1" / "1/100" stated scale → the denominator.
+function parseStatedScale(s) {
+  if (!s || typeof s !== 'string') return null;
+  const m = s.match(/1\s*[:/]\s*(\d{1,5})/);
+  return m ? parseInt(m[1], 10) : null;
+}
+
 async function calibrateStage(run) {
   const { readProjectScale } = require('./lib/pageimage');
-  const ratio = await readProjectScale(run);
-  if (ratio) {
+  const PAPER_MM_PER_PX = 25.4 / 150;               // 150 DPI render (matches client)
+  const denomToRatio = (d) => (PAPER_MM_PER_PX / 1000) * d;  // exact px→m from 1:d
+  const ratioToDenom = (r) => Math.round(r * 1000 / PAPER_MM_PER_PX);
+
+  // 1) Prefer the drawing's stated scale (read by Understand sheet). Deriving the
+  //    ratio from a standard 1:d is more accurate than a hand measurement.
+  const stated = snapStandard(parseStatedScale(run.sheetInfo && run.sheetInfo.statedScale));
+  if (stated) {
     return {
-      output: `Scale: 1px = ${ratio} m (from the project). Approve, or Adjust to recalibrate.`,
-      evidence: 'Read from the project scale — areas/lengths will be in real units.',
+      output: `Scale: 1 : ${stated} (read from the title block). Approve, or Adjust.`,
+      evidence: `From the drawing's stated scale "${run.sheetInfo.statedScale}".`,
       confidence: 1, gate: 'approve',
-      fields: { scale: ratio },
+      fields: { scale: denomToRatio(stated) },   // exact ratio for that 1:d
     };
   }
+
+  // 2) Fall back to the project's calibrated scale, shown as the nearest standard.
+  const ratio = await readProjectScale(run);
+  if (ratio) {
+    const denom = snapStandard(ratioToDenom(ratio));
+    return {
+      output: `Scale: 1 : ${denom} (from the project). Approve, or Adjust to recalibrate.`,
+      evidence: 'From the project scale — Adjust to set it exactly from the drawing.',
+      confidence: 1, gate: 'approve',
+      fields: { scale: ratio },   // keep the measured ratio for quantify
+    };
+  }
+
   return {
     output: 'No scale set. Adjust to calibrate (draw a known length), or Approve for pixel-based quantities.',
     evidence: 'No project scale found.',

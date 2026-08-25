@@ -18,5 +18,13 @@
     "Action": ["cognito-idp:ListUsers"],
     "Resource": ["arn:aws:cognito-idp:eu-west-3:851725386383:userpool/eu-west-3_jpxbGzhTX"],
     "Effect": "Allow"
+  },
+  {
+    "Action": ["bedrock:InvokeModel"],
+    "Resource": [
+      "arn:aws:bedrock:*::foundation-model/*",
+      "arn:aws:bedrock:*:851725386383:inference-profile/*"
+    ],
+    "Effect": "Allow"
   }
 ]

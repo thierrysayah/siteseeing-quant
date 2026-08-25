@@ -328,7 +328,7 @@ export default function AgentRunPanel({
                 </div>
 
                 {scaleCal.ratio != null
-                  ? <div style={styles.scaleCurrent}>✓ 1 px = {Number(scaleCal.ratio).toFixed(6)} m</div>
+                  ? <div style={styles.scaleCurrent}>✓ Scale 1 : {scaleCal.denom}</div>
                   : <div style={styles.scaleNone}>No scale set yet</div>}
 
                 <div style={styles.actions}>

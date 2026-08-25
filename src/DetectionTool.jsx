@@ -90,6 +90,15 @@ const PDF_SCALE = PDF_RENDER_DPI / 72; // pdf.js uses 72 dpi as base
 // with no line-drawing calibration: ratio = PAPER_MM_PER_PX/1000 × N.
 const PAPER_MM_PER_PX = 25.4 / PDF_RENDER_DPI;
 
+// Drawing scales come in standard denominators — snap a computed value so a noisy
+// 109 reads as 100. Keep in sync with the worker's STANDARD_SCALES.
+const STANDARD_SCALES = [1, 2, 5, 10, 20, 25, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 750, 1000, 1250, 1500, 2000, 2500, 5000];
+const scaleDenomFromRatio = (r) => {
+  if (!(r > 0)) return null;
+  const d = r * 1000 / PAPER_MM_PER_PX;
+  return STANDARD_SCALES.reduce((best, s) => (Math.abs(s - d) < Math.abs(best - d) ? s : best), STANDARD_SCALES[0]);
+};
+
 // ─── PDF.JS LOADER ────────────────────────────────────────────────────────────
 // Lazy-loads pdf.js from cdnjs. Returns the pdfjsLib global.
 let _pdfJsPromise = null;
@@ -4816,7 +4825,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
           <div style={styles.cartCells}>
             <div style={styles.cartCell}>
               <div style={styles.cartK}>Scale</div>
-              <div style={styles.cartV}>{ratio ? `${ratio.toFixed(4)} m/px` : "—"}</div>
+              <div style={styles.cartV}>{ratio ? `1:${scaleDenomFromRatio(ratio)}` : "—"}</div>
             </div>
             <div style={styles.cartCell}>
               <div style={styles.cartK}>Zoom</div>
@@ -4945,6 +4954,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
             drawingScaleDenom, setDrawingScaleDenom, applyDrawingScale,
             realLength, setRealLength, pixelLength, setPixelLength, calculateRatio,
             ratio,
+            denom: scaleDenomFromRatio(ratio),
           }}
           onClose={() => { setShowAgent(false); setAgentPreview(null); }}
         />
@@ -5405,7 +5415,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
               <span style={{ color: "var(--tx-label)", fontSize: 11 }}>px</span>
             </div>
             <button onClick={calculateRatio} style={{ ...styles.smallBtn, width: "100%" }}>Set Scale</button>
-            {ratio != null && <div style={styles.ratioDisplay}>px = {ratio.toFixed(6)} m</div>}
+            {ratio != null && <div style={styles.ratioDisplay}>Scale 1 : {scaleDenomFromRatio(ratio)}</div>}
           </div>
 
           {/* Export */}
