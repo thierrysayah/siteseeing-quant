@@ -90,6 +90,7 @@ async function runStage(run, stageIndex) {
   if (key === 'understand_sheet') return understandSheetStage(run);
   if (key === 'calibrate_scale') return calibrateStage(run);
   if (key === 'detect') return detectStage(run);   // detect + trim/clean in one
+  if (key === 'classify_tag') return classifyTagStage(run);
   if (key === 'quantify') return quantifyStage(run);
   const s = STAGES[stageIndex];
   return {
@@ -247,6 +248,103 @@ async function detectStage(run) {
     confidence: 1,
     gate: 'approve',
     fields: { detectionsKey: outKey },
+  };
+}
+
+// Stage 4 — Classify & tag (VLM): read EVERY sheet in the set to pull out the
+// reference schedules (doors, windows, rooms/finishes, legend) — they usually
+// live on their own sheets — then tag the current plan's detected zones with a
+// room name/number. Degrades gracefully: any VLM failure still Approves so the
+// pipeline isn't blocked; the reference is advisory + editable downstream.
+const MAX_CLASSIFY_PAGES = Number(process.env.CLASSIFY_MAX_PAGES || 12);
+
+async function classifyTagStage(run) {
+  const {
+    listProjectPages, fetchPngByKey, fetchPagePng, getJsonArtifact, putJsonArtifact,
+  } = require('./lib/pageimage');
+  const { askVlmImage, extractJson, imageSize, MODEL } = require('./lib/vlm');
+  const { EXTRACT_PROMPT, tagPrompt, centroidOf, mergeReference } = require('./lib/classify');
+
+  // 1) Read every sheet (capped) for schedules/legends.
+  const pageKeys = await listProjectPages(run);
+  const scan = pageKeys.slice(0, MAX_CLASSIFY_PAGES);
+  const perPage = [];
+  let readOk = 0;
+  for (const key of scan) {
+    try {
+      const buf = await fetchPngByKey(key);
+      const text = await askVlmImage(buf, EXTRACT_PROMPT, { maxTokens: 1500 });
+      const data = extractJson(text);
+      if (data) {
+        perPage.push({ sheet: key.split('/').pop(), ...data });
+        readOk++;
+      }
+    } catch (e) {
+      console.warn('[classify] page read failed', key, e.message);
+    }
+  }
+  const reference = mergeReference(perPage);
+  const sheetTypes = perPage.map(p => p.sheetType).filter(Boolean);
+
+  // 2) Tag the current plan's zones (best-effort, one call).
+  let taggedZones = 0, detectionsKey = run.detectionsKey;
+  try {
+    if (run.detectionsKey) {
+      const det = await getJsonArtifact(run.detectionsKey);
+      const anns = det.annotations || [];
+      const zones = anns.filter(a => a.clsName === 'zone');
+      if (zones.length) {
+        const { buffer } = await fetchPagePng(run);
+        const { w, h } = await imageSize(buffer);
+        const items = [];
+        zones.forEach((z, idx) => {
+          const c = centroidOf(z);
+          if (c) items.push({ i: idx, _ref: z, nx: c[0] / w, ny: c[1] / h });
+        });
+        if (items.length) {
+          const text = await askVlmImage(buffer, tagPrompt(items, reference.rooms), { maxTokens: 1200 });
+          const parsed = extractJson(text);
+          const tags = (parsed && Array.isArray(parsed.zones)) ? parsed.zones : [];
+          const byIndex = new Map(items.map(it => [it.i, it._ref]));
+          for (const t of tags) {
+            const z = byIndex.get(t.i);
+            if (!z) continue;
+            const label = [t.number, t.label].filter(Boolean).join(' ').trim();
+            if (label) { z.zoneTag = label; taggedZones++; }
+          }
+          if (taggedZones) {
+            detectionsKey = await putJsonArtifact(run.runId, 'detections-tagged.json', {
+              annotations: anns, meta: det.meta || null, taggedAt: new Date().toISOString(),
+            });
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[classify] zone tagging failed', e.message);
+  }
+
+  const referenceKey = await putJsonArtifact(run.runId, 'reference.json', {
+    reference, sheetTypes, pagesScanned: scan.length, pagesRead: readOk,
+    generatedAt: new Date().toISOString(),
+  });
+
+  const bits = [];
+  if (reference.doors.length)   bits.push(`${reference.doors.length} door type${reference.doors.length > 1 ? 's' : ''}`);
+  if (reference.windows.length) bits.push(`${reference.windows.length} window type${reference.windows.length > 1 ? 's' : ''}`);
+  if (reference.rooms.length)   bits.push(`${reference.rooms.length} room${reference.rooms.length > 1 ? 's' : ''}`);
+  if (reference.legend.length)  bits.push(`${reference.legend.length} legend item${reference.legend.length > 1 ? 's' : ''}`);
+  if (taggedZones)              bits.push(`${taggedZones} zone${taggedZones > 1 ? 's' : ''} tagged`);
+
+  return {
+    output: `Read ${readOk}/${scan.length} sheet${scan.length > 1 ? 's' : ''}`
+      + (bits.length ? ` — ${bits.join(', ')}.` : ' — no schedules found.')
+      + ' Approve, or Adjust the tags.',
+    evidence: `Schedules/legend by ${MODEL.split('.').slice(-1)[0].split(':')[0]} (Bedrock)`
+      + (pageKeys.length > scan.length ? `; scanned first ${scan.length} of ${pageKeys.length} sheets.` : '.'),
+    confidence: 1,
+    gate: 'approve',
+    fields: { referenceKey, detectionsKey, taggedZones },
   };
 }
 

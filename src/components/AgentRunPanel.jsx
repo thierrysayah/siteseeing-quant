@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  startRun, getRun, getQuota, getDetections, putDetections, putScale,
+  startRun, getRun, getQuota, getDetections, getReference, putDetections, putScale,
   approveStage, rejectStage, cancelRun, TERMINAL,
 } from '../services/agentService';
 
@@ -43,6 +43,8 @@ export default function AgentRunPanel({
   const [detCount, setDetCount] = useState(null); // # of proposed detections loaded
   const [quota, setQuota] = useState(null);       // { used, limit, remaining } free trial
   const [exhausted, setExhausted] = useState(false); // trial used up — can't start
+  const [reference, setReference] = useState(null); // extracted schedules (classify stage)
+  const refKeyRef = useRef(null);                  // which referenceKey we last fetched
   const pollRef = useRef(null);
   const detRef = useRef(null);       // latest fetched detections
   const detKeyRef = useRef(null);    // which detectionsKey we last fetched
@@ -115,6 +117,22 @@ export default function AgentRunPanel({
     })();
     return () => { cancelled = true; };
   }, [run?.detectionsKey, run?.runId]);
+
+  // Fetch the extracted schedules once the classify stage writes them.
+  useEffect(() => {
+    if (!run?.referenceKey || run.referenceKey === refKeyRef.current) return;
+    const key = run.referenceKey;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await getReference(run.runId);
+        if (cancelled) return;
+        refKeyRef.current = key;
+        setReference(data?.reference || null);
+      } catch { /* summary text still conveys the counts */ }
+    })();
+    return () => { cancelled = true; };
+  }, [run?.referenceKey, run?.runId]);
 
   // On finish, merge the detections into the editor (once).
   useEffect(() => {
@@ -294,6 +312,9 @@ export default function AgentRunPanel({
               )}
             </div>
 
+            {/* extracted schedules (Classify & tag) */}
+            {run.stageKey === 'classify_tag' && reference && <ScheduleView reference={reference} />}
+
             {/* actions — normal review */}
             {canAct && !adjusting && (
               <div style={styles.actions}>
@@ -409,6 +430,50 @@ function StatusPill({ status }) {
   return <span style={{ ...styles.pill, color: s.c, borderColor: s.c }}>{s.t}</span>;
 }
 
+// Compact viewer for the reference tables the Classify & tag stage extracts from
+// the whole sheet set. Read-only for now (editing lands in a later slice).
+function ScheduleView({ reference }) {
+  const { doors = [], windows = [], rooms = [], legend = [] } = reference || {};
+  const total = doors.length + windows.length + rooms.length + legend.length;
+  if (!total) return <div style={styles.schedEmpty}>No schedules or legend found on the sheet set.</div>;
+
+  const Table = ({ title, rows, cols }) => rows.length ? (
+    <details style={styles.schedGroup}>
+      <summary style={styles.schedSummary}>{title} <span style={styles.schedCount}>{rows.length}</span></summary>
+      <div style={styles.schedScroll}>
+        <table style={styles.schedTable}>
+          <thead><tr>{cols.map(c => <th key={c.k} style={styles.schedTh}>{c.h}</th>)}</tr></thead>
+          <tbody>
+            {rows.slice(0, 200).map((r, i) => (
+              <tr key={i}>{cols.map(c => <td key={c.k} style={styles.schedTd}>{fmt(r[c.k])}</td>)}</tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  ) : null;
+
+  return (
+    <div style={styles.schedBox}>
+      <Table title="Doors" rows={doors} cols={[
+        { k: 'mark', h: 'Mark' }, { k: 'width_mm', h: 'W' }, { k: 'height_mm', h: 'H' },
+        { k: 'type', h: 'Type' }, { k: 'fireRating', h: 'Fire' },
+      ]} />
+      <Table title="Windows" rows={windows} cols={[
+        { k: 'mark', h: 'Mark' }, { k: 'width_mm', h: 'W' }, { k: 'height_mm', h: 'H' },
+        { k: 'type', h: 'Type' },
+      ]} />
+      <Table title="Rooms" rows={rooms} cols={[
+        { k: 'number', h: 'No.' }, { k: 'name', h: 'Name' }, { k: 'finish', h: 'Finish' },
+      ]} />
+      <Table title="Legend" rows={legend} cols={[
+        { k: 'symbol', h: 'Symbol' }, { k: 'meaning', h: 'Meaning' },
+      ]} />
+    </div>
+  );
+}
+const fmt = (v) => (v == null || v === '' ? '—' : String(v));
+
 function terminalMessage(status) {
   if (status === 'done') return 'Takeoff complete.';
   if (status === 'rejected') return 'Stage rejected — run stopped.';
@@ -445,6 +510,15 @@ const styles = {
   previewNote: { marginTop: 9, paddingTop: 9, borderTop: '1px solid var(--bd-section)', fontSize: 12, color: 'var(--accent2)' },
   adjustNote: { marginBottom: 10, padding: 10, background: 'var(--amber-soft)', border: '1px solid var(--amber-bd)', borderRadius: 6, fontSize: 12, color: 'var(--tx-body)', lineHeight: 1.5 },
   quotaLine: { marginTop: 8, fontSize: 11, color: 'var(--tx-dim)', letterSpacing: 0.2 },
+  schedBox: { marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 },
+  schedEmpty: { marginTop: 10, fontSize: 12, color: 'var(--tx-dim)', fontStyle: 'italic' },
+  schedGroup: { border: '1px solid var(--bd-panel)', borderRadius: 6, background: 'var(--bg-badge)' },
+  schedSummary: { cursor: 'pointer', padding: '7px 10px', fontSize: 12, fontWeight: 600, color: 'var(--tx-body)', userSelect: 'none' },
+  schedCount: { marginLeft: 6, fontSize: 11, fontWeight: 400, color: 'var(--tx-dim)' },
+  schedScroll: { maxHeight: 180, overflow: 'auto', padding: '0 8px 8px' },
+  schedTable: { width: '100%', borderCollapse: 'collapse', fontSize: 11 },
+  schedTh: { textAlign: 'left', padding: '4px 6px', color: 'var(--tx-dim)', fontWeight: 600, borderBottom: '1px solid var(--bd-panel)', position: 'sticky', top: 0, background: 'var(--bg-badge)' },
+  schedTd: { padding: '3px 6px', color: 'var(--tx-body)', borderBottom: '1px solid var(--bd-divider)', whiteSpace: 'nowrap' },
   trialBox: { marginTop: 12, padding: 14, background: 'var(--bg-badge)', border: '1px solid var(--bd-panel)', borderRadius: 8 },
   trialTitle: { fontSize: 14, fontWeight: 700, color: 'var(--tx-body)', marginBottom: 6 },
   trialBody: { fontSize: 12, color: 'var(--tx-dim)', lineHeight: 1.5, marginBottom: 12 },

@@ -102,6 +102,7 @@ exports.handler = async (event) => {
 
       if (method === 'GET' && !action) return getRun(userId, runId);
       if (method === 'GET' && action === 'detections') return getDetections(userId, runId);
+      if (method === 'GET' && action === 'reference') return getReference(userId, runId);
       if (method === 'PUT' && action === 'detections') return putDetections(userId, runId, body);
       if (method === 'PUT' && action === 'scale') return putScale(userId, runId, body);
       if (method === 'POST' && action === 'approve') return advanceRun(userId, runId, body, 'approve');
@@ -188,6 +189,23 @@ async function getDetections(userId, runId) {
   } catch (err) {
     console.error('[getDetections]', err);
     return resp(500, { error: 'could not read detections' });
+  }
+}
+
+// Return the reference tables (door/window/room schedules + legend) the
+// Classify & tag stage extracted from the whole sheet set.
+async function getReference(userId, runId) {
+  const item = await loadOwned(userId, runId);
+  if (!item) return resp(404, { error: 'run not found' });
+  if (item === 'forbidden') return resp(403, { error: 'not your run' });
+  if (!item.referenceKey) return resp(404, { error: 'no reference yet' });
+  try {
+    const obj = await s3.send(new GetObjectCommand({ Bucket: PROJECT_BUCKET, Key: item.referenceKey }));
+    const data = JSON.parse(await obj.Body.transformToString());
+    return resp(200, data);
+  } catch (err) {
+    console.error('[getReference]', err);
+    return resp(500, { error: 'could not read reference' });
   }
 }
 
@@ -439,6 +457,8 @@ function publicView(item) {
     status: item.status,
     seq: item.seq,
     detectionsKey: item.detectionsKey || null,
+    referenceKey: item.referenceKey || null,
+    taggedZones: item.taggedZones ?? null,
     scale: item.scale ?? null,
     output: item.stageOutput,
     evidence: item.evidence,

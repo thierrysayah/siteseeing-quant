@@ -48,7 +48,7 @@ thin wrapper) or **[VLM]/[LLM]** (needs a model). Every stage ends in a
 | 1 | Understand sheet | **[VLM]** | Classify sheet type (electrical/plumbing/structural), read the title block (project, drawing no., revision). Routes which detection models to run. |
 | 2 | Calibrate scale | **[VLM]** | Read the scale bar / "1:100" note → derive px→m. **Hard-stops for human input if unreadable** (§6). |
 | 3 | **Detect & clean** | **[tool]** | Run detection (`/infer`: wall / zone / zoneseg), then immediately **trim zone overhangs** (the app's algorithm): remove the part of a zone poking into a neighbour so areas aren't double-counted, delete duplicate zones, **leave ambiguous pairs alone** (offender chosen from vertex-containment + compactness; never guessed), and **flag** (keep) low-confidence items. The user reviews/edits this cleaned set (Adjust). One step — detect and cleanup were merged. |
-| 4 | Classify & tag | **[VLM]** | Map detections to classes/zone tags using the drawing legend + schedules. |
+| 4 | Classify & tag | **[VLM]** | Scan the WHOLE sheet set to extract the reference tables (door schedule, window schedule, room/finish schedule, legend) — they usually live on their own sheets — then tag the current plan's zones with a room name/number. |
 | 5 | Quantify | **[tool]** | Compute counts, lengths, areas, perimeters — real units from the project scale, else pixel-based. |
 | 6 | QA pass | **[VLM/LLM]** | Second-pass review: flag misses/hallucinations, overlapping/double-counted zones, obvious gaps. Advisory — surfaces issues, doesn't silently fix. **Must read the detections JSON as a required input** (the full annotation set from Detect & clean), so it can adjudicate the genuinely *ambiguous* overlap pairs the deterministic trim leaves alone, and cross-check against the drawing. |
 | 7 | **Price** *(optional)* | **[tool]** | Multiply quantities × rate card → costed estimate. **Enterprise-only, and only if the rate library is populated AND the user opts in.** Otherwise ends at quantities only. |
@@ -56,6 +56,19 @@ thin wrapper) or **[VLM]/[LLM]** (needs a model). Every stage ends in a
 
 **8 stages** (detect+clean merged). Intelligence is concentrated in stages
 1, 2, 4, 6, 8; stages 3, 5, 7 are deterministic tools.
+
+**Classify & tag (P2c, shipped).** One VLM call **per sheet** (capped at
+`CLASSIFY_MAX_PAGES`, default 12) reads each page for door/window/room/finish
+schedules and legend; rows are merged across sheets and deduped by mark (first
+non-empty row wins, later rows backfill blanks). A second best-effort call tags
+the current plan's zones by feeding the VLM normalised zone centroids + the room
+schedule as context, writing `zoneTag` onto matched zones (`detections-tagged.json`,
+`detectionsKey` repointed). Everything **degrades gracefully** — any VLM/read
+failure still Approves so the pipeline isn't blocked. Output artifact
+`reference.json` (`GET /agent/runs/{id}/reference`) is shown in the panel as
+collapsible Doors/Windows/Rooms/Legend tables (read-only for now; editing is a
+later slice). Cost note: reading N sheets is N vision calls — the main cost
+driver of a run.
 
 ---
 

@@ -48,4 +48,10 @@ function extractJson(text) {
   try { return JSON.parse(m[0]); } catch { return null; }
 }
 
-module.exports = { askVlmImage, extractJson, downscale, MODEL };
+/** Original pixel dimensions of an image buffer → { w, h }. */
+async function imageSize(buffer) {
+  const img = await Jimp.read(buffer);
+  return { w: img.bitmap.width, h: img.bitmap.height };
+}
+
+module.exports = { askVlmImage, extractJson, imageSize, downscale, MODEL };

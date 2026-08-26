@@ -38,6 +38,11 @@ export function getDetections(runId) {
   return readJson(get({ apiName: 'quantApi', path: `/agent/runs/${runId}/detections` }));
 }
 
+/** Fetch the extracted reference tables → { reference:{doors,windows,rooms,legend}, ... }. */
+export function getReference(runId) {
+  return readJson(get({ apiName: 'quantApi', path: `/agent/runs/${runId}/reference` }));
+}
+
 /** Save the user's edited detections (Adjust) → { ok, count }. */
 export function putDetections(runId, annotations) {
   return readJson(put({

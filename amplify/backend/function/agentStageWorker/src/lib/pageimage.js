@@ -73,6 +73,24 @@ async function fetchPagePng(run) {
   throw new Error(`page image not found for project ${projectId}`);
 }
 
+/** List every page raster key for the project (sorted). For whole-set reads
+ *  like schedule/legend extraction, which live on sheets other than the plan. */
+async function listProjectPages(run) {
+  const orgId = await resolveOrgId(run.userId);
+  for (const prefix of candidatePrefixes(run.userId, orgId, run.projectId)) {
+    const { Contents } = await s3.send(new ListObjectsV2Command({ Bucket: BUCKET, Prefix: prefix }));
+    const pngs = (Contents || []).filter(o => PAGE_RE.test(o.Key)).map(o => o.Key).sort();
+    if (pngs.length) return pngs;
+  }
+  return [];
+}
+
+/** Fetch one page raster by its exact S3 key → Buffer. */
+async function fetchPngByKey(key) {
+  const obj = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }));
+  return Buffer.from(await obj.Body.transformToByteArray());
+}
+
 /** Read the project's px→m scale from settings.json, or null if unset. */
 async function readProjectScale(run) {
   const sub = run.userId;
@@ -120,4 +138,7 @@ async function putJsonArtifact(runId, name, data) {
   return key;
 }
 
-module.exports = { fetchPagePng, putJsonArtifact, getJsonArtifact, readProjectScale, readAutoSimplifyDist };
+module.exports = {
+  fetchPagePng, listProjectPages, fetchPngByKey,
+  putJsonArtifact, getJsonArtifact, readProjectScale, readAutoSimplifyDist,
+};
