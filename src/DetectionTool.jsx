@@ -3540,6 +3540,16 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
     });
   };
 
+  // Scroll the canvas so an annotation's bbox (image coords) is centred — used by
+  // the agent panel's "Needs review" list to jump to a flagged shape.
+  const focusAnnotationBox = (bbox) => {
+    const el = containerRef.current;
+    if (!el || !bbox) return;
+    const [x1, y1, x2, y2] = bbox;
+    const cx = ((x1 + x2) / 2) * scale, cy = ((y1 + y2) / 2) * scale;
+    el.scrollTo({ left: cx - el.clientWidth / 2, top: cy - el.clientHeight / 2, behavior: 'smooth' });
+  };
+
   const currentPageLabel = () => {
     const p = allPagesRef.current.find(pg => pg.pageIndex === currentPageIndex);
     return p?.label || (p?.pdfPageNumber != null ? `Page ${p.pdfPageNumber}` : `Page ${currentPageIndex + 1}`);
@@ -4990,6 +5000,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
             ratio,
             denom: scaleDenomFromRatio(ratio),
           }}
+          onFocusBox={focusAnnotationBox}
           onClose={() => { setShowAgent(false); setAgentPreview(null); }}
         />
       )}

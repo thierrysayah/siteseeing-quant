@@ -26,6 +26,7 @@ const POLL_MS = 1500;
 export default function AgentRunPanel({
   projectId, pageId, onClose, onPreview, onApply, onAdjust, getAgentDetections,
   scaleCal,   // the editor's real Scale-Calibration state + handlers (both options)
+  onFocusBox, // (bbox) => scroll the canvas to a flagged shape
 }) {
   const [run, setRun] = useState(null);
   const [error, setError] = useState(null);
@@ -45,6 +46,7 @@ export default function AgentRunPanel({
   const [exhausted, setExhausted] = useState(false); // trial used up — can't start
   const [reference, setReference] = useState(null); // extracted schedules (classify stage)
   const refKeyRef = useRef(null);                  // which referenceKey we last fetched
+  const [flagged, setFlagged] = useState([]);      // annotations the agent flagged for review
   const pollRef = useRef(null);
   const detRef = useRef(null);       // latest fetched detections
   const detKeyRef = useRef(null);    // which detectionsKey we last fetched
@@ -110,6 +112,7 @@ export default function AgentRunPanel({
         detKeyRef.current = key;
         detRef.current = annotations || [];
         setDetCount(detRef.current.length);
+        setFlagged(detRef.current.filter(a => a.review));   // agent flagged these for review
         // If the user already adjusted (detections live in the editor), don't
         // re-show the overlay — that would double up with the real annotations.
         if (!appliedRef.current) onPreviewRef.current?.(detRef.current);
@@ -317,6 +320,9 @@ export default function AgentRunPanel({
             {/* extracted schedules (Classify & tag) */}
             {run.stageKey === 'classify_tag' && reference && <ScheduleView reference={reference} />}
 
+            {/* items the agent flagged for review — click to jump to them */}
+            {flagged.length > 0 && <ReviewList items={flagged} onFocus={onFocusBox} />}
+
             {/* actions — normal review */}
             {canAct && !adjusting && (
               <div style={styles.actions}>
@@ -477,6 +483,38 @@ function ScheduleView({ reference }) {
 }
 const fmt = (v) => (v == null || v === '' ? '—' : String(v));
 
+// A human reason for each review flag the agent set on an annotation.
+function reviewReason(a) {
+  const cls = a.clsName, tag = a.zoneTag;
+  if (a.review === 'reclassified')  return `${a.reclassFrom || '?'} → ${cls}${tag ? ` (${tag})` : ''} — auto-reclassified, confirm`;
+  if (a.review === 'oversized')     return `${cls} — room-sized, likely not a ${cls}`;
+  if (a.review === 'class_mismatch')return `${cls}${tag ? ` reads ${tag}` : ''} — check class`;
+  if (a.review === 'low_confidence')return `${cls}${tag ? ` (${tag})` : ''} — low confidence`;
+  return `${cls} — review`;
+}
+function annBbox(a) {
+  if (a.shapeType === 'polygon' && Array.isArray(a.points) && a.points.length) {
+    const xs = a.points.map(p => p[0]), ys = a.points.map(p => p[1]);
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  }
+  return [a.x1, a.y1, a.x2, a.y2];
+}
+// The agent's flagged items — each row jumps the canvas to that shape.
+function ReviewList({ items, onFocus }) {
+  return (
+    <details style={styles.reviewBox} open>
+      <summary style={styles.reviewSummary}>⚠ Needs review <span style={styles.schedCount}>{items.length}</span></summary>
+      <div style={styles.reviewScroll}>
+        {items.map((a, i) => (
+          <button key={i} style={styles.reviewRow} onClick={() => onFocus?.(annBbox(a))} title="Jump to it on the canvas">
+            {reviewReason(a)}
+          </button>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 function terminalMessage(status) {
   if (status === 'done') return 'Takeoff complete.';
   if (status === 'rejected') return 'Stage rejected — run stopped.';
@@ -522,6 +560,10 @@ const styles = {
   schedTable: { width: '100%', borderCollapse: 'collapse', fontSize: 11 },
   schedTh: { textAlign: 'left', padding: '4px 6px', color: 'var(--tx-dim)', fontWeight: 600, borderBottom: '1px solid var(--bd-panel)', position: 'sticky', top: 0, background: 'var(--bg-badge)' },
   schedTd: { padding: '3px 6px', color: 'var(--tx-body)', borderBottom: '1px solid var(--bd-divider)', whiteSpace: 'nowrap' },
+  reviewBox: { marginTop: 10, border: '1px solid var(--amber-bd)', borderRadius: 6, background: 'var(--amber-soft)' },
+  reviewSummary: { cursor: 'pointer', padding: '7px 10px', fontSize: 12, fontWeight: 600, color: 'var(--tx-body)', userSelect: 'none' },
+  reviewScroll: { maxHeight: 160, overflow: 'auto', padding: '0 6px 6px' },
+  reviewRow: { display: 'block', width: '100%', textAlign: 'left', padding: '6px 8px', margin: '3px 0', fontSize: 11, lineHeight: 1.4, color: 'var(--tx-body)', background: 'var(--bg-badge)', border: '1px solid var(--amber-bd)', borderRadius: 5, cursor: 'pointer' },
   trialBox: { marginTop: 12, padding: 14, background: 'var(--bg-badge)', border: '1px solid var(--bd-panel)', borderRadius: 8 },
   trialTitle: { fontSize: 14, fontWeight: 700, color: 'var(--tx-body)', marginBottom: 6 },
   trialBody: { fontSize: 12, color: 'var(--tx-dim)', lineHeight: 1.5, marginBottom: 12 },

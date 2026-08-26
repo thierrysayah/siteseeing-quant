@@ -320,10 +320,11 @@ async function classifyTagStage(run) {
   // door, or D## on a window) flags a probable misclassification rather than
   // silently forcing a same-kind mark.
   async function tagByMontage(image, font, group, kind, marks) {
-    if (!group.length) return { tagged: 0, mismatched: 0 };
+    if (!group.length) return { tagged: 0, reclassified: 0 };
     const CAP = 20;
+    const other = kind === 'door' ? 'window' : 'door';
     const wrongKind = kind === 'door' ? /^\s*W\s*\d/i : /^\s*D\s*\d/i;
-    let tagged = 0, mismatched = 0;
+    let tagged = 0, reclassified = 0;
     for (let start = 0; start < group.length; start += CAP) {
       const chunk = group.slice(start, start + CAP);
       const buf = await buildMontage(Jimp, image, chunk, font);
@@ -336,10 +337,17 @@ async function classifyTagStage(run) {
         const label = t.label != null ? String(t.label).trim() : '';
         if (!a || !label) continue;
         a.zoneTag = label; tagged++;
-        if (wrongKind.test(label)) { a.review = 'class_mismatch'; mismatched++; }  // likely mis-detected class
+        // A mark of the other kind is a near-certain mis-detection → auto-reclass
+        // (door↔window), keep the mark, and flag it for the user to confirm.
+        if (wrongKind.test(label)) {
+          a.reclassFrom = a.clsName;
+          a.clsName = other;
+          a.review = 'reclassified';
+          reclassified++;
+        }
       }
     }
-    return { tagged, mismatched };
+    return { tagged, reclassified };
   }
 
   // 1) Read every sheet (capped) for schedules/legends.
@@ -365,7 +373,7 @@ async function classifyTagStage(run) {
 
   // 2) Tag the current plan's zones (room name), doors and windows (schedule
   //    mark) — one VLM call per kind, best-effort. Marks come from the schedule.
-  let tagged = 0, oversized = 0, mismatched = 0, detectionsKey = run.detectionsKey;
+  let tagged = 0, oversized = 0, reclassified = 0, detectionsKey = run.detectionsKey;
   try {
     if (run.detectionsKey) {
       const det = await getJsonArtifact(run.detectionsKey);
@@ -389,7 +397,7 @@ async function classifyTagStage(run) {
         const dr = await tagByMontage(image, font, d.keep,  'door',   doorCtx);
         const wr = await tagByMontage(image, font, wg.keep, 'window', winCtx);
         tagged += dr.tagged + wr.tagged;
-        mismatched = dr.mismatched + wr.mismatched;
+        reclassified = dr.reclassified + wr.reclassified;
         if (tagged) {
           detectionsKey = await putJsonArtifact(run.runId, 'detections-tagged.json', {
             annotations: anns, meta: det.meta || null, taggedAt: new Date().toISOString(),
@@ -414,8 +422,8 @@ async function classifyTagStage(run) {
   if (reference.legend.length)  bits.push(`${reference.legend.length} legend item${reference.legend.length > 1 ? 's' : ''}`);
   if (taggedZones)              bits.push(`${taggedZones} element${taggedZones > 1 ? 's' : ''} tagged`);
   const flags = [];
-  if (oversized)   flags.push(`${oversized} oversized door/window flagged`);
-  if (mismatched)  flags.push(`${mismatched} possible mis-detected class flagged`);
+  if (oversized)     flags.push(`${oversized} oversized door/window flagged`);
+  if (reclassified)  flags.push(`${reclassified} auto-reclassified door↔window (confirm)`);
 
   return {
     output: `Read ${readOk}/${scan.length} sheet${scan.length > 1 ? 's' : ''}`
