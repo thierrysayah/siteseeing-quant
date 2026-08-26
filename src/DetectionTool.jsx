@@ -4906,9 +4906,12 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
       </div>
 
       {showAgent && (
+        // Send the exact page SLUG (matches the S3 key page-<slug>.png), not the raw
+        // label — "Page 2" vs "Page_2" once made the agent detect the wrong sheet.
+        // The agent detects on THIS page; it reads all pages for schedules/legends.
         <AgentRunPanel
           projectId={project.id}
-          pageId={pageCount > 1 ? currentPageLabel() : "0"}
+          pageId={pageCount > 1 ? pageSlugify(currentPageLabel(), currentPageIndex) : "0"}
           onPreview={(anns) => setAgentPreview(anns && anns.length ? anns : null)}
           onApply={(anns) => {
             if (!anns || !anns.length) return;

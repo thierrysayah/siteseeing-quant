@@ -43,12 +43,30 @@ function candidatePrefixes(sub, orgId, projectId) {
 
 const PAGE_RE = /\/page-[^/]+\.png$/;
 
-/** Fetch the page PNG for a run → { buffer, key }. Throws if not found. */
+// Mirror the client's pageSlugify (services/projectStorage.js) so a pageId sent
+// as a label ("Page 2") still matches the stored slug key ("page-Page_2.png").
+function slugify(s) {
+  if (s == null) return '';
+  return String(s).trim()
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '');
+}
+// The slug portion of a page key: ".../page-<slug>.png" → "<slug>".
+function keySlug(key) {
+  const m = key.match(/\/page-(.+)\.png$/);
+  return m ? m[1] : '';
+}
+
+/** Fetch the page PNG for a run → { buffer, key }. Throws if not found.
+ *  A specific pageId MUST resolve to that exact page — never silently fall back
+ *  to an arbitrary sheet (that once ran detection on a schedule page). */
 async function fetchPagePng(run) {
   const sub = run.userId;
   const projectId = run.projectId;
   const pageId = run.pageId;
   const orgId = await resolveOrgId(sub);
+  const wantSpecific = pageId != null && String(pageId) !== '' && String(pageId) !== '0';
 
   for (const prefix of candidatePrefixes(sub, orgId, projectId)) {
     const { Contents } = await s3.send(new ListObjectsV2Command({ Bucket: BUCKET, Prefix: prefix }));
@@ -57,13 +75,19 @@ async function fetchPagePng(run) {
 
     let chosen;
     if (pngs.length === 1) {
-      chosen = pngs[0];
-    } else if (pageId != null) {
-      chosen = pngs.find(o => o.Key.endsWith(`page-${pageId}.png`))
-            || pngs.find(o => o.Key.includes(String(pageId)))
-            || pngs[0];
+      chosen = pngs[0];                 // only one page — unambiguous
+    } else if (wantSpecific) {
+      const want = slugify(pageId);
+      // Exact slug match first, then a slugified compare (tolerant of the caller
+      // sending a raw label). No arbitrary fallback: a mismatch is an error.
+      chosen = pngs.find(o => o.Key.endsWith(`/page-${pageId}.png`))
+            || pngs.find(o => keySlug(o.Key) === want)
+            || pngs.find(o => slugify(keySlug(o.Key)) === want);
+      if (!chosen) {
+        throw new Error(`page '${pageId}' not found — have [${pngs.map(o => keySlug(o.Key)).join(', ')}]`);
+      }
     } else {
-      chosen = pngs[0];
+      chosen = pngs[0];                 // no page specified — first is fine
     }
 
     const obj = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: chosen.Key }));

@@ -47,12 +47,14 @@ function tagPrompt(zones, rooms) {
   return 'This is one floor plan. Detected rooms/zones are listed by index with '
     + 'NORMALISED centre coordinates (x,y each 0..1, origin top-left, x right, y down):\n'
     + list + '\n'
-    + 'For each zone, read the room NAME and/or NUMBER printed at or nearest that '
-    + 'point on the plan. Return ONLY JSON, no prose:\n'
-    + '{"zones": [{"i": number, "label": string|null, "number": string|null}]}\n'
-    + 'label is the room name (e.g. "Office", "WC", "Corridor"); number is the room '
-    + 'number if shown (e.g. "101"). Use null when nothing is legible near a point. '
-    + 'Do not guess.' + ctx;
+    + 'Give EVERY zone a room tag. Return ONLY JSON, no prose:\n'
+    + '{"zones": [{"i": number, "label": string, "number": string|null}]}\n'
+    + 'For each zone: (1) if a room NAME is printed at or near that point, use it '
+    + 'exactly (e.g. "Kitchen", "Office", "WC"); (2) else infer the room type from '
+    + 'the fixtures, size and adjacent labels (e.g. a WC pan → "WC", a sink run → '
+    + '"Kitchen", a large open area → "Hall"); (3) number is the room number if one '
+    + 'is printed (e.g. "101"), else null. Never return an empty label — always '
+    + 'assign your best room-type tag.' + ctx;
 }
 
 // Centroid of an annotation (box or polygon) in original pixel space.

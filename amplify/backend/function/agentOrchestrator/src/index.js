@@ -32,6 +32,9 @@ const {
 } = require('@aws-sdk/lib-dynamodb');
 const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');
 const { S3Client, GetObjectCommand, PutObjectCommand } = require('@aws-sdk/client-s3');
+const {
+  CognitoIdentityProviderClient, ListUsersCommand, AdminListGroupsForUserCommand,
+} = require('@aws-sdk/client-cognito-identity-provider');
 const { randomUUID } = require('crypto');
 
 const ddb = DynamoDBDocumentClient.from(
@@ -39,6 +42,8 @@ const ddb = DynamoDBDocumentClient.from(
 );
 const lambda = new LambdaClient({ region: process.env.REGION || 'eu-west-3' });
 const s3 = new S3Client({ region: process.env.REGION || 'eu-west-3' });
+const cognito = new CognitoIdentityProviderClient({ region: process.env.REGION || 'eu-west-3' });
+const USER_POOL_ID = process.env.USER_POOL_ID || 'eu-west-3_jpxbGzhTX';
 const TABLE = process.env.STORAGE_TAKEOFFRUNS_NAME || 'TakeoffRuns';
 const WORKER = process.env.FUNCTION_AGENTSTAGEWORKER_NAME;
 const PROJECT_BUCKET = process.env.PROJECT_BUCKET || 'estimation-platform-user-data';
@@ -123,13 +128,18 @@ async function createRun(userId, body) {
   const { projectId, pageId, pricingRequested } = body || {};
   if (!projectId) return resp(400, { error: 'projectId required' });
 
-  // Trial gate: claim one free sheet before doing any work. Metered per run
-  // STARTED — a single atomic conditional write, so two near-simultaneous starts
+  // Trial gate: ONLY free-tier (individual) users are capped at 3 sheets. Paid
+  // tiers (pro/enterprise) run unmetered for now. Claim one free sheet before any
+  // work — a single atomic conditional write, so two near-simultaneous starts
   // can't both slip past the last sheet.
-  const q = await consumeQuota(userId);
-  if (!q.ok) {
-    const quota = await readQuota(userId);
-    return resp(402, { error: 'Free trial used up', code: 'trial_exhausted', quota });
+  let quota = null;
+  if (await isTrialGated(userId)) {
+    const q = await consumeQuota(userId);
+    if (!q.ok) {
+      const cur = await readQuota(userId);
+      return resp(402, { error: 'Free trial used up', code: 'trial_exhausted', quota: cur });
+    }
+    quota = { used: q.used, limit: q.limit, remaining: q.remaining };
   }
 
   const now = new Date().toISOString();
@@ -164,7 +174,8 @@ async function createRun(userId, body) {
   // Run stage 0 asynchronously.
   await invokeWorker(runId, 0, 0);
 
-  return resp(201, { ...publicView(item), quota: { used: q.used, limit: q.limit, remaining: q.remaining } });
+  // quota is null for paid tiers → the panel simply shows no trial meter.
+  return resp(201, { ...publicView(item), quota });
 }
 
 async function getRun(userId, runId) {
@@ -342,6 +353,34 @@ async function advanceRun(userId, runId, body, kind) {
 // needs no extra AWS resource. Enforcement is one conditional ADD.
 const quotaKey = (userId) => `quota#${userId}`;
 
+// Resolve the caller's tier from Cognito groups (mirrors userService.getUserTier:
+// EnterpriseManager/EnterpriseQS → enterprise, Pro → pro, else individual).
+// IAM-authed requests carry no JWT claims, so we look the groups up by sub.
+async function resolveTier(userId) {
+  try {
+    const u = await cognito.send(new ListUsersCommand({
+      UserPoolId: USER_POOL_ID, Filter: `sub = "${userId}"`, Limit: 1,
+    }));
+    const username = u.Users?.[0]?.Username;
+    if (!username) return 'individual';
+    const g = await cognito.send(new AdminListGroupsForUserCommand({
+      UserPoolId: USER_POOL_ID, Username: username,
+    }));
+    const groups = (g.Groups || []).map(x => x.GroupName);
+    if (groups.includes('EnterpriseManager') || groups.includes('EnterpriseQS')) return 'enterprise';
+    if (groups.includes('Pro')) return 'pro';
+    return 'individual';
+  } catch (e) {
+    console.warn('[resolveTier] lookup failed, treating as individual:', e.message);
+    return 'individual';   // safest: still gated
+  }
+}
+
+// Only the free tier is capped by the 3-sheet trial.
+async function isTrialGated(userId) {
+  return (await resolveTier(userId)) === 'individual';
+}
+
 async function readQuota(userId) {
   const { Item } = await ddb.send(new GetCommand({ TableName: TABLE, Key: { runId: quotaKey(userId) } }));
   const limit = Item?.freeSheetsLimit ?? FREE_SHEETS_LIMIT;
@@ -350,6 +389,8 @@ async function readQuota(userId) {
 }
 
 async function getQuota(userId) {
+  // Paid tiers aren't trial-gated → report unlimited so the client hides the meter.
+  if (!(await isTrialGated(userId))) return resp(200, { unlimited: true });
   return resp(200, await readQuota(userId));
 }
 
