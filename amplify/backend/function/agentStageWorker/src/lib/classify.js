@@ -121,18 +121,19 @@ async function buildMontage(Jimp, image, elements, font, { cell = 224, cols = 5,
 // Prompt for a montage of same-kind elements → per-cell mark.
 function montageTagPrompt(kind, count, marks) {
   const eg = kind === 'door' ? 'D01, D02' : 'W01, W03';
+  const other = kind === 'door' ? 'window (W##)' : 'door (D##)';
   const clean = (marks || []).filter(Boolean);
   const ctx = clean.length
-    ? ` Every label MUST be one of these ${kind} schedule marks — never a mark of a `
-      + `different kind: [${clean.join(', ')}]. If a cell's mark is unclear, pick the `
-      + `closest one from that list.`
-    : ` If a cell's mark is unclear, give your best reading.`;
+    ? ` For reference the ${kind} schedule marks are: [${clean.join(', ')}]. If the centre `
+      + `element's own mark is unclear, prefer the closest of those.`
+    : '';
   return `This image is a numbered grid of ${count} crops. Each cell (labelled 0, 1, 2, …) `
-    + `shows ONE ${kind} from a floor plan, zoomed in, with its schedule MARK `
-    + `(like ${eg}) written inside or just beside it — read the mark for the ${kind} at `
-    + `the CENTRE of each cell (ignore neighbouring elements). `
-    + `Return ONLY JSON, no prose: {"tags":[{"i":<cell number>,"label":"<mark>"}]}. `
-    + `Use the exact printed mark.${ctx}`;
+    + `shows ONE element from a floor plan (expected to be a ${kind}), zoomed in, with a `
+    + `schedule MARK (like ${eg}) written inside or just beside it — read the mark for the `
+    + `element at the CENTRE of each cell (ignore neighbouring elements). `
+    + `Report EXACTLY what is printed: if the centre element's printed mark is actually a `
+    + `${other} mark, report that — do not force it to a ${kind} mark. `
+    + `Return ONLY JSON, no prose: {"tags":[{"i":<cell number>,"label":"<mark>"}]}.${ctx}`;
 }
 
 // Centroid of an annotation (box or polygon) in original pixel space.

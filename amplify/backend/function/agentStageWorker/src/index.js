@@ -291,14 +291,39 @@ async function classifyTagStage(run) {
     return n;
   }
 
+  // A door/window whose bbox is far larger than its peers is almost always a
+  // false detection (e.g. a whole room caught as a "door"). Flag those for review
+  // and exclude them from tagging — a room-sized crop can't yield a real mark.
+  const areaOf = (a) => {
+    if (a.shapeType === 'polygon' && a.points) {
+      const xs = a.points.map(p => p[0]), ys = a.points.map(p => p[1]);
+      return (Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys));
+    }
+    return Math.abs((a.x2 - a.x1) * (a.y2 - a.y1));
+  };
+  function dropOversized(group) {
+    if (group.length < 3) return { keep: group, flagged: 0 };
+    const areas = group.map(areaOf).sort((x, y) => x - y);
+    const median = areas[Math.floor(areas.length / 2)] || 0;
+    const keep = []; let flagged = 0;
+    for (const a of group) {
+      if (median > 0 && areaOf(a) > 6 * median) { a.review = 'oversized'; flagged++; }
+      else keep.push(a);
+    }
+    return { keep, flagged };
+  }
+
   // Doors/windows: the schedule MARK is small text in/near a ~40px bbox — reading
   // it off the whole downscaled plan is unreliable. Crop each element (zoomed,
   // padded to catch nearby marks) into a numbered montage and read per cell.
-  // Chunked so each cell stays legible.
+  // Chunked so each cell stays legible. A read mark of the WRONG kind (a W## on a
+  // door, or D## on a window) flags a probable misclassification rather than
+  // silently forcing a same-kind mark.
   async function tagByMontage(image, font, group, kind, marks) {
-    if (!group.length) return 0;
+    if (!group.length) return { tagged: 0, mismatched: 0 };
     const CAP = 20;
-    let n = 0;
+    const wrongKind = kind === 'door' ? /^\s*W\s*\d/i : /^\s*D\s*\d/i;
+    let tagged = 0, mismatched = 0;
     for (let start = 0; start < group.length; start += CAP) {
       const chunk = group.slice(start, start + CAP);
       const buf = await buildMontage(Jimp, image, chunk, font);
@@ -309,10 +334,12 @@ async function classifyTagStage(run) {
       for (const t of tags) {
         const a = byIdx.get(t.i);
         const label = t.label != null ? String(t.label).trim() : '';
-        if (a && label) { a.zoneTag = label; n++; }
+        if (!a || !label) continue;
+        a.zoneTag = label; tagged++;
+        if (wrongKind.test(label)) { a.review = 'class_mismatch'; mismatched++; }  // likely mis-detected class
       }
     }
-    return n;
+    return { tagged, mismatched };
   }
 
   // 1) Read every sheet (capped) for schedules/legends.
@@ -338,7 +365,7 @@ async function classifyTagStage(run) {
 
   // 2) Tag the current plan's zones (room name), doors and windows (schedule
   //    mark) — one VLM call per kind, best-effort. Marks come from the schedule.
-  let tagged = 0, detectionsKey = run.detectionsKey;
+  let tagged = 0, oversized = 0, mismatched = 0, detectionsKey = run.detectionsKey;
   try {
     if (run.detectionsKey) {
       const det = await getJsonArtifact(run.detectionsKey);
@@ -355,9 +382,14 @@ async function classifyTagStage(run) {
         // Load the plan + a bitmap font once for the door/window montages.
         const image = await Jimp.read(buffer);
         const font = await Jimp.loadFont(Jimp.FONT_SANS_16_BLACK);
+        // Flag & exclude room-sized false doors/windows before tagging.
+        const d = dropOversized(doors), wg = dropOversized(windows);
+        oversized = d.flagged + wg.flagged;
         tagged += await tagZones(buffer, w, h, zones, roomCtx);
-        tagged += await tagByMontage(image, font, doors,   'door',   doorCtx);
-        tagged += await tagByMontage(image, font, windows, 'window', winCtx);
+        const dr = await tagByMontage(image, font, d.keep,  'door',   doorCtx);
+        const wr = await tagByMontage(image, font, wg.keep, 'window', winCtx);
+        tagged += dr.tagged + wr.tagged;
+        mismatched = dr.mismatched + wr.mismatched;
         if (tagged) {
           detectionsKey = await putJsonArtifact(run.runId, 'detections-tagged.json', {
             annotations: anns, meta: det.meta || null, taggedAt: new Date().toISOString(),
@@ -381,10 +413,14 @@ async function classifyTagStage(run) {
   if (reference.rooms.length)   bits.push(`${reference.rooms.length} room${reference.rooms.length > 1 ? 's' : ''}`);
   if (reference.legend.length)  bits.push(`${reference.legend.length} legend item${reference.legend.length > 1 ? 's' : ''}`);
   if (taggedZones)              bits.push(`${taggedZones} element${taggedZones > 1 ? 's' : ''} tagged`);
+  const flags = [];
+  if (oversized)   flags.push(`${oversized} oversized door/window flagged`);
+  if (mismatched)  flags.push(`${mismatched} possible mis-detected class flagged`);
 
   return {
     output: `Read ${readOk}/${scan.length} sheet${scan.length > 1 ? 's' : ''}`
       + (bits.length ? ` — ${bits.join(', ')}.` : ' — no schedules found.')
+      + (flags.length ? ` ⚠ ${flags.join('; ')}.` : '')
       + ' Approve, or Adjust the tags.',
     evidence: `Schedules/legend by ${MODEL.split('.').slice(-1)[0].split(':')[0]} (Bedrock)`
       + (pageKeys.length > scan.length ? `; scanned first ${scan.length} of ${pageKeys.length} sheets.` : '.'),
