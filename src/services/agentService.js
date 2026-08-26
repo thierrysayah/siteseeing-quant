@@ -28,6 +28,11 @@ export function getRun(runId) {
   return readJson(get({ apiName: 'quantApi', path: `/agent/runs/${runId}` }));
 }
 
+/** Fetch the caller's free-trial quota → { used, limit, remaining }. */
+export function getQuota() {
+  return readJson(get({ apiName: 'quantApi', path: '/agent/quota' }));
+}
+
 /** Fetch the detections a run produced → { annotations, meta }. */
 export function getDetections(runId) {
   return readJson(get({ apiName: 'quantApi', path: `/agent/runs/${runId}/detections` }));

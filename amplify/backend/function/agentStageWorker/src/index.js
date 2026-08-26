@@ -65,7 +65,9 @@ exports.handler = async (event) => {
   }
 
   const fields = {
-    status: 'awaiting_approval',
+    // A 'needs_input' gate hard-stops the run: the user must supply input (e.g.
+    // calibrate the scale) before it can be approved.
+    status: stage.gate === 'needs_input' ? 'needs_input' : 'awaiting_approval',
     stageIndex,
     stageKey: STAGES[stageIndex].key,
     stageLabel: STAGES[stageIndex].label,
@@ -190,10 +192,13 @@ async function calibrateStage(run) {
     };
   }
 
+  // 3) No stated scale and no project scale — HARD STOP. Never guess or silently
+  //    fall back to pixels: every downstream quantity depends on this.
   return {
-    output: 'No scale set. Adjust to calibrate (draw a known length), or Approve for pixel-based quantities.',
-    evidence: 'No project scale found.',
-    confidence: 1, gate: 'approve',
+    output: 'Scale required — no scale on the drawing and none set for the project. '
+      + 'Set it to continue (enter the drawing ratio 1:N, or measure a known length).',
+    evidence: 'No stated scale in the title block and no project scale.',
+    confidence: 1, gate: 'needs_input',
   };
 }
 

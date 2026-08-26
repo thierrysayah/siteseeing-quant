@@ -148,6 +148,18 @@ would be unbounded cost.
 **It's just a bucket in the quota table**, drawn down before the paid bucket —
 not a separate system (see §19).
 
+**Implementation (P1d, shipped).** Metered **per run started**, enforced
+**server-side** in the orchestrator's `createRun`: one atomic conditional `ADD`
+on a sentinel row `runId = "quota#<cognito-sub>"` in the existing `takeoffruns`
+table (no new AWS resource). The condition
+`attribute_not_exists(freeSheetsUsed) OR freeSheetsUsed < freeSheetsLimit` means
+two near-simultaneous starts can't both claim the last sheet. On exhaustion the
+start returns **402 `trial_exhausted`** and the panel shows the "used up" upsell;
+otherwise the 201 carries `quota:{used,limit,remaining}` and the panel shows
+**"N of M free sheets left"**. `GET /agent/quota` returns the same for a pre-run
+display. Limit is `FREE_SHEETS_LIMIT` (env, default 3). No auto-refund on
+failed/cancelled runs yet — a later refinement.
+
 **Abuse gate.** Free + real per-sheet cost invites multi-account farming. A
 *card-required* trial is the strongest defence, but there is **no payment
 integration yet** (billing will be **Amazon Payment Services**, added later), so

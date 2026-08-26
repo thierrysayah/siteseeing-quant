@@ -1,10 +1,8 @@
 /* Amplify Params - DO NOT EDIT
 	ENV
-	FUNCTION_AGENTSTAGEWORKER_NAME
 	REGION
-	STORAGE_TAKEOFFRUNS_ARN
 	STORAGE_TAKEOFFRUNS_NAME
-	STORAGE_TAKEOFFRUNS_STREAMARN
+	STORAGE_TAKEOFFRUNS_ARN
 Amplify Params - DO NOT EDIT */
 
 /**
@@ -30,39 +28,20 @@ const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const {
   DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand,
 } = require('@aws-sdk/lib-dynamodb');
-const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');
-const { S3Client, GetObjectCommand, PutObjectCommand } = require('@aws-sdk/client-s3');
 const { randomUUID } = require('crypto');
 
 const ddb = DynamoDBDocumentClient.from(
   new DynamoDBClient({ region: process.env.REGION || 'eu-west-3' }),
 );
-const lambda = new LambdaClient({ region: process.env.REGION || 'eu-west-3' });
-const s3 = new S3Client({ region: process.env.REGION || 'eu-west-3' });
 const TABLE = process.env.STORAGE_TAKEOFFRUNS_NAME || 'TakeoffRuns';
-const WORKER = process.env.FUNCTION_AGENTSTAGEWORKER_NAME;
-const PROJECT_BUCKET = process.env.PROJECT_BUCKET || 'estimation-platform-user-data';
-// Free-trial allowance: number of agent runs a user can start without paying.
-const FREE_SHEETS_LIMIT = Number(process.env.FREE_SHEETS_LIMIT || 3);
-
-// Fire-and-forget async invoke of the stage worker. The worker flips the run
-// from 'running' back to 'awaiting_approval' when the stage finishes; the client
-// poll picks it up. (Async so a slow stage can't hit API Gateway's 29s limit.)
-async function invokeWorker(runId, stageIndex, expectedSeq) {
-  if (!WORKER) { console.error('[orchestrator] FUNCTION_AGENTSTAGEWORKER_NAME missing'); return; }
-  await lambda.send(new InvokeCommand({
-    FunctionName: WORKER,
-    InvocationType: 'Event',
-    Payload: Buffer.from(JSON.stringify({ runId, stageIndex, expectedSeq })),
-  }));
-}
 
 // The nine pipeline stages (spec §3). In P0 each is a stub; the real handlers
 // arrive in P1–P3. Order is the pipeline order.
 const STAGES = [
   { key: 'understand_sheet', label: 'Understand sheet' },
   { key: 'calibrate_scale',  label: 'Calibrate scale' },
-  { key: 'detect',           label: 'Detect & clean' },
+  { key: 'detect',           label: 'Detect' },
+  { key: 'cleanup',          label: 'Clean up' },
   { key: 'classify_tag',     label: 'Classify & tag' },
   { key: 'quantify',         label: 'Quantify' },
   { key: 'qa',               label: 'QA pass' },
@@ -85,11 +64,6 @@ exports.handler = async (event) => {
     const parts = subPathParts(event); // e.g. ['runs'] or ['runs', '<id>', 'approve']
     const body = safeParse(event.body);
 
-    // GET /agent/quota  → { used, limit, remaining } for the caller
-    if (method === 'GET' && parts.length === 1 && parts[0] === 'quota') {
-      return getQuota(userId);
-    }
-
     // POST /agent/runs
     if (method === 'POST' && parts.length === 1 && parts[0] === 'runs') {
       return createRun(userId, body);
@@ -101,9 +75,6 @@ exports.handler = async (event) => {
       const action = parts[2] || null;
 
       if (method === 'GET' && !action) return getRun(userId, runId);
-      if (method === 'GET' && action === 'detections') return getDetections(userId, runId);
-      if (method === 'PUT' && action === 'detections') return putDetections(userId, runId, body);
-      if (method === 'PUT' && action === 'scale') return putScale(userId, runId, body);
       if (method === 'POST' && action === 'approve') return advanceRun(userId, runId, body, 'approve');
       if (method === 'POST' && action === 'reject')  return advanceRun(userId, runId, body, 'reject');
       if (method === 'POST' && action === 'cancel')  return advanceRun(userId, runId, body, 'cancel');
@@ -122,17 +93,9 @@ async function createRun(userId, body) {
   const { projectId, pageId, pricingRequested } = body || {};
   if (!projectId) return resp(400, { error: 'projectId required' });
 
-  // Trial gate: claim one free sheet before doing any work. Metered per run
-  // STARTED — a single atomic conditional write, so two near-simultaneous starts
-  // can't both slip past the last sheet.
-  const q = await consumeQuota(userId);
-  if (!q.ok) {
-    const quota = await readQuota(userId);
-    return resp(402, { error: 'Free trial used up', code: 'trial_exhausted', quota });
-  }
-
   const now = new Date().toISOString();
   const runId = randomUUID();
+  const stage = runStubStage(0);
 
   const item = {
     runId,
@@ -143,12 +106,12 @@ async function createRun(userId, body) {
     stageIndex: 0,
     stageKey: STAGES[0].key,
     stageLabel: STAGES[0].label,
-    status: 'running',
+    status: 'awaiting_approval',
     seq: 0,
-    stageOutput: `Running ${STAGES[0].label}…`,
-    evidence: null,
-    confidence: null,
-    gate: 'running',
+    stageOutput: stage.output,
+    evidence: stage.evidence,
+    confidence: stage.confidence,
+    gate: stage.gate,
     totalStages: STAGES.length,
     createdAt: now,
     updatedAt: now,
@@ -160,10 +123,7 @@ async function createRun(userId, body) {
     ConditionExpression: 'attribute_not_exists(runId)',
   }));
 
-  // Run stage 0 asynchronously.
-  await invokeWorker(runId, 0, 0);
-
-  return resp(201, { ...publicView(item), quota: { used: q.used, limit: q.limit, remaining: q.remaining } });
+  return resp(201, publicView(item));
 }
 
 async function getRun(userId, runId) {
@@ -171,84 +131,6 @@ async function getRun(userId, runId) {
   if (!item) return resp(404, { error: 'run not found' });
   if (item === 'forbidden') return resp(403, { error: 'not your run' });
   return resp(200, publicView(item));
-}
-
-// Return the detections a run produced (from S3), so the client can render them
-// on the canvas as a proposed overlay. Ownership-checked via the run row.
-async function getDetections(userId, runId) {
-  const item = await loadOwned(userId, runId);
-  if (!item) return resp(404, { error: 'run not found' });
-  if (item === 'forbidden') return resp(403, { error: 'not your run' });
-  if (!item.detectionsKey) return resp(404, { error: 'no detections yet' });
-  try {
-    const obj = await s3.send(new GetObjectCommand({ Bucket: PROJECT_BUCKET, Key: item.detectionsKey }));
-    const text = await obj.Body.transformToString();
-    const data = JSON.parse(text);
-    return resp(200, { annotations: data.annotations || [], meta: data.meta || null });
-  } catch (err) {
-    console.error('[getDetections]', err);
-    return resp(500, { error: 'could not read detections' });
-  }
-}
-
-// Save the calibrated px→m scale for a run (Adjust on the Calibrate stage).
-// Stored on the run so quantify uses it.
-async function putScale(userId, runId, body) {
-  const item = await loadOwned(userId, runId);
-  if (!item) return resp(404, { error: 'run not found' });
-  if (item === 'forbidden') return resp(403, { error: 'not your run' });
-  const ratio = body && Number(body.ratio);
-  if (!ratio || !(ratio > 0) || !isFinite(ratio)) return resp(400, { error: 'ratio (px→m, > 0) required' });
-  try {
-    // If the run was hard-stopped waiting for a scale, providing one clears the
-    // gate → back to awaiting_approval so it can be approved. seq is unchanged.
-    const clearsGate = item.status === 'needs_input';
-    await ddb.send(new UpdateCommand({
-      TableName: TABLE, Key: { runId },
-      UpdateExpression: clearsGate
-        ? 'SET #scale = :r, #status = :await, updatedAt = :now'
-        : 'SET #scale = :r, updatedAt = :now',
-      ExpressionAttributeNames: clearsGate
-        ? { '#scale': 'scale', '#status': 'status' }
-        : { '#scale': 'scale' },
-      ExpressionAttributeValues: clearsGate
-        ? { ':r': ratio, ':await': 'awaiting_approval', ':now': new Date().toISOString() }
-        : { ':r': ratio, ':now': new Date().toISOString() },
-    }));
-    return resp(200, { ok: true, scale: ratio, status: clearsGate ? 'awaiting_approval' : item.status });
-  } catch (err) {
-    console.error('[putScale]', err);
-    return resp(500, { error: 'could not save scale' });
-  }
-}
-
-// Save the user's edited detection set (Adjust). Writes a new artifact and
-// repoints detectionsKey so downstream stages (quantify, report) use the edits.
-async function putDetections(userId, runId, body) {
-  const item = await loadOwned(userId, runId);
-  if (!item) return resp(404, { error: 'run not found' });
-  if (item === 'forbidden') return resp(403, { error: 'not your run' });
-  const anns = body && Array.isArray(body.annotations) ? body.annotations : null;
-  if (!anns) return resp(400, { error: 'annotations array required' });
-  if (anns.length > 20000) return resp(413, { error: 'too many annotations' });
-
-  const key = `agent-runs/${runId}/detections-adjusted.json`;
-  try {
-    await s3.send(new PutObjectCommand({
-      Bucket: PROJECT_BUCKET, Key: key,
-      Body: JSON.stringify({ annotations: anns, adjustedAt: new Date().toISOString() }),
-      ContentType: 'application/json',
-    }));
-    await ddb.send(new UpdateCommand({
-      TableName: TABLE, Key: { runId },
-      UpdateExpression: 'SET detectionsKey = :k, updatedAt = :now',
-      ExpressionAttributeValues: { ':k': key, ':now': new Date().toISOString() },
-    }));
-    return resp(200, { ok: true, count: anns.length, detectionsKey: key });
-  } catch (err) {
-    console.error('[putDetections]', err);
-    return resp(500, { error: 'could not save detections' });
-  }
 }
 
 /**
@@ -298,63 +180,36 @@ async function advanceRun(userId, runId, body, kind) {
     return resp(200, publicView(updated));
   }
 
-  // Move to 'running' for the next stage and hand off to the worker.
   const nextIndex = item.stageIndex + 1;
-  const newSeq = expectedSeq + 1;
+  const stage = runStubStage(nextIndex);
   const updated = await conditionalUpdate(runId, expectedSeq, {
     stageIndex: nextIndex,
     stageKey: STAGES[nextIndex].key,
     stageLabel: STAGES[nextIndex].label,
-    status: 'running',
-    seq: newSeq,
-    stageOutput: `Running ${STAGES[nextIndex].label}…`,
-    evidence: null,
-    confidence: null,
-    gate: 'running',
+    status: 'awaiting_approval',
+    seq: expectedSeq + 1,
+    stageOutput: stage.output,
+    evidence: stage.evidence,
+    confidence: stage.confidence,
+    gate: stage.gate,
     updatedAt: now,
   });
   if (!updated) return resp(409, { error: 'run changed — refresh' });
-  await invokeWorker(runId, nextIndex, newSeq);
   return resp(200, publicView(updated));
 }
 
-// ── trial quota (P1d) ────────────────────────────────────────────────────────
-// The free trial is metered per run STARTED, keyed on the caller's Cognito sub
-// and stored as a sentinel row (runId = "quota#<sub>") in the same table, so it
-// needs no extra AWS resource. Enforcement is one conditional ADD.
-const quotaKey = (userId) => `quota#${userId}`;
+// ── stage stub ───────────────────────────────────────────────────────────────
 
-async function readQuota(userId) {
-  const { Item } = await ddb.send(new GetCommand({ TableName: TABLE, Key: { runId: quotaKey(userId) } }));
-  const limit = Item?.freeSheetsLimit ?? FREE_SHEETS_LIMIT;
-  const used = Item?.freeSheetsUsed ?? 0;
-  return { used, limit, remaining: Math.max(0, limit - used) };
-}
-
-async function getQuota(userId) {
-  return resp(200, await readQuota(userId));
-}
-
-// Atomically claim one free sheet. Returns { ok:true, used, limit, remaining }
-// on success, or { ok:false } when the trial is exhausted (nothing consumed).
-async function consumeQuota(userId) {
-  try {
-    const { Attributes } = await ddb.send(new UpdateCommand({
-      TableName: TABLE,
-      Key: { runId: quotaKey(userId) },
-      UpdateExpression:
-        'SET kind = :kind, freeSheetsLimit = if_not_exists(freeSheetsLimit, :limit), updatedAt = :now ADD freeSheetsUsed :one',
-      ConditionExpression:
-        'attribute_not_exists(freeSheetsUsed) OR freeSheetsUsed < if_not_exists(freeSheetsLimit, :limit)',
-      ExpressionAttributeValues: { ':one': 1, ':limit': FREE_SHEETS_LIMIT, ':now': new Date().toISOString(), ':kind': 'quota' },
-      ReturnValues: 'ALL_NEW',
-    }));
-    const limit = Attributes.freeSheetsLimit ?? FREE_SHEETS_LIMIT;
-    return { ok: true, used: Attributes.freeSheetsUsed, limit, remaining: Math.max(0, limit - Attributes.freeSheetsUsed) };
-  } catch (err) {
-    if (err.name === 'ConditionalCheckFailedException') return { ok: false };
-    throw err;
-  }
+// P0: every stage returns a placeholder. Real stage handlers replace this in
+// P1+ (deterministic tools) and P2+ (Bedrock vision/text).
+function runStubStage(index) {
+  const s = STAGES[index];
+  return {
+    output: `Stub output for "${s.label}" (stage ${index + 1}/${STAGES.length}).`,
+    evidence: 'No evidence — P0 walking skeleton, no models run.',
+    confidence: 1,
+    gate: 'approve',
+  };
 }
 
 // ── data helpers ─────────────────────────────────────────────────────────────
@@ -438,8 +293,6 @@ function publicView(item) {
     totalStages: item.totalStages,
     status: item.status,
     seq: item.seq,
-    detectionsKey: item.detectionsKey || null,
-    scale: item.scale ?? null,
     output: item.stageOutput,
     evidence: item.evidence,
     confidence: item.confidence,

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  startRun, getRun, getDetections, putDetections, putScale,
+  startRun, getRun, getQuota, getDetections, putDetections, putScale,
   approveStage, rejectStage, cancelRun, TERMINAL,
 } from '../services/agentService';
 
@@ -41,6 +41,8 @@ export default function AgentRunPanel({
     };
   });
   const [detCount, setDetCount] = useState(null); // # of proposed detections loaded
+  const [quota, setQuota] = useState(null);       // { used, limit, remaining } free trial
+  const [exhausted, setExhausted] = useState(false); // trial used up — can't start
   const pollRef = useRef(null);
   const detRef = useRef(null);       // latest fetched detections
   const detKeyRef = useRef(null);    // which detectionsKey we last fetched
@@ -62,8 +64,17 @@ export default function AgentRunPanel({
     (async () => {
       try {
         const r = await startRun({ projectId, pageId });
-        if (!cancelled) setRun(r);
+        if (cancelled) return;
+        setRun(r);
+        if (r.quota) setQuota(r.quota);
       } catch (e) {
+        if (cancelled) return;
+        // A start can fail because the free trial is used up (402). Check the
+        // quota to tell that apart from a real error and show the right message.
+        try {
+          const q = await getQuota();
+          if (!cancelled && q && q.remaining <= 0) { setQuota(q); setExhausted(true); return; }
+        } catch { /* fall through to generic error */ }
         if (!cancelled) setError(friendly(e));
       }
     })();
@@ -193,6 +204,8 @@ export default function AgentRunPanel({
 
   const isTerminal = run && TERMINAL.has(run.status);
   const canAct = run && run.status === 'awaiting_approval' && !busy;
+  // Hard-gate: the run is parked until the user supplies a scale.
+  const needsScale = run && run.status === 'needs_input' && run.stageKey === 'calibrate_scale';
 
   return (
     // Backdrop does NOT close on click — an accidental outside click must not
@@ -225,8 +238,29 @@ export default function AgentRunPanel({
           </div>
         )}
 
-        {!run && !error && !collapsed && <div style={styles.dim}>Starting run…</div>}
+        {/* trial used up — no run to show */}
+        {exhausted && !collapsed && (
+          <div style={styles.trialBox}>
+            <div style={styles.trialTitle}>✦ Free trial used up</div>
+            <div style={styles.trialBody}>
+              You've used all {quota?.limit ?? 3} free agent sheets. Upgrade to keep running
+              full takeoffs.
+            </div>
+            <div style={styles.actions}>
+              <button onClick={onClose} style={styles.approve}>Got it</button>
+            </div>
+          </div>
+        )}
+
+        {!run && !error && !exhausted && !collapsed && <div style={styles.dim}>Starting run…</div>}
         {error && !collapsed && <div style={styles.error}>⚠ {error}</div>}
+
+        {/* free-trial meter — shown after a run starts */}
+        {quota && !exhausted && !collapsed && (
+          <div style={styles.quotaLine}>
+            ✦ {quota.remaining} of {quota.limit} free sheet{quota.limit === 1 ? '' : 's'} left
+          </div>
+        )}
 
         {run && !collapsed && (
           <>
@@ -290,8 +324,14 @@ export default function AgentRunPanel({
             )}
 
             {/* actions — adjusting SCALE: same two options as the right panel */}
-            {canAct && adjusting && run.stageKey === 'calibrate_scale' && scaleCal && (
+            {((canAct && adjusting && run.stageKey === 'calibrate_scale') || needsScale) && scaleCal && (
               <>
+                {needsScale && (
+                  <div style={{ ...styles.adjustNote, background: 'var(--err-bg)', borderColor: 'var(--err-bd)', color: 'var(--err-tx)' }}>
+                    ⚠ Scale required — this drawing has no readable scale and none is set.
+                    Set it to continue (the pipeline can't produce real quantities without it).
+                  </div>
+                )}
                 {/* Option A — stated drawing scale */}
                 <div style={styles.scaleHead}>Enter the drawing's stated scale (title block)</div>
                 <div style={{ ...styles.row, marginBottom: 8 }}>
@@ -358,6 +398,7 @@ export default function AgentRunPanel({
 function StatusPill({ status }) {
   const map = {
     awaiting_approval: { t: 'AWAITING APPROVAL', c: 'var(--amber)' },
+    needs_input:       { t: 'SCALE REQUIRED',    c: 'var(--err-tx)' },
     running:           { t: 'RUNNING',           c: 'var(--accent2)' },
     done:              { t: 'DONE',               c: 'var(--ok-tx)' },
     rejected:          { t: 'REJECTED',           c: 'var(--err-tx)' },
@@ -403,6 +444,10 @@ const styles = {
   conf: { fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--accent2)', whiteSpace: 'nowrap' },
   previewNote: { marginTop: 9, paddingTop: 9, borderTop: '1px solid var(--bd-section)', fontSize: 12, color: 'var(--accent2)' },
   adjustNote: { marginBottom: 10, padding: 10, background: 'var(--amber-soft)', border: '1px solid var(--amber-bd)', borderRadius: 6, fontSize: 12, color: 'var(--tx-body)', lineHeight: 1.5 },
+  quotaLine: { marginTop: 8, fontSize: 11, color: 'var(--tx-dim)', letterSpacing: 0.2 },
+  trialBox: { marginTop: 12, padding: 14, background: 'var(--bg-badge)', border: '1px solid var(--bd-panel)', borderRadius: 8 },
+  trialTitle: { fontSize: 14, fontWeight: 700, color: 'var(--tx-body)', marginBottom: 6 },
+  trialBody: { fontSize: 12, color: 'var(--tx-dim)', lineHeight: 1.5, marginBottom: 12 },
   scaleHead: { fontSize: 11, color: 'var(--tx-faint)', marginBottom: 5 },
   scaleLbl: { fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--tx-label)', whiteSpace: 'nowrap' },
   scaleInput: { flex: 1, minWidth: 44, background: 'var(--bg-input)', border: '1px solid var(--bd-input)', borderRadius: 5, color: 'var(--tx-body)', fontFamily: 'var(--font-mono)', fontSize: 12, padding: '6px 8px' },
