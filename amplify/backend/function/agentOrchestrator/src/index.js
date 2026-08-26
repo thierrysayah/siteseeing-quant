@@ -362,8 +362,10 @@ async function consumeQuota(userId) {
       Key: { runId: quotaKey(userId) },
       UpdateExpression:
         'SET kind = :kind, freeSheetsLimit = if_not_exists(freeSheetsLimit, :limit), updatedAt = :now ADD freeSheetsUsed :one',
+      // NB: if_not_exists() is only valid in UpdateExpressions, never in a
+      // ConditionExpression — compare against the constant limit directly.
       ConditionExpression:
-        'attribute_not_exists(freeSheetsUsed) OR freeSheetsUsed < if_not_exists(freeSheetsLimit, :limit)',
+        'attribute_not_exists(freeSheetsUsed) OR freeSheetsUsed < :limit',
       ExpressionAttributeValues: { ':one': 1, ':limit': FREE_SHEETS_LIMIT, ':now': new Date().toISOString(), ':kind': 'quota' },
       ReturnValues: 'ALL_NEW',
     }));
