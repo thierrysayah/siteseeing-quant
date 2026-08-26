@@ -35,20 +35,39 @@ const EXTRACT_PROMPT =
   + 'Convert dimensions to millimetres. Use null for any field you cannot read. '
   + 'Do not invent rows.';
 
-// ── zone tagging ──────────────────────────────────────────────────────────────
-// One call for the current plan. Zones are given as normalised centroids so the
-// downscale the VLM sees doesn't matter. rooms context helps it name them.
-function tagPrompt(zones, rooms) {
-  const list = zones.map(z => `#${z.i} at (${z.nx.toFixed(3)}, ${z.ny.toFixed(3)})`).join('; ');
-  const ctx = (rooms && rooms.length)
-    ? '\nKnown rooms from the schedule (for naming, may be incomplete): '
-      + rooms.slice(0, 60).map(r => [r.number, r.name].filter(Boolean).join(' ')).filter(Boolean).join('; ')
-    : '';
+// ── element tagging ───────────────────────────────────────────────────────────
+// One call per element KIND (room/door/window) for the current plan. Elements
+// are given as normalised centroids so the downscale the VLM sees doesn't matter;
+// the relevant schedule (rooms, or door/window marks) is passed as context.
+//   kind:    'room' | 'door' | 'window'
+//   context: array of known labels/marks (may be empty/incomplete)
+function tagPrompt(items, kind, context) {
+  const list = items.map(z => `#${z.i} at (${z.nx.toFixed(3)}, ${z.ny.toFixed(3)})`).join('; ');
+  const ctxList = (context && context.length)
+    ? context.filter(Boolean).slice(0, 80).join('; ') : '';
+
+  if (kind === 'door' || kind === 'window') {
+    const noun = kind;                          // "door" / "window"
+    const eg = kind === 'door' ? 'D01, D02' : 'W01, W03';
+    return `This is one floor plan. Detected ${noun}s are listed by index with `
+      + 'NORMALISED centre coordinates (x,y each 0..1, origin top-left, x right, y down):\n'
+      + list + '\n'
+      + `Tag each ${noun} with its schedule MARK printed at or beside it on the plan `
+      + `(e.g. ${eg}). Return ONLY JSON, no prose:\n`
+      + '{"tags": [{"i": number, "label": string, "number": null}]}\n'
+      + `label is the ${noun} mark exactly as printed. If no mark is legible next to a `
+      + `${noun}, use the single nearest/most likely mark from this schedule list`
+      + (ctxList ? ` [${ctxList}]` : '') + '. Never return an empty label.';
+  }
+
+  // rooms
+  const ctx = ctxList
+    ? '\nKnown rooms from the schedule (for naming, may be incomplete): ' + ctxList : '';
   return 'This is one floor plan. Detected rooms/zones are listed by index with '
     + 'NORMALISED centre coordinates (x,y each 0..1, origin top-left, x right, y down):\n'
     + list + '\n'
     + 'Give EVERY zone a room tag. Return ONLY JSON, no prose:\n'
-    + '{"zones": [{"i": number, "label": string, "number": string|null}]}\n'
+    + '{"tags": [{"i": number, "label": string, "number": string|null}]}\n'
     + 'For each zone: (1) if a room NAME is printed at or near that point, use it '
     + 'exactly (e.g. "Kitchen", "Office", "WC"); (2) else infer the room type from '
     + 'the fixtures, size and adjacent labels (e.g. a WC pan → "WC", a sink run → '

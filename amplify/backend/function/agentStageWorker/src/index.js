@@ -265,6 +265,31 @@ async function classifyTagStage(run) {
   const { askVlmImage, extractJson, imageSize, MODEL } = require('./lib/vlm');
   const { EXTRACT_PROMPT, tagPrompt, centroidOf, mergeReference } = require('./lib/classify');
 
+  // Tag one group of same-kind annotations (zones/doors/windows) by asking the
+  // VLM to read the label/mark at each element's normalised centroid. Mutates
+  // each annotation's zoneTag in place; returns how many were tagged.
+  async function tagGroup(buffer, W, H, group, kind, context) {
+    if (!group.length) return 0;
+    const items = [];
+    group.forEach((a, idx) => {
+      const c = centroidOf(a);
+      if (c) items.push({ i: idx, _ref: a, nx: c[0] / W, ny: c[1] / H });
+    });
+    if (!items.length) return 0;
+    const text = await askVlmImage(buffer, tagPrompt(items, kind, context), { maxTokens: 1500 });
+    const parsed = extractJson(text);
+    const tags = (parsed && Array.isArray(parsed.tags)) ? parsed.tags : [];
+    const byIndex = new Map(items.map(it => [it.i, it._ref]));
+    let n = 0;
+    for (const t of tags) {
+      const a = byIndex.get(t.i);
+      if (!a) continue;
+      const label = [t.number, t.label].filter(Boolean).join(' ').trim();
+      if (label) { a.zoneTag = label; n++; }
+    }
+    return n;
+  }
+
   // 1) Read every sheet (capped) for schedules/legends.
   const pageKeys = await listProjectPages(run);
   const scan = pageKeys.slice(0, MAX_CLASSIFY_PAGES);
@@ -286,43 +311,36 @@ async function classifyTagStage(run) {
   const reference = mergeReference(perPage);
   const sheetTypes = perPage.map(p => p.sheetType).filter(Boolean);
 
-  // 2) Tag the current plan's zones (best-effort, one call).
-  let taggedZones = 0, detectionsKey = run.detectionsKey;
+  // 2) Tag the current plan's zones (room name), doors and windows (schedule
+  //    mark) — one VLM call per kind, best-effort. Marks come from the schedule.
+  let tagged = 0, detectionsKey = run.detectionsKey;
   try {
     if (run.detectionsKey) {
       const det = await getJsonArtifact(run.detectionsKey);
       const anns = det.annotations || [];
-      const zones = anns.filter(a => a.clsName === 'zone');
-      if (zones.length) {
+      const zones   = anns.filter(a => a.clsName === 'zone');
+      const doors   = anns.filter(a => a.clsName === 'door');
+      const windows = anns.filter(a => a.clsName === 'window');
+      if (zones.length || doors.length || windows.length) {
         const { buffer } = await fetchPagePng(run);
         const { w, h } = await imageSize(buffer);
-        const items = [];
-        zones.forEach((z, idx) => {
-          const c = centroidOf(z);
-          if (c) items.push({ i: idx, _ref: z, nx: c[0] / w, ny: c[1] / h });
-        });
-        if (items.length) {
-          const text = await askVlmImage(buffer, tagPrompt(items, reference.rooms), { maxTokens: 1200 });
-          const parsed = extractJson(text);
-          const tags = (parsed && Array.isArray(parsed.zones)) ? parsed.zones : [];
-          const byIndex = new Map(items.map(it => [it.i, it._ref]));
-          for (const t of tags) {
-            const z = byIndex.get(t.i);
-            if (!z) continue;
-            const label = [t.number, t.label].filter(Boolean).join(' ').trim();
-            if (label) { z.zoneTag = label; taggedZones++; }
-          }
-          if (taggedZones) {
-            detectionsKey = await putJsonArtifact(run.runId, 'detections-tagged.json', {
-              annotations: anns, meta: det.meta || null, taggedAt: new Date().toISOString(),
-            });
-          }
+        const roomCtx = reference.rooms.map(r => [r.number, r.name].filter(Boolean).join(' '));
+        const doorCtx = reference.doors.map(d => d.mark);
+        const winCtx  = reference.windows.map(x => x.mark);
+        tagged += await tagGroup(buffer, w, h, zones,   'room',   roomCtx);
+        tagged += await tagGroup(buffer, w, h, doors,   'door',   doorCtx);
+        tagged += await tagGroup(buffer, w, h, windows, 'window', winCtx);
+        if (tagged) {
+          detectionsKey = await putJsonArtifact(run.runId, 'detections-tagged.json', {
+            annotations: anns, meta: det.meta || null, taggedAt: new Date().toISOString(),
+          });
         }
       }
     }
   } catch (e) {
-    console.warn('[classify] zone tagging failed', e.message);
+    console.warn('[classify] tagging failed', e.message);
   }
+  const taggedZones = tagged;   // keep the summary field name below
 
   const referenceKey = await putJsonArtifact(run.runId, 'reference.json', {
     reference, sheetTypes, pagesScanned: scan.length, pagesRead: readOk,
@@ -334,7 +352,7 @@ async function classifyTagStage(run) {
   if (reference.windows.length) bits.push(`${reference.windows.length} window type${reference.windows.length > 1 ? 's' : ''}`);
   if (reference.rooms.length)   bits.push(`${reference.rooms.length} room${reference.rooms.length > 1 ? 's' : ''}`);
   if (reference.legend.length)  bits.push(`${reference.legend.length} legend item${reference.legend.length > 1 ? 's' : ''}`);
-  if (taggedZones)              bits.push(`${taggedZones} zone${taggedZones > 1 ? 's' : ''} tagged`);
+  if (taggedZones)              bits.push(`${taggedZones} element${taggedZones > 1 ? 's' : ''} tagged`);
 
   return {
     output: `Read ${readOk}/${scan.length} sheet${scan.length > 1 ? 's' : ''}`
