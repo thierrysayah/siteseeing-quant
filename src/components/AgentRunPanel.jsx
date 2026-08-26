@@ -505,11 +505,15 @@ function ReviewList({ items, onFocus }) {
     <details style={styles.reviewBox} open>
       <summary style={styles.reviewSummary}>⚠ Needs review <span style={styles.schedCount}>{items.length}</span></summary>
       <div style={styles.reviewScroll}>
-        {items.map((a, i) => (
-          <button key={i} style={styles.reviewRow} onClick={() => onFocus?.(annBbox(a))} title="Jump to it on the canvas">
-            {reviewReason(a)}
-          </button>
-        ))}
+        {items.map((a, i) => {
+          const [bx1, by1] = annBbox(a);
+          return (
+            <button key={i} style={styles.reviewRow} onClick={() => onFocus?.(annBbox(a))} title="Jump to it on the canvas">
+              <span style={styles.reviewIdx}>{i + 1}.</span> {reviewReason(a)}
+              {bx1 != null && <span style={styles.reviewAt}> @ {Math.round(bx1)},{Math.round(by1)}</span>}
+            </button>
+          );
+        })}
       </div>
     </details>
   );
@@ -564,6 +568,8 @@ const styles = {
   reviewSummary: { cursor: 'pointer', padding: '7px 10px', fontSize: 12, fontWeight: 600, color: 'var(--tx-body)', userSelect: 'none' },
   reviewScroll: { maxHeight: 160, overflow: 'auto', padding: '0 6px 6px' },
   reviewRow: { display: 'block', width: '100%', textAlign: 'left', padding: '6px 8px', margin: '3px 0', fontSize: 11, lineHeight: 1.4, color: 'var(--tx-body)', background: 'var(--bg-badge)', border: '1px solid var(--amber-bd)', borderRadius: 5, cursor: 'pointer' },
+  reviewIdx: { color: 'var(--tx-dim)', fontWeight: 600 },
+  reviewAt: { color: 'var(--tx-dim)', fontFamily: 'var(--font-mono, monospace)' },
   trialBox: { marginTop: 12, padding: 14, background: 'var(--bg-badge)', border: '1px solid var(--bd-panel)', borderRadius: 8 },
   trialTitle: { fontSize: 14, fontWeight: 700, color: 'var(--tx-body)', marginBottom: 6 },
   trialBody: { fontSize: 12, color: 'var(--tx-dim)', lineHeight: 1.5, marginBottom: 12 },

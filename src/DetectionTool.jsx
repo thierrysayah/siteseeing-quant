@@ -1693,6 +1693,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
   const [showSettings,      setShowSettings]      = useState(false);
   const [showAgent,         setShowAgent]         = useState(false); // Agentic Takeoff panel (P0)
   const [agentPreview,      setAgentPreview]      = useState(null);  // proposed detections overlay (P1b.2)
+  const [focusBox,          setFocusBox]          = useState(null);  // bbox highlighted from the agent's review list
   // UI theme: 'dark' (default) or 'blueprint' (light). Persisted per device and
   // applied to <html data-theme> by the hook — see src/hooks/useTheme.js.
   const { theme, setTheme } = useTheme();
@@ -2237,9 +2238,26 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
     if (agentPreview && agentPreview.length) {
       drawProposedOverlay(ctx, agentPreview, scale, allClassColors);
     }
+
+    // Highlight the item picked from the agent's "Needs review" list, so the user
+    // can see exactly which shape to fix. Drawn last, on top of everything.
+    if (focusBox) {
+      const [fx1, fy1, fx2, fy2] = focusBox;
+      const x = fx1 * scale, y = fy1 * scale, w = (fx2 - fx1) * scale, h = (fy2 - fy1) * scale;
+      const pad = 6;
+      ctx.save();
+      ctx.strokeStyle = "#FFB300";
+      ctx.lineWidth = 3;
+      ctx.setLineDash([7, 4]);
+      ctx.strokeRect(x - pad, y - pad, w + pad * 2, h + pad * 2);
+      ctx.setLineDash([]);
+      ctx.fillStyle = "rgba(255,179,0,0.15)";
+      ctx.fillRect(x - pad, y - pad, w + pad * 2, h + pad * 2);
+      ctx.restore();
+    }
   }, [originalImg, annotations, scale, visibleClasses, hoverIdx, selectedIdx, selectedIndices,
       tempBox, tempPolyPts, tempPolyMouse, tempLine, tempLineShape, lastMeasureLine, ratio, zoneTags, customClasses,
-      tempCircle, lastLineIsMeasure, areaTextColor, perimTextColor, measureTextColor, showConfidence, showZoneLabels, agentPreview]);
+      tempCircle, lastLineIsMeasure, areaTextColor, perimTextColor, measureTextColor, showConfidence, showZoneLabels, agentPreview, focusBox]);
 
   // ─── Image upload ────────────────────────────────────────────────────────────
   const handleFileChange = (e) => {
@@ -3540,14 +3558,26 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
     });
   };
 
-  // Scroll the canvas so an annotation's bbox (image coords) is centred — used by
-  // the agent panel's "Needs review" list to jump to a flagged shape.
+  // Centre the canvas on an annotation's bbox (image coords), highlight it, and
+  // select it if it's a real annotation — driven by the agent's "Needs review"
+  // list so the user can see exactly which shape to fix.
   const focusAnnotationBox = (bbox) => {
-    const el = containerRef.current;
-    if (!el || !bbox) return;
+    if (!bbox || bbox.some(v => v == null)) return;
     const [x1, y1, x2, y2] = bbox;
-    const cx = ((x1 + x2) / 2) * scale, cy = ((y1 + y2) / 2) * scale;
-    el.scrollTo({ left: cx - el.clientWidth / 2, top: cy - el.clientHeight / 2, behavior: 'smooth' });
+    const el = containerRef.current;
+    if (el) {
+      const cx = ((x1 + x2) / 2) * scale, cy = ((y1 + y2) / 2) * scale;
+      el.scrollTo({ left: cx - el.clientWidth / 2, top: cy - el.clientHeight / 2, behavior: 'smooth' });
+    }
+    setFocusBox(bbox);
+    // If these detections are already in the editor, select the matching shape so
+    // the inspector shows it and it can be edited straight away.
+    const idx = annotations.findIndex(a => {
+      const [ax1, ay1, ax2, ay2] = annotationBbox(a);
+      return Math.abs(ax1 - x1) < 2 && Math.abs(ay1 - y1) < 2
+          && Math.abs(ax2 - x2) < 2 && Math.abs(ay2 - y2) < 2;
+    });
+    if (idx >= 0) { setSelectedIdx(idx); setSelectedIndices(new Set([idx])); }
   };
 
   const currentPageLabel = () => {
