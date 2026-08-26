@@ -83,6 +83,13 @@ const TILE_OVERLAP = 128;
 const NMS_IOU_THRESH = 0.4;
 
 const DEFAULT_ZONE_TAGS = { bathroom: "#4FC3F7", kitchen: "#FFB74D" };
+// Distinct, evenly-spread palette for auto-created room tags (agent Classify &
+// tag). Picked for legibility on the plan over both themes.
+const TAG_PALETTE = [
+  "#81C784", "#BA68C8", "#F06292", "#4DB6AC", "#FFD54F", "#7986CB", "#A1887F",
+  "#90A4AE", "#E57373", "#9575CD", "#4DD0E1", "#AED581", "#FF8A65", "#DCE775",
+  "#64B5F6", "#F48FB1", "#4FC3F7", "#FFB74D",
+];
 const PDF_RENDER_DPI = 150; // matches Python: fitz.Matrix(150/72, 150/72)
 const PDF_SCALE = PDF_RENDER_DPI / 72; // pdf.js uses 72 dpi as base
 // One rendered pixel spans this many mm of paper (25.4mm/inch ÷ DPI). Combined
@@ -3511,6 +3518,28 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
 
   // ─── Export ──────────────────────────────────────────────────────────────────
   // Returns the label for the current page, or a fallback string
+  // Register room tags the agent assigned (annotation.zoneTag) into the TAGS
+  // list so they show in the right panel — each new tag gets its own colour.
+  const registerAgentTags = (anns) => {
+    const tags = [...new Set((anns || []).map(a => a.zoneTag).filter(Boolean))];
+    if (!tags.length) return;
+    setZoneTags(prev => {
+      const next = { ...prev };
+      const used = new Set(Object.values(next).map(c => String(c).toLowerCase()));
+      let pi = 0;
+      for (const t of tags) {
+        if (next[t]) continue;                 // keep an existing tag's colour
+        let color = TAG_PALETTE[pi % TAG_PALETTE.length];
+        let guard = 0;
+        while (used.has(color.toLowerCase()) && guard < TAG_PALETTE.length) {
+          pi++; color = TAG_PALETTE[pi % TAG_PALETTE.length]; guard++;
+        }
+        next[t] = color; used.add(color.toLowerCase()); pi++;
+      }
+      return next;
+    });
+  };
+
   const currentPageLabel = () => {
     const p = allPagesRef.current.find(pg => pg.pageIndex === currentPageIndex);
     return p?.label || (p?.pdfPageNumber != null ? `Page ${p.pdfPageNumber}` : `Page ${currentPageIndex + 1}`);
@@ -4916,6 +4945,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
           onApply={(anns) => {
             if (!anns || !anns.length) return;
             pushHistory(annotations);
+            registerAgentTags(anns);
             setAnnotations(prev => {
               let nextId = nextNumId(prev);
               const merged = anns.map(a => ({
@@ -4933,6 +4963,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
           onAdjust={(anns) => {
             if (anns && anns.length) {
               pushHistory(annotations);
+              registerAgentTags(anns);
               setAnnotations(prev => {
                 let nextId = nextNumId(prev);
                 const merged = anns.map(a => ({

@@ -166,7 +166,9 @@ export default function AgentRunPanel({
   // annotations; for Calibrate scale, just open the scale editor.
   const startAdjust = useCallback(() => {
     if (!run || busy) return;
-    if (run.stageKey === 'detect') {
+    if (run.stageKey === 'detect' || run.stageKey === 'classify_tag') {
+      // Promote the (tagged) detections into the editor so the user can edit
+      // shapes/classes and, for classify, the room tags in the TAGS panel.
       onAdjustRef.current?.(detRef.current || []);
       appliedRef.current = true;    // in the editor now; don't re-merge on finish
     }
@@ -318,7 +320,7 @@ export default function AgentRunPanel({
             {/* actions — normal review */}
             {canAct && !adjusting && (
               <div style={styles.actions}>
-                {(run.stageKey === 'detect' && detRef.current) || run.stageKey === 'calibrate_scale'
+                {((run.stageKey === 'detect' || run.stageKey === 'classify_tag') && detRef.current) || run.stageKey === 'calibrate_scale'
                   ? <button onClick={startAdjust} style={styles.reject} disabled={busy}>Adjust</button>
                   : <button onClick={() => act(rejectStage)} style={styles.reject} disabled={busy}>Reject</button>}
                 <button onClick={() => act(cancelRun)} style={styles.cancel} disabled={busy}>Cancel run</button>
@@ -328,12 +330,13 @@ export default function AgentRunPanel({
               </div>
             )}
 
-            {/* actions — adjusting DETECT: detections are live in the editor */}
-            {canAct && adjusting && run.stageKey === 'detect' && (
+            {/* actions — adjusting DETECT / CLASSIFY: detections are live in the editor */}
+            {canAct && adjusting && (run.stageKey === 'detect' || run.stageKey === 'classify_tag') && (
               <>
                 <div style={styles.adjustNote}>
-                  ✎ Editing on the canvas — add / move / delete / reclass with the normal
-                  tools. Your whole page becomes the takeoff.
+                  {run.stageKey === 'classify_tag'
+                    ? '✎ Room tags are on the zones and in the right-panel TAGS list — edit them there (or re-tag/reclass), then continue.'
+                    : '✎ Editing on the canvas — add / move / delete / reclass with the normal tools. Your whole page becomes the takeoff.'}
                 </div>
                 <div style={styles.actions}>
                   <button onClick={() => act(cancelRun)} style={styles.cancel} disabled={busy}>Cancel run</button>
