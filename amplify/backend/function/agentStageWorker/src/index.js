@@ -262,13 +262,14 @@ async function classifyTagStage(run) {
   const {
     listProjectPages, fetchPngByKey, fetchPagePng, getJsonArtifact, putJsonArtifact,
   } = require('./lib/pageimage');
+  const Jimp = require('jimp');
   const { askVlmImage, extractJson, imageSize, MODEL } = require('./lib/vlm');
-  const { EXTRACT_PROMPT, tagPrompt, centroidOf, mergeReference } = require('./lib/classify');
+  const {
+    EXTRACT_PROMPT, tagPrompt, montageTagPrompt, buildMontage, centroidOf, mergeReference,
+  } = require('./lib/classify');
 
-  // Tag one group of same-kind annotations (zones/doors/windows) by asking the
-  // VLM to read the label/mark at each element's normalised centroid. Mutates
-  // each annotation's zoneTag in place; returns how many were tagged.
-  async function tagGroup(buffer, W, H, group, kind, context) {
+  // Zones: read the room NAME off the whole plan by centroid (names are large).
+  async function tagZones(buffer, W, H, group, context) {
     if (!group.length) return 0;
     const items = [];
     group.forEach((a, idx) => {
@@ -276,7 +277,7 @@ async function classifyTagStage(run) {
       if (c) items.push({ i: idx, _ref: a, nx: c[0] / W, ny: c[1] / H });
     });
     if (!items.length) return 0;
-    const text = await askVlmImage(buffer, tagPrompt(items, kind, context), { maxTokens: 1500 });
+    const text = await askVlmImage(buffer, tagPrompt(items, 'room', context), { maxTokens: 1500 });
     const parsed = extractJson(text);
     const tags = (parsed && Array.isArray(parsed.tags)) ? parsed.tags : [];
     const byIndex = new Map(items.map(it => [it.i, it._ref]));
@@ -286,6 +287,30 @@ async function classifyTagStage(run) {
       if (!a) continue;
       const label = [t.number, t.label].filter(Boolean).join(' ').trim();
       if (label) { a.zoneTag = label; n++; }
+    }
+    return n;
+  }
+
+  // Doors/windows: the schedule MARK is small text in/near a ~40px bbox — reading
+  // it off the whole downscaled plan is unreliable. Crop each element (zoomed,
+  // padded to catch nearby marks) into a numbered montage and read per cell.
+  // Chunked so each cell stays legible.
+  async function tagByMontage(image, font, group, kind, marks) {
+    if (!group.length) return 0;
+    const CAP = 20;
+    let n = 0;
+    for (let start = 0; start < group.length; start += CAP) {
+      const chunk = group.slice(start, start + CAP);
+      const buf = await buildMontage(Jimp, image, chunk, font);
+      const text = await askVlmImage(buf, montageTagPrompt(kind, chunk.length, marks), { maxTokens: 1200 });
+      const parsed = extractJson(text);
+      const tags = (parsed && Array.isArray(parsed.tags)) ? parsed.tags : [];
+      const byIdx = new Map(chunk.map((a, i) => [i, a]));
+      for (const t of tags) {
+        const a = byIdx.get(t.i);
+        const label = t.label != null ? String(t.label).trim() : '';
+        if (a && label) { a.zoneTag = label; n++; }
+      }
     }
     return n;
   }
@@ -327,9 +352,12 @@ async function classifyTagStage(run) {
         const roomCtx = reference.rooms.map(r => [r.number, r.name].filter(Boolean).join(' '));
         const doorCtx = reference.doors.map(d => d.mark);
         const winCtx  = reference.windows.map(x => x.mark);
-        tagged += await tagGroup(buffer, w, h, zones,   'room',   roomCtx);
-        tagged += await tagGroup(buffer, w, h, doors,   'door',   doorCtx);
-        tagged += await tagGroup(buffer, w, h, windows, 'window', winCtx);
+        // Load the plan + a bitmap font once for the door/window montages.
+        const image = await Jimp.read(buffer);
+        const font = await Jimp.loadFont(Jimp.FONT_SANS_16_BLACK);
+        tagged += await tagZones(buffer, w, h, zones, roomCtx);
+        tagged += await tagByMontage(image, font, doors,   'door',   doorCtx);
+        tagged += await tagByMontage(image, font, windows, 'window', winCtx);
         if (tagged) {
           detectionsKey = await putJsonArtifact(run.runId, 'detections-tagged.json', {
             annotations: anns, meta: det.meta || null, taggedAt: new Date().toISOString(),

@@ -76,6 +76,65 @@ function tagPrompt(items, kind, context) {
     + 'assign your best room-type tag.' + ctx;
 }
 
+// Bounding box [x1,y1,x2,y2] of an annotation in original pixel space.
+function bboxOf(a) {
+  if (a.shapeType === 'polygon' && Array.isArray(a.points) && a.points.length) {
+    const xs = a.points.map(p => p[0]), ys = a.points.map(p => p[1]);
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  }
+  return [a.x1, a.y1, a.x2, a.y2];
+}
+
+// Build a numbered montage: each element cropped from the plan with padding (to
+// catch a mark written just outside its bbox), zoomed into its own labelled
+// cell. This lets the VLM READ each mark instead of guessing by coordinate.
+// Returns a JPEG buffer. Cell order == `elements` order (cell label = index).
+async function buildMontage(Jimp, image, elements, font, { cell = 224, cols = 5, padFactor = 1.2 } = {}) {
+  const n = elements.length;
+  const rows = Math.ceil(n / cols);
+  const gap = 6, labelH = 20;
+  const cellW = cell, cellH = cell + labelH;
+  const W = cols * cellW + (cols + 1) * gap;
+  const H = rows * cellH + (rows + 1) * gap;
+  const canvas = await Jimp.create(W, H, 0xffffffff);
+  const IW = image.bitmap.width, IH = image.bitmap.height;
+
+  for (let i = 0; i < n; i++) {
+    const [x1, y1, x2, y2] = bboxOf(elements[i]);
+    const m = Math.max(x2 - x1, y2 - y1);
+    const pad = Math.max(30, m * padFactor);            // include nearby marks
+    const cx1 = Math.max(0, Math.round(x1 - pad)), cy1 = Math.max(0, Math.round(y1 - pad));
+    const cx2 = Math.min(IW, Math.round(x2 + pad)), cy2 = Math.min(IH, Math.round(y2 + pad));
+    if (cx2 <= cx1 || cy2 <= cy1) continue;
+    const crop = image.clone().crop(cx1, cy1, cx2 - cx1, cy2 - cy1);
+    crop.scaleToFit(cell, cell);
+    const col = i % cols, row = Math.floor(i / cols);
+    const px = gap + col * (cellW + gap), py = gap + row * (cellH + gap);
+    const ox = px + Math.floor((cellW - crop.bitmap.width) / 2);
+    const oy = py + labelH + Math.floor((cell - crop.bitmap.height) / 2);
+    canvas.composite(crop, ox, oy);
+    if (font) canvas.print(font, px + 3, py, String(i));  // black label on white strip
+  }
+  return canvas.quality(90).getBufferAsync(Jimp.MIME_JPEG);
+}
+
+// Prompt for a montage of same-kind elements → per-cell mark.
+function montageTagPrompt(kind, count, marks) {
+  const eg = kind === 'door' ? 'D01, D02' : 'W01, W03';
+  const clean = (marks || []).filter(Boolean);
+  const ctx = clean.length
+    ? ` Every label MUST be one of these ${kind} schedule marks — never a mark of a `
+      + `different kind: [${clean.join(', ')}]. If a cell's mark is unclear, pick the `
+      + `closest one from that list.`
+    : ` If a cell's mark is unclear, give your best reading.`;
+  return `This image is a numbered grid of ${count} crops. Each cell (labelled 0, 1, 2, …) `
+    + `shows ONE ${kind} from a floor plan, zoomed in, with its schedule MARK `
+    + `(like ${eg}) written inside or just beside it — read the mark for the ${kind} at `
+    + `the CENTRE of each cell (ignore neighbouring elements). `
+    + `Return ONLY JSON, no prose: {"tags":[{"i":<cell number>,"label":"<mark>"}]}. `
+    + `Use the exact printed mark.${ctx}`;
+}
+
 // Centroid of an annotation (box or polygon) in original pixel space.
 function centroidOf(a) {
   if (a.shapeType === 'polygon' && Array.isArray(a.points) && a.points.length) {
@@ -115,4 +174,7 @@ function mergeReference(perPage) {
   };
 }
 
-module.exports = { EXTRACT_PROMPT, tagPrompt, centroidOf, mergeReference };
+module.exports = {
+  EXTRACT_PROMPT, tagPrompt, montageTagPrompt, buildMontage,
+  centroidOf, bboxOf, mergeReference,
+};
