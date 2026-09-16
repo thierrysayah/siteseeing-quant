@@ -108,6 +108,7 @@ exports.handler = async (event) => {
       if (method === 'GET' && !action) return getRun(userId, runId);
       if (method === 'GET' && action === 'detections') return getDetections(userId, runId);
       if (method === 'GET' && action === 'reference') return getReference(userId, runId);
+      if (method === 'GET' && action === 'qa') return getQa(userId, runId);
       if (method === 'PUT' && action === 'detections') return putDetections(userId, runId, body);
       if (method === 'PUT' && action === 'scale') return putScale(userId, runId, body);
       if (method === 'POST' && action === 'approve') return advanceRun(userId, runId, body, 'approve');
@@ -217,6 +218,22 @@ async function getReference(userId, runId) {
   } catch (err) {
     console.error('[getReference]', err);
     return resp(500, { error: 'could not read reference' });
+  }
+}
+
+// Return the QA pass findings (things with no annotation to attach to, e.g.
+// a schedule shortfall or a possibly-undetected door).
+async function getQa(userId, runId) {
+  const item = await loadOwned(userId, runId);
+  if (!item) return resp(404, { error: 'run not found' });
+  if (item === 'forbidden') return resp(403, { error: 'not your run' });
+  if (!item.qaKey) return resp(404, { error: 'no QA yet' });
+  try {
+    const obj = await s3.send(new GetObjectCommand({ Bucket: PROJECT_BUCKET, Key: item.qaKey }));
+    return resp(200, JSON.parse(await obj.Body.transformToString()));
+  } catch (err) {
+    console.error('[getQa]', err);
+    return resp(500, { error: 'could not read QA findings' });
   }
 }
 
@@ -501,6 +518,7 @@ function publicView(item) {
     seq: item.seq,
     detectionsKey: item.detectionsKey || null,
     referenceKey: item.referenceKey || null,
+    qaKey: item.qaKey || null,
     taggedZones: item.taggedZones ?? null,
     scale: item.scale ?? null,
     output: item.stageOutput,

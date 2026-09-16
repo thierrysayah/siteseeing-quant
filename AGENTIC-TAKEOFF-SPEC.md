@@ -57,6 +57,23 @@ thin wrapper) or **[VLM]/[LLM]** (needs a model). Every stage ends in a
 **8 stages** (detect+clean merged). Intelligence is concentrated in stages
 1, 2, 4, 6, 8; stages 3, 5, 7 are deterministic tools.
 
+**QA pass (P3, shipped).** "Find what nothing flagged." Reads the whole
+takeoff — detections + tags + schedules + scale — and reasons across it.
+Deterministic checks: **schedule reconciliation** (door/window schedule counts
+vs. tagged detections → "D04: schedule 7, 5 tagged — 2 possibly missing"),
+**double-counted zones** (real polygon intersection, ≥15 % of the smaller),
+**untagged zones**, **area plausibility** (slivers, blobs, and tag-vs-area
+bounds like a 200 m² "WC"). Then one VLM **missed-elements sweep**: the
+detections are drawn onto the plan (purple door / orange window / red zone)
+and the model is asked what is visibly present with no box, returning
+approximate positions. Output: per-annotation `review` flags
+(`reviewStage:'qa'`, repointing `detectionsKey`) plus standalone findings in
+`qa.json` (`GET /agent/runs/{id}/qa`) for things with no annotation to attach
+to. All of it lands in the panel's cumulative **Needs review** list, tagged
+`[qa]`, each row focusable and explicitly dismissable. Advisory only — never
+silently fixes. Known gap: a merged zone masks the individual rooms inside it,
+so the sweep won't report them as missing.
+
 **Classify & tag (P2c, shipped).** One VLM call **per sheet** (capped at
 `CLASSIFY_MAX_PAGES`, default 12) reads each page for door/window/room/finish
 schedules and legend; rows are merged across sheets and deduped by mark (first

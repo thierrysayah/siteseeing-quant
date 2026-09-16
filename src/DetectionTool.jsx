@@ -5032,7 +5032,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
           getAgentDetections={() => annotations.map(a => ({
             id: a.id,   // round-tripped by the worker so tags map back to this shape
             // Review flags must survive save-back or an Adjust would drop them.
-            review: a.review ?? null, reviewStage: a.reviewStage ?? null, reclassFrom: a.reclassFrom ?? null,
+            review: a.review ?? null, reviewStage: a.reviewStage ?? null, reclassFrom: a.reclassFrom ?? null, reviewNote: a.reviewNote ?? null,
             shapeType: a.shapeType, clsName: a.clsName,
             confidence: a.confidence ?? null, zoneTag: a.zoneTag ?? null,
             x1: a.x1 ?? null, y1: a.y1 ?? null, x2: a.x2 ?? null, y2: a.y2 ?? null,
@@ -5054,7 +5054,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
             })();
             setAnnotations(prev => prev.map(a => {
               if (!same(a)) return a;
-              const { review, reviewStage, reclassFrom, ...rest } = a;   // strip the flag
+              const { review, reviewStage, reclassFrom, reviewNote, ...rest } = a;   // strip the flag
               return rest;
             }));
           }}
@@ -5079,7 +5079,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                 ...a,
                 zoneTag: m.zoneTag ?? a.zoneTag,
                 clsName: m.clsName || a.clsName,
-                ...(m.review ? { review: m.review, reviewStage: m.reviewStage, reclassFrom: m.reclassFrom } : {}),
+                ...(m.review ? { review: m.review, reviewStage: m.reviewStage, reclassFrom: m.reclassFrom, reviewNote: m.reviewNote } : {}),
               };
             }));
             setStatus(`Agent tagged ${n} shapes — see the TAGS panel.`);

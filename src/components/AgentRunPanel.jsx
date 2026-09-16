@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  startRun, getRun, getQuota, getDetections, getReference, putDetections, putScale,
+  startRun, getRun, getQuota, getDetections, getReference, getQa, putDetections, putScale,
   approveStage, rejectStage, cancelRun, TERMINAL,
 } from '../services/agentService';
 
@@ -56,7 +56,19 @@ export default function AgentRunPanel({
   // Items the user explicitly dismissed (by id). Kept for the whole run so a
   // later stage's refetch — which round-trips the flag — doesn't resurrect them.
   const dismissedRef = useRef(new Set());
-  const listFlagged = () => (detRef.current || []).filter(a => a.review && !dismissedRef.current.has(a.id));
+  const qaRef = useRef([]);          // standalone QA findings (schedule shortfall, missed door…)
+  const qaKeyRef = useRef(null);
+  // The run's cumulative review list: annotation flags from every stage plus
+  // QA's standalone findings, minus anything the user explicitly dismissed.
+  const listFlagged = () => {
+    const anns = (detRef.current || [])
+      .filter(a => a.review && !dismissedRef.current.has(a.id))
+      .map(a => ({ id: a.id, stage: reviewStageOf(a), text: reviewReason(a), bbox: annBbox(a), ann: a }));
+    const qa = (qaRef.current || [])
+      .filter(f => !dismissedRef.current.has(f.id))
+      .map(f => ({ id: f.id, stage: 'qa', text: f.message, bbox: f.bbox || null, finding: f }));
+    return [...anns, ...qa];
+  };
   // Callbacks come from the parent with fresh identity each render; hold them in
   // refs so our effects don't re-fire (and wipe the overlay) on every render.
   const onPreviewRef = useRef(onPreview); onPreviewRef.current = onPreview;
@@ -146,6 +158,23 @@ export default function AgentRunPanel({
     return () => { cancelled = true; };
   }, [run?.referenceKey, run?.runId]);
 
+  // Fetch QA findings once the QA stage writes them; they join the review list.
+  useEffect(() => {
+    if (!run?.qaKey || run.qaKey === qaKeyRef.current) return;
+    const key = run.qaKey;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await getQa(run.runId);
+        if (cancelled) return;
+        qaKeyRef.current = key;
+        qaRef.current = Array.isArray(data?.findings) ? data.findings : [];
+        setFlagged(listFlagged());
+      } catch { /* the stage text still summarises the counts */ }
+    })();
+    return () => { cancelled = true; };
+  }, [run?.qaKey, run?.runId]);
+
   // On finish, merge the detections into the editor (once).
   useEffect(() => {
     if (run?.status === 'done' && detRef.current && !appliedRef.current) {
@@ -220,11 +249,15 @@ export default function AgentRunPanel({
   // User explicitly dismisses a review item: hide it for the rest of the run,
   // clear the flag on our local copy (so a later promote doesn't carry it) and
   // on the editor shape (so a later save-back doesn't resend it).
-  const dismissFlag = useCallback((a) => {
-    dismissedRef.current.add(a.id);
-    const local = (detRef.current || []).find(x => x.id === a.id);
-    if (local) { delete local.review; delete local.reviewStage; delete local.reclassFrom; }
-    onDismissFlagRef.current?.(a);
+  const dismissFlag = useCallback((item) => {
+    dismissedRef.current.add(item.id);
+    if (item.ann) {
+      // Annotation flag: also clear it on our copy and on the editor shape.
+      const local = (detRef.current || []).find(x => x.id === item.id);
+      if (local) { delete local.review; delete local.reviewStage; delete local.reclassFrom; delete local.reviewNote; }
+      onDismissFlagRef.current?.(item.ann);
+    }
+    // Standalone QA finding: nothing to clear on a shape; it just stays hidden.
     setFlagged(listFlagged());
   }, []);
 
@@ -516,6 +549,9 @@ function reviewReason(a) {
   if (a.review === 'oversized')     return `${cls} — room-sized, likely not a ${cls}`;
   if (a.review === 'class_mismatch')return `${cls}${tag ? ` reads ${tag}` : ''} — check class`;
   if (a.review === 'low_confidence')return `${cls}${tag ? ` (${tag})` : ''} — low confidence`;
+  if (a.review === 'overlap')       return `${cls}${tag ? ` "${tag}"` : ''} — overlaps another zone, area may be double-counted`;
+  if (a.review === 'untagged')      return `${cls} — no room tag`;
+  if (a.review === 'implausible_area') return `${cls}${tag ? ` "${tag}"` : ''} — ${a.reviewNote || 'implausible area'}`;
   return `${cls} — review`;
 }
 function annBbox(a) {
@@ -531,6 +567,7 @@ function reviewStageOf(a) {
   if (a.reviewStage) return a.reviewStage;
   if (a.review === 'low_confidence') return 'detect';
   if (a.review === 'oversized' || a.review === 'reclassified' || a.review === 'class_mismatch') return 'classify';
+  if (a.review === 'overlap' || a.review === 'untagged' || a.review === 'implausible_area') return 'qa';
   return 'agent';
 }
 // The run's cumulative review list. Rows jump the canvas to the shape; the ✕
@@ -540,16 +577,17 @@ function ReviewList({ items, onFocus, onDismiss }) {
     <details style={styles.reviewBox} open>
       <summary style={styles.reviewSummary}>⚠ Needs review <span style={styles.schedCount}>{items.length}</span></summary>
       <div style={styles.reviewScroll}>
-        {items.map((a, i) => {
-          const [bx1, by1] = annBbox(a);
+        {items.map((it, i) => {
+          const bx1 = it.bbox?.[0], by1 = it.bbox?.[1];
           return (
-            <div key={a.id || i} style={styles.reviewRowWrap}>
-              <button style={styles.reviewRow} onClick={() => onFocus?.(annBbox(a))} title="Jump to it on the canvas">
+            <div key={it.id || i} style={styles.reviewRowWrap}>
+              <button style={styles.reviewRow} onClick={() => it.bbox && onFocus?.(it.bbox)}
+                title={it.bbox ? 'Jump to it on the canvas' : undefined}>
                 <span style={styles.reviewIdx}>{i + 1}.</span>
-                <span style={styles.reviewStage}>[{reviewStageOf(a)}]</span> {reviewReason(a)}
+                <span style={styles.reviewStage}>[{it.stage}]</span> {it.text}
                 {bx1 != null && <span style={styles.reviewAt}> @ {Math.round(bx1)},{Math.round(by1)}</span>}
               </button>
-              <button style={styles.reviewDismiss} onClick={() => onDismiss?.(a)} title="Dismiss — I've looked at this">✕</button>
+              <button style={styles.reviewDismiss} onClick={() => onDismiss?.(it)} title="Dismiss — I've looked at this">✕</button>
             </div>
           );
         })}

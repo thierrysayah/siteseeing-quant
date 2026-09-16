@@ -38,6 +38,11 @@ export function getDetections(runId) {
   return readJson(get({ apiName: 'quantApi', path: `/agent/runs/${runId}/detections` }));
 }
 
+/** Fetch the QA pass findings → { findings:[{id,kind,message,bbox?,severity}], counts }. */
+export function getQa(runId) {
+  return readJson(get({ apiName: 'quantApi', path: `/agent/runs/${runId}/qa` }));
+}
+
 /** Fetch the extracted reference tables → { reference:{doors,windows,rooms,legend}, ... }. */
 export function getReference(runId) {
   return readJson(get({ apiName: 'quantApi', path: `/agent/runs/${runId}/reference` }));

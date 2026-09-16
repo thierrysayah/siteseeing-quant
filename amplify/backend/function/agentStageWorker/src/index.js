@@ -92,6 +92,7 @@ async function runStage(run, stageIndex) {
   if (key === 'detect') return detectStage(run);   // detect + trim/clean in one
   if (key === 'classify_tag') return classifyTagStage(run);
   if (key === 'quantify') return quantifyStage(run);
+  if (key === 'qa') return qaStage(run);
   const s = STAGES[stageIndex];
   return {
     output: `Stub output for "${s.label}" (stage ${stageIndex + 1}/${STAGES.length}).`,
@@ -453,6 +454,88 @@ async function quantifyStage(run) {
     confidence: 1,
     gate: 'approve',
     fields: { quantitiesKey: outKey, hasScale: q.hasScale },
+  };
+}
+
+// Stage 6 — QA pass: "find what nothing flagged". Reads the WHOLE takeoff
+// (detections + tags + schedules + scale) and reasons across it. Deterministic
+// checks first (schedule counts, double-counted zones, untagged zones, area
+// plausibility), then one VLM sweep with the detections drawn on the plan to
+// spot elements that were never detected at all — the one error class a human
+// can't eyeball. Advisory: flags + findings for approval, never silent fixes.
+async function qaStage(run) {
+  const Jimp = require('jimp');
+  const { fetchPagePng, getJsonArtifact, putJsonArtifact, readProjectScale } = require('./lib/pageimage');
+  const { askVlmImage, extractJson, MODEL } = require('./lib/vlm');
+  const {
+    reconcileSchedule, overlappingZones, untaggedZones, implausibleAreas,
+    drawDetections, MISSED_PROMPT, missedToFindings,
+  } = require('./lib/qa');
+  if (!run.detectionsKey) throw new Error('no detections to QA');
+
+  const det = await getJsonArtifact(run.detectionsKey);
+  const anns = det.annotations || [];
+  let reference = null;
+  if (run.referenceKey) {
+    try { reference = (await getJsonArtifact(run.referenceKey)).reference || null; }
+    catch (e) { console.warn('[qa] no reference', e.message); }
+  }
+  const ratio = (typeof run.scale === 'number' && run.scale > 0) ? run.scale : await readProjectScale(run);
+
+  // 1–4: deterministic, cross-cutting checks.
+  const findings = [];
+  findings.push(...reconcileSchedule(anns, reference));
+  findings.push(...overlappingZones(anns));
+  const nUntagged = untaggedZones(anns);
+  const nArea = implausibleAreas(anns, ratio);
+
+  // 5: missed-elements sweep — best-effort, never blocks.
+  let missed = [], sweepNote = 'sweep skipped';
+  try {
+    const { buffer } = await fetchPagePng(run);
+    const img = await Jimp.read(buffer);
+    const W = img.bitmap.width, H = img.bitmap.height;
+    drawDetections(img, anns);
+    const overlaid = await img.quality(90).getBufferAsync(Jimp.MIME_JPEG);
+    const text = await askVlmImage(overlaid, MISSED_PROMPT, { maxTokens: 1200 });
+    const parsed = extractJson(text);
+    missed = missedToFindings(parsed && parsed.missed, W, H);
+    findings.push(...missed);
+    sweepNote = `sweep by ${MODEL.split('.').slice(-1)[0].split(':')[0]}`;
+  } catch (e) {
+    console.warn('[qa] missed-elements sweep failed', e.message);
+    sweepNote = `sweep unavailable (${e.name || 'error'})`;
+  }
+
+  // Persist: flagged annotations (repoint detectionsKey) + standalone findings.
+  const detectionsKey = await putJsonArtifact(run.runId, 'detections-qa.json', {
+    annotations: anns, meta: det.meta || null, qaAt: new Date().toISOString(),
+  });
+  const qaKey = await putJsonArtifact(run.runId, 'qa.json', {
+    findings, counts: { untagged: nUntagged, implausibleArea: nArea, missed: missed.length },
+    generatedAt: new Date().toISOString(),
+  });
+
+  const bits = [];
+  const short = findings.filter(f => f.kind === 'schedule_short').length;
+  const over  = findings.filter(f => f.kind === 'schedule_over').length;
+  const ovl   = findings.filter(f => f.kind === 'overlap').length;
+  if (short)          bits.push(`${short} schedule shortfall${short > 1 ? 's' : ''}`);
+  if (over)           bits.push(`${over} over-count${over > 1 ? 's' : ''}`);
+  if (missed.length)  bits.push(`${missed.length} possibly undetected`);
+  if (ovl)            bits.push(`${ovl} overlapping zone pair${ovl > 1 ? 's' : ''}`);
+  if (nUntagged)      bits.push(`${nUntagged} untagged zone${nUntagged > 1 ? 's' : ''}`);
+  if (nArea)          bits.push(`${nArea} implausible area${nArea > 1 ? 's' : ''}`);
+  const total = findings.length + nUntagged + nArea;
+
+  return {
+    output: total
+      ? `QA found ${total} item${total > 1 ? 's' : ''} to check — ${bits.join(', ')}. See Needs review; Approve when satisfied.`
+      : 'QA found nothing to flag — counts match the schedule, no double-counted zones, all zones tagged, areas plausible.',
+    evidence: `Schedule reconciliation, zone overlap (polygon intersection), tag/area checks; ${sweepNote}.`,
+    confidence: 1,
+    gate: 'approve',
+    fields: { qaKey, detectionsKey },
   };
 }
 
