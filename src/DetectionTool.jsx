@@ -2121,8 +2121,10 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
   }, [project?.id, computeBaseScale]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Save project to S3 ───────────────────────────────────────────────────────
+  // Returns true on success, false if there was nothing to save or it failed —
+  // callers like Run Agent need to know the project on S3 is current.
   const handleSave = async () => {
-    if (!project?.id) return;
+    if (!project?.id) return false;
     setSaveStatus('saving');
     try {
       // Sync current page annotations/size into allPagesRef before saving
@@ -2177,10 +2179,12 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
       setLastSaveTime(new Date());
       setStatus("Save complete.");
       setTimeout(() => setSaveStatus(null), 3000);
+      return true;
     } catch (err) {
       console.error('Save failed:', err);
       setStatus(`Save failed: ${err?.message || String(err)}`);
       setSaveStatus('error');
+      return false;
     }
   };
 
@@ -4962,8 +4966,16 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         )}
         {project?.id && !isReadOnly && (
           <button
-            onClick={() => setShowAgent(true)}
-            title="Run the Agentic Takeoff on this sheet"
+            onClick={async () => {
+              // The agent reads the project from S3, so save first — otherwise an
+              // unsaved recalibration/edit would be silently ignored. Abort on failure.
+              setStatus("Saving project before running the agent…");
+              const ok = await handleSaveRef.current?.();
+              if (!ok) { setStatus("Save failed — fix it and try Run Agent again."); return; }
+              setShowAgent(true);
+            }}
+            disabled={saveStatus === 'saving'}
+            title="Run the Agentic Takeoff on this sheet (saves the project first)"
             style={{ ...styles.uploadBtn, background: "transparent", borderColor: "var(--accent2)", color: "var(--accent2)", fontWeight: 600 }}
           >✦ Run Agent</button>
         )}
