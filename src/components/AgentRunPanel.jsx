@@ -28,6 +28,7 @@ export default function AgentRunPanel({
   scaleCal,   // the editor's real Scale-Calibration state + handlers (both options)
   onFocusBox, // (bbox) => scroll the canvas to a flagged shape
   onApplyTags, // (anns) => merge agent tags/reclasses onto shapes ALREADY in the editor
+  onDismissFlag, // (ann) => user explicitly dismissed a review item; clear it on the editor shape
 }) {
   const [run, setRun] = useState(null);
   const [error, setError] = useState(null);
@@ -52,6 +53,10 @@ export default function AgentRunPanel({
   const detRef = useRef(null);       // latest fetched detections
   const detKeyRef = useRef(null);    // which detectionsKey we last fetched
   const appliedRef = useRef(false);  // detections now live in the editor (adjust or finish)
+  // Items the user explicitly dismissed (by id). Kept for the whole run so a
+  // later stage's refetch — which round-trips the flag — doesn't resurrect them.
+  const dismissedRef = useRef(new Set());
+  const listFlagged = () => (detRef.current || []).filter(a => a.review && !dismissedRef.current.has(a.id));
   // Callbacks come from the parent with fresh identity each render; hold them in
   // refs so our effects don't re-fire (and wipe the overlay) on every render.
   const onPreviewRef = useRef(onPreview); onPreviewRef.current = onPreview;
@@ -59,6 +64,7 @@ export default function AgentRunPanel({
   const getDetRef = useRef(getAgentDetections); getDetRef.current = getAgentDetections;
   const onApplyRef = useRef(onApply); onApplyRef.current = onApply;
   const onApplyTagsRef = useRef(onApplyTags); onApplyTagsRef.current = onApplyTags;
+  const onDismissFlagRef = useRef(onDismissFlag); onDismissFlagRef.current = onDismissFlag;
 
   const stopPolling = () => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -114,7 +120,7 @@ export default function AgentRunPanel({
         detKeyRef.current = key;
         detRef.current = annotations || [];
         setDetCount(detRef.current.length);
-        setFlagged(detRef.current.filter(a => a.review));   // agent flagged these for review
+        setFlagged(listFlagged());   // agent flagged these for review (minus dismissed)
         // If the user already adjusted (detections live in the editor), don't
         // re-show the overlay — that would double up with the real annotations.
         if (!appliedRef.current) onPreviewRef.current?.(detRef.current);
@@ -210,6 +216,17 @@ export default function AgentRunPanel({
       setBusy(false);
     }
   }, [run, busy, scaleCal]);
+
+  // User explicitly dismisses a review item: hide it for the rest of the run,
+  // clear the flag on our local copy (so a later promote doesn't carry it) and
+  // on the editor shape (so a later save-back doesn't resend it).
+  const dismissFlag = useCallback((a) => {
+    dismissedRef.current.add(a.id);
+    const local = (detRef.current || []).find(x => x.id === a.id);
+    if (local) { delete local.review; delete local.reviewStage; delete local.reclassFrom; }
+    onDismissFlagRef.current?.(a);
+    setFlagged(listFlagged());
+  }, []);
 
   // Drag the panel by its header. Clamped so it can't be lost off-screen.
   const startDrag = useCallback((e) => {
@@ -326,7 +343,7 @@ export default function AgentRunPanel({
             {run.stageKey === 'classify_tag' && reference && <ScheduleView reference={reference} />}
 
             {/* items the agent flagged for review — click to jump to them */}
-            {flagged.length > 0 && <ReviewList items={flagged} onFocus={onFocusBox} />}
+            {flagged.length > 0 && <ReviewList items={flagged} onFocus={onFocusBox} onDismiss={dismissFlag} />}
 
             {/* actions — normal review */}
             {canAct && !adjusting && (
@@ -505,7 +522,16 @@ function annBbox(a) {
   return [a.x1, a.y1, a.x2, a.y2];
 }
 // The agent's flagged items — each row jumps the canvas to that shape.
-function ReviewList({ items, onFocus }) {
+// Which stage raised a flag — recorded by the worker; inferred for older runs.
+function reviewStageOf(a) {
+  if (a.reviewStage) return a.reviewStage;
+  if (a.review === 'low_confidence') return 'detect';
+  if (a.review === 'oversized' || a.review === 'reclassified' || a.review === 'class_mismatch') return 'classify';
+  return 'agent';
+}
+// The run's cumulative review list. Rows jump the canvas to the shape; the ✕
+// is an explicit user dismissal — it stays gone for the rest of the run.
+function ReviewList({ items, onFocus, onDismiss }) {
   return (
     <details style={styles.reviewBox} open>
       <summary style={styles.reviewSummary}>⚠ Needs review <span style={styles.schedCount}>{items.length}</span></summary>
@@ -513,10 +539,14 @@ function ReviewList({ items, onFocus }) {
         {items.map((a, i) => {
           const [bx1, by1] = annBbox(a);
           return (
-            <button key={i} style={styles.reviewRow} onClick={() => onFocus?.(annBbox(a))} title="Jump to it on the canvas">
-              <span style={styles.reviewIdx}>{i + 1}.</span> {reviewReason(a)}
-              {bx1 != null && <span style={styles.reviewAt}> @ {Math.round(bx1)},{Math.round(by1)}</span>}
-            </button>
+            <div key={a.id || i} style={styles.reviewRowWrap}>
+              <button style={styles.reviewRow} onClick={() => onFocus?.(annBbox(a))} title="Jump to it on the canvas">
+                <span style={styles.reviewIdx}>{i + 1}.</span>
+                <span style={styles.reviewStage}>[{reviewStageOf(a)}]</span> {reviewReason(a)}
+                {bx1 != null && <span style={styles.reviewAt}> @ {Math.round(bx1)},{Math.round(by1)}</span>}
+              </button>
+              <button style={styles.reviewDismiss} onClick={() => onDismiss?.(a)} title="Dismiss — I've looked at this">✕</button>
+            </div>
           );
         })}
       </div>
@@ -572,8 +602,11 @@ const styles = {
   reviewBox: { marginTop: 10, border: '1px solid var(--amber-bd)', borderRadius: 6, background: 'var(--amber-soft)' },
   reviewSummary: { cursor: 'pointer', padding: '7px 10px', fontSize: 12, fontWeight: 600, color: 'var(--tx-body)', userSelect: 'none' },
   reviewScroll: { maxHeight: 160, overflow: 'auto', padding: '0 6px 6px' },
-  reviewRow: { display: 'block', width: '100%', textAlign: 'left', padding: '6px 8px', margin: '3px 0', fontSize: 11, lineHeight: 1.4, color: 'var(--tx-body)', background: 'var(--bg-badge)', border: '1px solid var(--amber-bd)', borderRadius: 5, cursor: 'pointer' },
+  reviewRow: { display: 'block', flex: 1, minWidth: 0, textAlign: 'left', padding: '6px 8px', margin: 0, fontSize: 11, lineHeight: 1.4, color: 'var(--tx-body)', background: 'var(--bg-badge)', border: '1px solid var(--amber-bd)', borderRadius: 5, cursor: 'pointer' },
   reviewIdx: { color: 'var(--tx-dim)', fontWeight: 600 },
+  reviewStage: { color: 'var(--accent2)', fontFamily: 'var(--font-mono, monospace)', fontSize: 10, marginRight: 2 },
+  reviewRowWrap: { display: 'flex', alignItems: 'stretch', gap: 4, margin: '3px 0' },
+  reviewDismiss: { flex: '0 0 auto', padding: '0 9px', fontSize: 12, color: 'var(--tx-dim)', background: 'var(--bg-badge)', border: '1px solid var(--amber-bd)', borderRadius: 5, cursor: 'pointer' },
   reviewAt: { color: 'var(--tx-dim)', fontFamily: 'var(--font-mono, monospace)' },
   trialBox: { marginTop: 12, padding: 14, background: 'var(--bg-badge)', border: '1px solid var(--bd-panel)', borderRadius: 8 },
   trialTitle: { fontSize: 14, fontWeight: 700, color: 'var(--tx-body)', marginBottom: 6 },

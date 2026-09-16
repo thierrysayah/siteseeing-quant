@@ -222,7 +222,7 @@ async function detectStage(run) {
   const { anns, trimmed, removed, ambiguous, notes } = trimZoneOverhangsIterative(annotations);
   let flagged = 0;
   for (const a of anns) {
-    if (a.confidence != null && a.confidence < 0.35) { a.review = 'low_confidence'; flagged++; }
+    if (a.confidence != null && a.confidence < 0.35) { a.review = 'low_confidence'; a.reviewStage = 'detect'; flagged++; }
   }
 
   const byClass = {};
@@ -284,7 +284,7 @@ async function classifyTagStage(run) {
     const median = areas[Math.floor(areas.length / 2)] || 0;
     const keep = []; let flagged = 0;
     for (const a of group) {
-      if (median > 0 && areaOf(a) > 6 * median) { a.review = 'oversized'; flagged++; }
+      if (median > 0 && areaOf(a) > 6 * median) { a.review = 'oversized'; a.reviewStage = 'classify'; flagged++; }
       else keep.push(a);
     }
     return { keep, flagged };
@@ -323,6 +323,7 @@ async function classifyTagStage(run) {
           a.reclassFrom = a.clsName;
           a.clsName = other;
           a.review = 'reclassified';
+          a.reviewStage = 'classify';
           reclassified++;
         }
       }

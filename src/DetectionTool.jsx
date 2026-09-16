@@ -5031,6 +5031,8 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
           // everything on the page is the takeoff).
           getAgentDetections={() => annotations.map(a => ({
             id: a.id,   // round-tripped by the worker so tags map back to this shape
+            // Review flags must survive save-back or an Adjust would drop them.
+            review: a.review ?? null, reviewStage: a.reviewStage ?? null, reclassFrom: a.reclassFrom ?? null,
             shapeType: a.shapeType, clsName: a.clsName,
             confidence: a.confidence ?? null, zoneTag: a.zoneTag ?? null,
             x1: a.x1 ?? null, y1: a.y1 ?? null, x2: a.x2 ?? null, y2: a.y2 ?? null,
@@ -5043,6 +5045,19 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
             denom: scaleDenomFromRatio(ratio),
           }}
           onFocusBox={focusAnnotationBox}
+          onDismissFlag={(item) => {
+            const near = (a, b) => Math.abs(a - b) < 2;
+            const [ix1, iy1, ix2, iy2] = annotationBbox(item);
+            const same = (a) => a.id === item.id || (() => {
+              const [ax1, ay1, ax2, ay2] = annotationBbox(a);
+              return near(ax1, ix1) && near(ay1, iy1) && near(ax2, ix2) && near(ay2, iy2);
+            })();
+            setAnnotations(prev => prev.map(a => {
+              if (!same(a)) return a;
+              const { review, reviewStage, reclassFrom, ...rest } = a;   // strip the flag
+              return rest;
+            }));
+          }}
           // Tags/reclasses from a later stage (Classify) for shapes that are ALREADY
           // in the editor (user Adjusted earlier). Update them in place — matched by
           // id, else by geometry — never re-add, which would duplicate every shape.
@@ -5064,7 +5079,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                 ...a,
                 zoneTag: m.zoneTag ?? a.zoneTag,
                 clsName: m.clsName || a.clsName,
-                ...(m.review ? { review: m.review, reclassFrom: m.reclassFrom } : {}),
+                ...(m.review ? { review: m.review, reviewStage: m.reviewStage, reclassFrom: m.reclassFrom } : {}),
               };
             }));
             setStatus(`Agent tagged ${n} shapes — see the TAGS panel.`);
