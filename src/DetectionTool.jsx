@@ -4226,15 +4226,14 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
   // prebuilt string) so the number and its unit can be typeset separately.
   const zoneTotals = (() => {
     if (!ratio) return null;
-    let area = 0, perim = 0, found = false;
+    let area = 0, found = false;
     for (const ann of annotations) {
       if (ann.clsName === "zone") {
         area += annotationAreaPx(ann) * ratio * ratio;
-        perim += annotationPerimeterPx(ann) * ratio;
         found = true;
       }
     }
-    return found ? { area: area.toFixed(2), perim: perim.toFixed(2) } : null;
+    return found ? { area: area.toFixed(2) } : null;
   })();
 
   // ─── Annotation list ─────────────────────────────────────────────────────────
@@ -5265,14 +5264,6 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                 <div style={styles.readoutGrp}>
                   <span style={styles.readoutK}>Total zone</span>
                   <span style={styles.readoutV}>{zoneTotals.area} <span style={styles.readoutU}>m²</span></span>
-                </div>
-                <span style={styles.tick}>
-                  <span style={{ ...styles.tickCap, top: 0 }} />
-                  <span style={{ ...styles.tickCap, bottom: 0 }} />
-                </span>
-                <div style={styles.readoutGrp}>
-                  <span style={styles.readoutK}>Perimeter</span>
-                  <span style={styles.readoutV}>{zoneTotals.perim} <span style={styles.readoutU}>m</span></span>
                 </div>
               </div>
             )}
