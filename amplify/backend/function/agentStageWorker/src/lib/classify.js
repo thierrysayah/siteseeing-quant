@@ -120,6 +120,19 @@ async function buildMontage(Jimp, image, elements, font, { cell = 224, cols = 5,
 
 // Prompt for a montage of same-kind elements → per-cell mark.
 function montageTagPrompt(kind, count, marks) {
+  if (kind === 'room') {
+    const clean = (marks || []).filter(Boolean);
+    const ctx = clean.length
+      ? ` For reference, rooms named on the schedule: [${clean.join('; ')}].` : '';
+    return `This image is a numbered grid of ${count} crops. Each cell (labelled 0, 1, 2, …) `
+      + `shows ONE room/zone from a floor plan, zoomed in. The room's NAME is usually `
+      + `printed inside it (e.g. LIVING ROOM, KITCHEN, BEDROOM #2, WIC), often with a `
+      + `size and ceiling height beneath. For each cell give the room tag: `
+      + `(1) if a name is printed inside, use it exactly as printed; (2) else infer the `
+      + `room type from its fixtures/size (WC pan → "WC", sink run → "Kitchen", large `
+      + `open area → "Hall"). Never leave a label empty. `
+      + `Return ONLY JSON, no prose: {"tags":[{"i":<cell number>,"label":"<name>","number":<room number or null>}]}.${ctx}`;
+  }
   const eg = kind === 'door' ? 'D01, D02' : 'W01, W03';
   const other = kind === 'door' ? 'window (W##)' : 'door (D##)';
   const clean = (marks || []).filter(Boolean);

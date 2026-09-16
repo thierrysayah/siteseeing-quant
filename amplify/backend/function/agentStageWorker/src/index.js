@@ -265,31 +265,8 @@ async function classifyTagStage(run) {
   const Jimp = require('jimp');
   const { askVlmImage, extractJson, imageSize, MODEL } = require('./lib/vlm');
   const {
-    EXTRACT_PROMPT, tagPrompt, montageTagPrompt, buildMontage, centroidOf, mergeReference,
+    EXTRACT_PROMPT, montageTagPrompt, buildMontage, mergeReference,
   } = require('./lib/classify');
-
-  // Zones: read the room NAME off the whole plan by centroid (names are large).
-  async function tagZones(buffer, W, H, group, context) {
-    if (!group.length) return 0;
-    const items = [];
-    group.forEach((a, idx) => {
-      const c = centroidOf(a);
-      if (c) items.push({ i: idx, _ref: a, nx: c[0] / W, ny: c[1] / H });
-    });
-    if (!items.length) return 0;
-    const text = await askVlmImage(buffer, tagPrompt(items, 'room', context), { maxTokens: 1500 });
-    const parsed = extractJson(text);
-    const tags = (parsed && Array.isArray(parsed.tags)) ? parsed.tags : [];
-    const byIndex = new Map(items.map(it => [it.i, it._ref]));
-    let n = 0;
-    for (const t of tags) {
-      const a = byIndex.get(t.i);
-      if (!a) continue;
-      const label = [t.number, t.label].filter(Boolean).join(' ').trim();
-      if (label) { a.zoneTag = label; n++; }
-    }
-    return n;
-  }
 
   // A door/window whose bbox is far larger than its peers is almost always a
   // false detection (e.g. a whole room caught as a "door"). Flag those for review
@@ -319,16 +296,17 @@ async function classifyTagStage(run) {
   // Chunked so each cell stays legible. A read mark of the WRONG kind (a W## on a
   // door, or D## on a window) flags a probable misclassification rather than
   // silently forcing a same-kind mark.
-  async function tagByMontage(image, font, group, kind, marks) {
+  async function tagByMontage(image, font, group, kind, marks, opts = {}) {
     if (!group.length) return { tagged: 0, reclassified: 0 };
-    const CAP = 20;
+    const CAP = opts.cap || 20;
     const other = kind === 'door' ? 'window' : 'door';
-    const wrongKind = kind === 'door' ? /^\s*W\s*\d/i : /^\s*D\s*\d/i;
+    // Door↔window reclass only applies to those two kinds; rooms never reclass.
+    const wrongKind = kind === 'door' ? /^\s*W\s*\d/i : kind === 'window' ? /^\s*D\s*\d/i : null;
     let tagged = 0, reclassified = 0;
     for (let start = 0; start < group.length; start += CAP) {
       const chunk = group.slice(start, start + CAP);
-      const buf = await buildMontage(Jimp, image, chunk, font);
-      const text = await askVlmImage(buf, montageTagPrompt(kind, chunk.length, marks), { maxTokens: 1200 });
+      const buf = await buildMontage(Jimp, image, chunk, font, opts.montage);
+      const text = await askVlmImage(buf, montageTagPrompt(kind, chunk.length, marks), { maxTokens: 1500 });
       const parsed = extractJson(text);
       const tags = (parsed && Array.isArray(parsed.tags)) ? parsed.tags : [];
       const byIdx = new Map(chunk.map((a, i) => [i, a]));
@@ -336,10 +314,12 @@ async function classifyTagStage(run) {
         const a = byIdx.get(t.i);
         const label = t.label != null ? String(t.label).trim() : '';
         if (!a || !label) continue;
-        a.zoneTag = label; tagged++;
+        // Rooms may also carry a number ("101 Office"); marks don't.
+        a.zoneTag = (kind === 'room' && t.number) ? `${t.number} ${label}`.trim() : label;
+        tagged++;
         // A mark of the other kind is a near-certain mis-detection → auto-reclass
         // (door↔window), keep the mark, and flag it for the user to confirm.
-        if (wrongKind.test(label)) {
+        if (wrongKind && wrongKind.test(label)) {
           a.reclassFrom = a.clsName;
           a.clsName = other;
           a.review = 'reclassified';
@@ -393,7 +373,9 @@ async function classifyTagStage(run) {
         // Flag & exclude room-sized false doors/windows before tagging.
         const d = dropOversized(doors), wg = dropOversized(windows);
         oversized = d.flagged + wg.flagged;
-        tagged += await tagZones(buffer, w, h, zones, roomCtx);
+        const zr = await tagByMontage(image, font, zones, 'room', roomCtx,
+          { cap: 12, montage: { cell: 300, cols: 4, padFactor: 0.15 } });
+        tagged += zr.tagged;
         const dr = await tagByMontage(image, font, d.keep,  'door',   doorCtx);
         const wr = await tagByMontage(image, font, wg.keep, 'window', winCtx);
         tagged += dr.tagged + wr.tagged;
