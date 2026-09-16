@@ -5019,6 +5019,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
           // Current full annotation set, serialised for save-back (Option A:
           // everything on the page is the takeoff).
           getAgentDetections={() => annotations.map(a => ({
+            id: a.id,   // round-tripped by the worker so tags map back to this shape
             shapeType: a.shapeType, clsName: a.clsName,
             confidence: a.confidence ?? null, zoneTag: a.zoneTag ?? null,
             x1: a.x1 ?? null, y1: a.y1 ?? null, x2: a.x2 ?? null, y2: a.y2 ?? null,
@@ -5031,6 +5032,32 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
             denom: scaleDenomFromRatio(ratio),
           }}
           onFocusBox={focusAnnotationBox}
+          // Tags/reclasses from a later stage (Classify) for shapes that are ALREADY
+          // in the editor (user Adjusted earlier). Update them in place — matched by
+          // id, else by geometry — never re-add, which would duplicate every shape.
+          onApplyTags={(tagged) => {
+            if (!tagged || !tagged.length) return;
+            registerAgentTags(tagged);
+            const byId = new Map(tagged.filter(t => t.id).map(t => [t.id, t]));
+            const near = (a, b) => Math.abs(a - b) < 2;
+            const sameGeom = (t, a) => {
+              const [tx1, ty1, tx2, ty2] = annotationBbox(t), [ax1, ay1, ax2, ay2] = annotationBbox(a);
+              return near(tx1, ax1) && near(ty1, ay1) && near(tx2, ax2) && near(ty2, ay2);
+            };
+            const matchFor = (a) => byId.get(a.id) || tagged.find(t => sameGeom(t, a));
+            const n = annotations.filter(matchFor).length;   // count now; the updater runs later
+            setAnnotations(prev => prev.map(a => {
+              const m = matchFor(a);
+              if (!m) return a;
+              return {
+                ...a,
+                zoneTag: m.zoneTag ?? a.zoneTag,
+                clsName: m.clsName || a.clsName,
+                ...(m.review ? { review: m.review, reclassFrom: m.reclassFrom } : {}),
+              };
+            }));
+            setStatus(`Agent tagged ${n} shapes — see the TAGS panel.`);
+          }}
           onClose={() => { setShowAgent(false); setAgentPreview(null); }}
         />
       )}

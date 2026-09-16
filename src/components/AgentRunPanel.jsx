@@ -27,6 +27,7 @@ export default function AgentRunPanel({
   projectId, pageId, onClose, onPreview, onApply, onAdjust, getAgentDetections,
   scaleCal,   // the editor's real Scale-Calibration state + handlers (both options)
   onFocusBox, // (bbox) => scroll the canvas to a flagged shape
+  onApplyTags, // (anns) => merge agent tags/reclasses onto shapes ALREADY in the editor
 }) {
   const [run, setRun] = useState(null);
   const [error, setError] = useState(null);
@@ -57,6 +58,7 @@ export default function AgentRunPanel({
   const onAdjustRef = useRef(onAdjust); onAdjustRef.current = onAdjust;
   const getDetRef = useRef(getAgentDetections); getDetRef.current = getAgentDetections;
   const onApplyRef = useRef(onApply); onApplyRef.current = onApply;
+  const onApplyTagsRef = useRef(onApplyTags); onApplyTagsRef.current = onApplyTags;
 
   const stopPolling = () => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -116,6 +118,7 @@ export default function AgentRunPanel({
         // If the user already adjusted (detections live in the editor), don't
         // re-show the overlay — that would double up with the real annotations.
         if (!appliedRef.current) onPreviewRef.current?.(detRef.current);
+        else onApplyTagsRef.current?.(detRef.current);   // already in editor → update tags in place
       } catch { /* leave it; user still sees the summary text */ }
     })();
     return () => { cancelled = true; };
@@ -169,9 +172,11 @@ export default function AgentRunPanel({
   // annotations; for Calibrate scale, just open the scale editor.
   const startAdjust = useCallback(() => {
     if (!run || busy) return;
-    if (run.stageKey === 'detect' || run.stageKey === 'classify_tag') {
+    if ((run.stageKey === 'detect' || run.stageKey === 'classify_tag') && !appliedRef.current) {
       // Promote the (tagged) detections into the editor so the user can edit
       // shapes/classes and, for classify, the room tags in the TAGS panel.
+      // Skipped if an earlier Adjust already put them there (tags were merged
+      // in place on arrival) — re-promoting would duplicate every shape.
       onAdjustRef.current?.(detRef.current || []);
       appliedRef.current = true;    // in the editor now; don't re-merge on finish
     }
