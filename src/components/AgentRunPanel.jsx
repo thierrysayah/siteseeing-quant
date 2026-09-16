@@ -329,9 +329,13 @@ export default function AgentRunPanel({
             {/* stage output + evidence + confidence */}
             <div style={styles.card}>
               <div style={styles.output}>{run.output}</div>
-              <div style={styles.metaRow}>
-                <span style={styles.meta}>evidence: {run.evidence}</span>
-              </div>
+              {/* DEV ONLY — the evidence line is a development aid and must never
+                  ship to users. Rendered solely in a local dev build. */}
+              {process.env.NODE_ENV === 'development' && run.evidence && (
+                <div style={styles.metaRow}>
+                  <span style={styles.meta}>evidence: {run.evidence}</span>
+                </div>
+              )}
               {detCount != null && !adjusting && run.stageKey === 'detect' && (
                 <div style={styles.previewNote}>
                   ◈ {detCount} shown on the canvas — proposed. Approve to keep, or Adjust to edit.
@@ -599,7 +603,7 @@ const styles = {
   schedTable: { width: '100%', borderCollapse: 'collapse', fontSize: 11 },
   schedTh: { textAlign: 'left', padding: '4px 6px', color: 'var(--tx-dim)', fontWeight: 600, borderBottom: '1px solid var(--bd-panel)', position: 'sticky', top: 0, background: 'var(--bg-badge)' },
   schedTd: { padding: '3px 6px', color: 'var(--tx-body)', borderBottom: '1px solid var(--bd-divider)', whiteSpace: 'nowrap' },
-  reviewBox: { marginTop: 10, border: '1px solid var(--amber-bd)', borderRadius: 6, background: 'var(--amber-soft)' },
+  reviewBox: { marginTop: 10, marginBottom: 16, border: '1px solid var(--amber-bd)', borderRadius: 6, background: 'var(--amber-soft)' },
   reviewSummary: { cursor: 'pointer', padding: '7px 10px', fontSize: 12, fontWeight: 600, color: 'var(--tx-body)', userSelect: 'none' },
   reviewScroll: { maxHeight: 160, overflow: 'auto', padding: '0 6px 6px' },
   reviewRow: { display: 'block', flex: 1, minWidth: 0, textAlign: 'left', padding: '6px 8px', margin: 0, fontSize: 11, lineHeight: 1.4, color: 'var(--tx-body)', background: 'var(--bg-badge)', border: '1px solid var(--amber-bd)', borderRadius: 5, cursor: 'pointer' },
@@ -619,7 +623,7 @@ const styles = {
   scaleRule: { flex: 1, height: 1, background: 'var(--bd-divider)' },
   scaleCurrent: { fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ok-tx)', marginBottom: 10 },
   scaleNone: { fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--tx-faint)', marginBottom: 10 },
-  actions: { display: 'flex', gap: 8, alignItems: 'center' },
+  actions: { display: 'flex', gap: 8, alignItems: 'center', marginTop: 12 },
   approve: { marginLeft: 'auto', background: 'var(--amber)', color: 'var(--on-amber)', border: '1px solid var(--amber)', borderRadius: 6, padding: '8px 14px', fontWeight: 600, cursor: 'pointer', fontFamily: 'var(--font-ui)' },
   reject: { background: 'transparent', color: 'var(--err-tx)', border: '1px solid var(--err-bd)', borderRadius: 6, padding: '8px 12px', cursor: 'pointer', fontFamily: 'var(--font-ui)' },
   cancel: { background: 'transparent', color: 'var(--tx-faint)', border: '1px solid var(--bd-btn2)', borderRadius: 6, padding: '8px 12px', cursor: 'pointer', fontFamily: 'var(--font-ui)' },
