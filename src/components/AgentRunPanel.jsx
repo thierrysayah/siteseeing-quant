@@ -207,7 +207,7 @@ export default function AgentRunPanel({
   // annotations; for Calibrate scale, just open the scale editor.
   const startAdjust = useCallback(() => {
     if (!run || busy) return;
-    if ((run.stageKey === 'detect' || run.stageKey === 'classify_tag') && !appliedRef.current) {
+    if ((run.stageKey === 'detect' || run.stageKey === 'classify_tag' || run.stageKey === 'qa') && !appliedRef.current) {
       // Promote the (tagged) detections into the editor so the user can edit
       // shapes/classes and, for classify, the room tags in the TAGS panel.
       // Skipped if an earlier Adjust already put them there (tags were merged
@@ -385,7 +385,7 @@ export default function AgentRunPanel({
             {/* actions — normal review */}
             {canAct && !adjusting && (
               <div style={styles.actions}>
-                {((run.stageKey === 'detect' || run.stageKey === 'classify_tag') && detRef.current) || run.stageKey === 'calibrate_scale'
+                {((run.stageKey === 'detect' || run.stageKey === 'classify_tag' || run.stageKey === 'qa') && detRef.current) || run.stageKey === 'calibrate_scale'
                   ? <button onClick={startAdjust} style={styles.reject} disabled={busy}>Adjust</button>
                   : <button onClick={() => act(rejectStage)} style={styles.reject} disabled={busy}>Reject</button>}
                 <button onClick={() => act(cancelRun)} style={styles.cancel} disabled={busy}>Cancel run</button>
@@ -396,10 +396,12 @@ export default function AgentRunPanel({
             )}
 
             {/* actions — adjusting DETECT / CLASSIFY: detections are live in the editor */}
-            {canAct && adjusting && (run.stageKey === 'detect' || run.stageKey === 'classify_tag') && (
+            {canAct && adjusting && (run.stageKey === 'detect' || run.stageKey === 'classify_tag' || run.stageKey === 'qa') && (
               <>
                 <div style={styles.adjustNote}>
-                  {run.stageKey === 'classify_tag'
+                  {run.stageKey === 'qa'
+                    ? '✎ Work through the Needs-review list — click a row to jump to it, fix it on the canvas (add a missed door, delete a sliver, re-tag), dismiss what\'s fine — then continue.'
+                    : run.stageKey === 'classify_tag'
                     ? '✎ Room tags are on the zones and in the right-panel TAGS list — edit them there (or re-tag/reclass), then continue.'
                     : '✎ Editing on the canvas — add / move / delete / reclass with the normal tools. Your whole page becomes the takeoff.'}
                 </div>
