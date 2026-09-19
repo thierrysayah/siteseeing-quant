@@ -93,6 +93,7 @@ async function runStage(run, stageIndex) {
   if (key === 'classify_tag') return classifyTagStage(run);
   if (key === 'quantify') return quantifyStage(run);
   if (key === 'qa') return qaStage(run);
+  if (key === 'report') return reportStage(run);
   const s = STAGES[stageIndex];
   return {
     output: `Stub output for "${s.label}" (stage ${stageIndex + 1}/${STAGES.length}).`,
@@ -536,6 +537,70 @@ async function qaStage(run) {
     confidence: 1,
     gate: 'approve',
     fields: { qaKey, detectionsKey },
+  };
+}
+
+// Stage 8 — Report: turn the run into a deliverable. A deterministic quantity
+// schedule (every number computed from the annotations + scale) plus an
+// LLM-drafted narrative written FROM that schedule — summary, inclusions,
+// exclusions, assumptions, items to verify. Quantities only, unpriced, until
+// stage 7 exists. The narrative is best-effort: if the model fails, the
+// schedule still ships with a stub narrative.
+async function reportStage(run) {
+  const { getJsonArtifact, putJsonArtifact, readProjectScale } = require('./lib/pageimage');
+  const { askLlm, MODEL } = require('./lib/vlm');
+  const { buildSchedule, narrativePrompt } = require('./lib/report');
+  if (!run.detectionsKey) throw new Error('no detections to report');
+
+  const det = await getJsonArtifact(run.detectionsKey);
+  const anns = det.annotations || [];
+  let reference = null, qa = null;
+  if (run.referenceKey) { try { reference = (await getJsonArtifact(run.referenceKey)).reference || null; } catch (e) { console.warn('[report] no reference', e.message); } }
+  if (run.qaKey)        { try { qa = await getJsonArtifact(run.qaKey); } catch (e) { console.warn('[report] no qa', e.message); } }
+  const ratio = (typeof run.scale === 'number' && run.scale > 0) ? run.scale : await readProjectScale(run);
+  const PAPER_MM_PER_PX = 25.4 / 150;
+  const scaleDenom = (ratio && ratio > 0) ? snapStandard(Math.round(ratio * 1000 / PAPER_MM_PER_PX)) : null;
+
+  const schedule = buildSchedule(anns, ratio, reference);
+  const project = {
+    name: run.sheetInfo?.projectName || null, drawingNumber: run.sheetInfo?.drawingNumber || null,
+    revision: run.sheetInfo?.revision || null, sheetType: run.sheetInfo?.sheetType || null,
+    page: run.pageId || null, scaleBasis: run.sheetInfo?.statedScale ? 'stated on drawing' : 'project setting',
+  };
+  const qaSummary = qa ? {
+    findings: (qa.findings || []).map(f => f.message),
+    counts: qa.counts || null,
+  } : { findings: [], counts: null };
+
+  let narrative = '', narrativeBy = 'stub';
+  try {
+    narrative = await askLlm(narrativePrompt({ project, schedule, qa: qaSummary, scaleDenom }), { maxTokens: 2000 });
+    narrativeBy = MODEL.split('.').slice(-1)[0].split(':')[0];
+  } catch (e) {
+    console.warn('[report] narrative failed', e.message);
+    narrative = '## Summary\nNarrative unavailable — see the quantity schedule below. This takeoff is quantities only and unpriced.';
+  }
+
+  const reportKey = await putJsonArtifact(run.runId, 'report.json', {
+    project, scaleDenom, schedule, qa: qaSummary, narrative, narrativeBy,
+    pricing: null,   // stage 7 not built — quantities only
+    generatedAt: new Date().toISOString(),
+  });
+
+  const t = schedule.totals;
+  const bits = [];
+  if (t.floorAreaM2 != null) bits.push(`${t.floorAreaM2} m² over ${t.zones} zone${t.zones === 1 ? '' : 's'}`);
+  else bits.push(`${t.zones} zone${t.zones === 1 ? '' : 's'} (no scale — pixel units)`);
+  bits.push(`${t.doors} door${t.doors === 1 ? '' : 's'}`, `${t.windows} window${t.windows === 1 ? '' : 's'}`);
+  if (t.wallLengthM != null) bits.push(`${t.wallLengthM} m of wall`);
+  return {
+    output: `Report drafted — ${bits.join(', ')}. Quantities only (unpriced).`
+      + (t.outstandingReviewFlags ? ` ${t.outstandingReviewFlags} review flag${t.outstandingReviewFlags > 1 ? 's' : ''} still open — listed under Items to Verify.` : '')
+      + ' Approve & finish to close the run.',
+    evidence: `Schedule computed from ${anns.length} annotations; narrative by ${narrativeBy}.`,
+    confidence: 1,
+    gate: 'approve',
+    fields: { reportKey },
   };
 }
 

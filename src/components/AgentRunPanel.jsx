@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  startRun, getRun, getQuota, getDetections, getReference, getQa, putDetections, putScale,
+  startRun, getRun, getQuota, getDetections, getReference, getQa, getReport, putDetections, putScale,
   approveStage, rejectStage, cancelRun, TERMINAL,
 } from '../services/agentService';
 
@@ -49,6 +49,8 @@ export default function AgentRunPanel({
   const [reference, setReference] = useState(null); // extracted schedules (classify stage)
   const refKeyRef = useRef(null);                  // which referenceKey we last fetched
   const [flagged, setFlagged] = useState([]);      // annotations the agent flagged for review
+  const [report, setReport] = useState(null);      // drafted report (stage 8)
+  const reportKeyRef = useRef(null);
   const pollRef = useRef(null);
   const detRef = useRef(null);       // latest fetched detections
   const detKeyRef = useRef(null);    // which detectionsKey we last fetched
@@ -174,6 +176,22 @@ export default function AgentRunPanel({
     })();
     return () => { cancelled = true; };
   }, [run?.qaKey, run?.runId]);
+
+  // Fetch the drafted report once the Report stage writes it.
+  useEffect(() => {
+    if (!run?.reportKey || run.reportKey === reportKeyRef.current) return;
+    const key = run.reportKey;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await getReport(run.runId);
+        if (cancelled) return;
+        reportKeyRef.current = key;
+        setReport(data || null);
+      } catch { /* stage text still carries the headline */ }
+    })();
+    return () => { cancelled = true; };
+  }, [run?.reportKey, run?.runId]);
 
   // On finish, merge the detections into the editor (once).
   useEffect(() => {
@@ -378,6 +396,9 @@ export default function AgentRunPanel({
 
             {/* extracted schedules (Classify & tag) */}
             {run.stageKey === 'classify_tag' && reference && <ScheduleView reference={reference} />}
+
+            {/* the drafted report (Report stage and after finish) */}
+            {report && (run.stageKey === 'report' || run.status === 'done') && <ReportView report={report} />}
 
             {/* items the agent flagged for review — click to jump to them */}
             {flagged.length > 0 && <ReviewList items={flagged} onFocus={onFocusBox} onDismiss={dismissFlag} />}
@@ -598,6 +619,118 @@ function ReviewList({ items, onFocus, onDismiss }) {
   );
 }
 
+// ── Report ───────────────────────────────────────────────────────────────────
+const fmtN = (v, d = 2) => (v == null ? '—' : Number(v).toFixed(d));
+
+// Compose the whole report as Markdown (narrative + schedule tables) for
+// copy/download — the deliverable a QS can paste into their own template.
+function reportToMarkdown(r) {
+  const sc = r.schedule || {}, t = sc.totals || {};
+  const u = sc.hasScale;
+  const L = [];
+  L.push(`# Quantity Takeoff${r.project?.name ? ` — ${r.project.name}` : ''}`);
+  const meta = [];
+  if (r.project?.drawingNumber) meta.push(`Drawing ${r.project.drawingNumber}`);
+  if (r.project?.revision) meta.push(`Rev ${r.project.revision}`);
+  if (r.scaleDenom) meta.push(`Scale 1:${r.scaleDenom} (${r.project?.scaleBasis || ''})`);
+  if (r.project?.page) meta.push(`Sheet ${r.project.page}`);
+  if (meta.length) L.push(meta.join(' · '));
+  L.push('', r.narrative || '', '', '## Quantity Schedule', '');
+  L.push('### Headline totals', '');
+  L.push(`| Item | Qty |`, `|---|---|`);
+  L.push(`| Zones | ${t.zones ?? 0} |`);
+  if (u) L.push(`| Floor area | ${fmtN(t.floorAreaM2)} m² |`);
+  L.push(`| Doors | ${t.doors ?? 0} |`, `| Windows | ${t.windows ?? 0} |`);
+  if (u) L.push(`| Wall length | ${fmtN(t.wallLengthM)} m |`);
+  L.push('', '### Rooms / zones', '');
+  L.push(u ? `| Room | Qty | Area (m²) | Perimeter (m) |` : `| Room | Qty | Area (px²) |`, u ? `|---|---|---|---|` : `|---|---|---|`);
+  for (const x of sc.rooms || []) L.push(u ? `| ${x.tag} | ${x.count} | ${fmtN(x.areaM2)} | ${fmtN(x.perimM)} |` : `| ${x.tag} | ${x.count} | ${x.areaPx} |`);
+  const dw = (title, rows) => {
+    L.push('', `### ${title}`, '');
+    L.push(`| Mark | Qty | W (mm) | H (mm) | Type | Schedule qty |`, `|---|---|---|---|---|---|`);
+    for (const x of rows || []) L.push(`| ${x.mark} | ${x.count} | ${x.width_mm ?? '—'} | ${x.height_mm ?? '—'} | ${x.type ?? '—'} | ${x.scheduleCount ?? '—'} |`);
+  };
+  dw('Doors', sc.doors); dw('Windows', sc.windows);
+  L.push('', '### Walls', '');
+  L.push(u ? `| Class | Qty | Length (m) |` : `| Class | Qty | Length (px) |`, `|---|---|---|`);
+  for (const x of sc.walls || []) L.push(u ? `| ${x.cls} | ${x.count} | ${fmtN(x.lengthM)} |` : `| ${x.cls} | ${x.count} | ${x.lengthPx} |`);
+  L.push('', `_Quantities only — unpriced. Generated ${r.generatedAt || ''}._`);
+  return L.join('\n');
+}
+
+// Minimal Markdown → elements for the narrative (H2, bullets, paragraphs, bold).
+function Md({ text }) {
+  const lines = String(text || '').split('\n');
+  const out = []; let para = [], list = [];
+  const flushP = () => { if (para.length) { out.push(<p key={out.length} style={styles.mdP}>{inline(para.join(' '))}</p>); para = []; } };
+  const flushL = () => { if (list.length) { out.push(<ul key={out.length} style={styles.mdUl}>{list.map((l, i) => <li key={i}>{inline(l)}</li>)}</ul>); list = []; } };
+  const inline = (t) => t.split(/(\*\*[^*]+\*\*)/g).map((seg, i) => /^\*\*[^*]+\*\*$/.test(seg) ? <strong key={i}>{seg.slice(2, -2)}</strong> : seg);
+  for (const raw of lines) {
+    const ln = raw.trimEnd();
+    if (/^##\s+/.test(ln)) { flushP(); flushL(); out.push(<h4 key={out.length} style={styles.mdH}>{ln.replace(/^##\s+/, '')}</h4>); }
+    else if (/^#\s+/.test(ln)) { flushP(); flushL(); out.push(<h3 key={out.length} style={styles.mdH1}>{ln.replace(/^#\s+/, '')}</h3>); }
+    else if (/^\s*[-*]\s+/.test(ln)) { flushP(); list.push(ln.replace(/^\s*[-*]\s+/, '')); }
+    else if (!ln.trim()) { flushP(); flushL(); }
+    else { flushL(); para.push(ln.trim()); }
+  }
+  flushP(); flushL();
+  return <div>{out}</div>;
+}
+
+function ReportView({ report }) {
+  const sc = report.schedule || {}, t = sc.totals || {}, u = sc.hasScale;
+  const md = reportToMarkdown(report);
+  const copy = async () => { try { await navigator.clipboard.writeText(md); } catch { /* clipboard blocked */ } };
+  const download = () => {
+    const blob = new Blob([md], { type: 'text/markdown' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `takeoff${report.project?.drawingNumber ? '-' + report.project.drawingNumber : ''}.md`;
+    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  const Tbl = ({ title, cols, rows }) => rows && rows.length ? (
+    <details style={styles.schedGroup} open={title === 'Rooms / zones'}>
+      <summary style={styles.schedSummary}>{title} <span style={styles.schedCount}>{rows.length}</span></summary>
+      <div style={styles.schedScroll}>
+        <table style={styles.schedTable}>
+          <thead><tr>{cols.map(c => <th key={c.k} style={styles.schedTh}>{c.h}</th>)}</tr></thead>
+          <tbody>{rows.map((r, i) => <tr key={i}>{cols.map(c => <td key={c.k} style={styles.schedTd}>{c.f ? c.f(r[c.k]) : fmt(r[c.k])}</td>)}</tr>)}</tbody>
+        </table>
+      </div>
+    </details>
+  ) : null;
+  return (
+    <div style={styles.reportBox}>
+      <div style={styles.reportHead}>
+        <span style={styles.reportTitle}>Report — quantities only, unpriced</span>
+        <span style={{ display: 'flex', gap: 6 }}>
+          <button onClick={copy} style={styles.smallBtn} title="Copy the full report as Markdown">Copy</button>
+          <button onClick={download} style={styles.smallBtn} title="Download as .md">Download</button>
+        </span>
+      </div>
+      <div style={styles.reportTotals}>
+        {u && <span><b>{fmtN(t.floorAreaM2)}</b> m² floor</span>}
+        <span><b>{t.zones ?? 0}</b> zones</span>
+        <span><b>{t.doors ?? 0}</b> doors</span>
+        <span><b>{t.windows ?? 0}</b> windows</span>
+        {u && <span><b>{fmtN(t.wallLengthM)}</b> m wall</span>}
+        {!u && <span style={{ color: 'var(--err-tx)' }}>no scale — pixel units</span>}
+      </div>
+      <div style={styles.reportNarrative}><Md text={report.narrative} /></div>
+      <div style={styles.schedBox}>
+        <Tbl title="Rooms / zones" rows={sc.rooms} cols={u
+          ? [{ k: 'tag', h: 'Room' }, { k: 'count', h: 'Qty' }, { k: 'areaM2', h: 'm²', f: v => fmtN(v) }, { k: 'perimM', h: 'Perim m', f: v => fmtN(v) }]
+          : [{ k: 'tag', h: 'Room' }, { k: 'count', h: 'Qty' }, { k: 'areaPx', h: 'px²' }]} />
+        <Tbl title="Doors" rows={sc.doors} cols={[{ k: 'mark', h: 'Mark' }, { k: 'count', h: 'Qty' }, { k: 'width_mm', h: 'W' }, { k: 'height_mm', h: 'H' }, { k: 'type', h: 'Type' }, { k: 'scheduleCount', h: 'Sched' }]} />
+        <Tbl title="Windows" rows={sc.windows} cols={[{ k: 'mark', h: 'Mark' }, { k: 'count', h: 'Qty' }, { k: 'width_mm', h: 'W' }, { k: 'height_mm', h: 'H' }, { k: 'type', h: 'Type' }, { k: 'scheduleCount', h: 'Sched' }]} />
+        <Tbl title="Walls" rows={sc.walls} cols={u
+          ? [{ k: 'cls', h: 'Class' }, { k: 'count', h: 'Qty' }, { k: 'lengthM', h: 'Length m', f: v => fmtN(v) }]
+          : [{ k: 'cls', h: 'Class' }, { k: 'count', h: 'Qty' }, { k: 'lengthPx', h: 'Length px' }]} />
+      </div>
+    </div>
+  );
+}
+
 function terminalMessage(status) {
   if (status === 'done') return 'Takeoff complete.';
   if (status === 'rejected') return 'Stage rejected — run stopped.';
@@ -648,6 +781,16 @@ const styles = {
   reviewScroll: { maxHeight: 160, overflow: 'auto', padding: '0 6px 6px' },
   reviewRow: { display: 'block', flex: 1, minWidth: 0, textAlign: 'left', padding: '6px 8px', margin: 0, fontSize: 11, lineHeight: 1.4, color: 'var(--tx-body)', background: 'var(--bg-badge)', border: '1px solid var(--amber-bd)', borderRadius: 5, cursor: 'pointer' },
   reviewIdx: { color: 'var(--tx-dim)', fontWeight: 600 },
+  reportBox: { marginTop: 10, marginBottom: 12, border: '1px solid var(--bd-panel)', borderRadius: 8, background: 'var(--bg-badge)', padding: 10 },
+  reportHead: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 },
+  reportTitle: { fontSize: 12, fontWeight: 700, color: 'var(--tx-body)' },
+  reportTotals: { display: 'flex', flexWrap: 'wrap', gap: '4px 14px', fontSize: 11.5, color: 'var(--tx-dim)', marginBottom: 8 },
+  reportNarrative: { maxHeight: 260, overflow: 'auto', fontSize: 12, color: 'var(--tx-body)', lineHeight: 1.55, paddingRight: 4, marginBottom: 8 },
+  mdH1: { fontSize: 13, fontWeight: 700, margin: '8px 0 4px', color: 'var(--tx-body)' },
+  mdH: { fontSize: 12, fontWeight: 700, margin: '10px 0 3px', color: 'var(--tx-body)', letterSpacing: 0.2 },
+  mdP: { margin: '0 0 6px' },
+  mdUl: { margin: '0 0 6px', paddingLeft: 18 },
+  smallBtn: { padding: '4px 9px', fontSize: 11, color: 'var(--tx-body)', background: 'var(--bg-btn)', border: '1px solid var(--bd-btn)', borderRadius: 5, cursor: 'pointer' },
   reviewStage: { color: 'var(--accent2)', fontFamily: 'var(--font-mono, monospace)', fontSize: 10, marginRight: 2 },
   reviewRowWrap: { display: 'flex', alignItems: 'stretch', gap: 4, margin: '3px 0' },
   reviewDismiss: { flex: '0 0 auto', padding: '0 9px', fontSize: 12, color: 'var(--tx-dim)', background: 'var(--bg-badge)', border: '1px solid var(--amber-bd)', borderRadius: 5, cursor: 'pointer' },

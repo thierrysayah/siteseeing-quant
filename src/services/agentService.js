@@ -38,6 +38,11 @@ export function getDetections(runId) {
   return readJson(get({ apiName: 'quantApi', path: `/agent/runs/${runId}/detections` }));
 }
 
+/** Fetch the drafted report → { project, scaleDenom, schedule, qa, narrative, pricing }. */
+export function getReport(runId) {
+  return readJson(get({ apiName: 'quantApi', path: `/agent/runs/${runId}/report` }));
+}
+
 /** Fetch the QA pass findings → { findings:[{id,kind,message,bbox?,severity}], counts }. */
 export function getQa(runId) {
   return readJson(get({ apiName: 'quantApi', path: `/agent/runs/${runId}/qa` }));

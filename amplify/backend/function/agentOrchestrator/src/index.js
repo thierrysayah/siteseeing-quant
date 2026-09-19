@@ -109,6 +109,7 @@ exports.handler = async (event) => {
       if (method === 'GET' && action === 'detections') return getDetections(userId, runId);
       if (method === 'GET' && action === 'reference') return getReference(userId, runId);
       if (method === 'GET' && action === 'qa') return getQa(userId, runId);
+      if (method === 'GET' && action === 'report') return getReport(userId, runId);
       if (method === 'PUT' && action === 'detections') return putDetections(userId, runId, body);
       if (method === 'PUT' && action === 'scale') return putScale(userId, runId, body);
       if (method === 'POST' && action === 'approve') return advanceRun(userId, runId, body, 'approve');
@@ -218,6 +219,21 @@ async function getReference(userId, runId) {
   } catch (err) {
     console.error('[getReference]', err);
     return resp(500, { error: 'could not read reference' });
+  }
+}
+
+// Return the drafted report (quantity schedule + narrative).
+async function getReport(userId, runId) {
+  const item = await loadOwned(userId, runId);
+  if (!item) return resp(404, { error: 'run not found' });
+  if (item === 'forbidden') return resp(403, { error: 'not your run' });
+  if (!item.reportKey) return resp(404, { error: 'no report yet' });
+  try {
+    const obj = await s3.send(new GetObjectCommand({ Bucket: PROJECT_BUCKET, Key: item.reportKey }));
+    return resp(200, JSON.parse(await obj.Body.transformToString()));
+  } catch (err) {
+    console.error('[getReport]', err);
+    return resp(500, { error: 'could not read report' });
   }
 }
 
@@ -519,6 +535,7 @@ function publicView(item) {
     detectionsKey: item.detectionsKey || null,
     referenceKey: item.referenceKey || null,
     qaKey: item.qaKey || null,
+    reportKey: item.reportKey || null,
     taggedZones: item.taggedZones ?? null,
     scale: item.scale ?? null,
     output: item.stageOutput,

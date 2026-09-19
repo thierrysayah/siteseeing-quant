@@ -40,6 +40,17 @@ async function askVlmImage(imageBuffer, prompt, { maxTokens = 500, system } = {}
   return (res.output?.message?.content || []).map(c => c.text || '').join('').trim();
 }
 
+/** Ask the model a text-only question (no image). Returns the raw text reply. */
+async function askLlm(prompt, { maxTokens = 1500, system, temperature = 0.2 } = {}) {
+  const res = await client.send(new ConverseCommand({
+    modelId: MODEL,
+    system: system ? [{ text: system }] : undefined,
+    messages: [{ role: 'user', content: [{ text: prompt }] }],
+    inferenceConfig: { maxTokens, temperature },
+  }));
+  return (res.output?.message?.content || []).map(c => c.text || '').join('').trim();
+}
+
 /** Pull the first JSON object out of a model reply (tolerates code fences/prose). */
 function extractJson(text) {
   if (!text) return null;
@@ -54,4 +65,4 @@ async function imageSize(buffer) {
   return { w: img.bitmap.width, h: img.bitmap.height };
 }
 
-module.exports = { askVlmImage, extractJson, imageSize, downscale, MODEL };
+module.exports = { askVlmImage, askLlm, extractJson, imageSize, downscale, MODEL };

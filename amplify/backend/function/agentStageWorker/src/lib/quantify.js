@@ -79,4 +79,4 @@ function quantify(anns, ratio) {
   return { byClass, hasScale: !!r, ratio: r };
 }
 
-module.exports = { cleanupDetections, quantify };
+module.exports = { cleanupDetections, quantify, polyAreaPerim, bbox };

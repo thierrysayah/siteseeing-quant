@@ -57,6 +57,23 @@ thin wrapper) or **[VLM]/[LLM]** (needs a model). Every stage ends in a
 **8 stages** (detect+clean merged). Intelligence is concentrated in stages
 1, 2, 4, 6, 8; stages 3, 5, 7 are deterministic tools.
 
+**Report (P3, shipped).** Turns the run into the deliverable. Two halves with a
+hard line between them: a **quantity schedule** computed deterministically from
+the annotations + calibrated scale (rooms by tag with area/perimeter, doors and
+windows by schedule mark enriched with size/type from the extracted schedule,
+walls by class with centre-line length, headline totals, count of open review
+flags) — every number in the report comes from here — and an **LLM narrative**
+drafted FROM that schedule with fixed sections (Summary, Basis & Scale,
+Quantities, Inclusions, Exclusions, Assumptions & Qualifications, Items to
+Verify). The model is forbidden from inventing or restating quantities beyond
+headline totals, and must state the takeoff is quantities-only/unpriced until
+stage 7 exists; QA findings and open flags are listed under Items to Verify.
+Persisted as `report.json` (`GET /agent/runs/{id}/report`); the panel renders
+totals + narrative + schedule tables with **Copy** / **Download (.md)**. The
+narrative is best-effort — a model failure still ships the schedule with a
+stub. Validated: all sections present, unpriced stated, zero numbers outside
+the schedule.
+
 **QA pass (P3, shipped).** "Find what nothing flagged." Reads the whole
 takeoff — detections + tags + schedules + scale — and reasons across it.
 Deterministic checks: **schedule reconciliation** (door/window schedule counts
