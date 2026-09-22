@@ -98,13 +98,14 @@ const PDF_SCALE = PDF_RENDER_DPI / 72; // pdf.js uses 72 dpi as base
 // with no line-drawing calibration: ratio = PAPER_MM_PER_PX/1000 × N.
 const PAPER_MM_PER_PX = 25.4 / PDF_RENDER_DPI;
 
-// Drawing scales come in standard denominators — snap a computed value so a noisy
-// 109 reads as 100. Keep in sync with the worker's STANDARD_SCALES.
-const STANDARD_SCALES = [1, 2, 5, 10, 20, 25, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 750, 1000, 1250, 1500, 2000, 2500, 5000];
+// The drawing denominator (1:N) implied by a px→m ratio at our render DPI.
+// Shown EXACTLY (rounded to the integer) — never snapped to a "standard" scale.
+// A user who types 1:70, or measures 70 px/m (= 1:84), must see that value;
+// snapping is only appropriate for cleaning OCR noise on a VLM-read title-block
+// scale, and that lives server-side in the agent's calibrate stage.
 const scaleDenomFromRatio = (r) => {
   if (!(r > 0)) return null;
-  const d = r * 1000 / PAPER_MM_PER_PX;
-  return STANDARD_SCALES.reduce((best, s) => (Math.abs(s - d) < Math.abs(best - d) ? s : best), STANDARD_SCALES[0]);
+  return Math.round(r * 1000 / PAPER_MM_PER_PX);
 };
 
 // ─── PDF.JS LOADER ────────────────────────────────────────────────────────────
