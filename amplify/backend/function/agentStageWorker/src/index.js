@@ -103,6 +103,18 @@ async function runStage(run, stageIndex) {
   };
 }
 
+// Finding the scale is its own task: asked alongside four title-block fields the
+// model skips a scale printed outside the title block (e.g. under a view title);
+// asked on its own it finds it. Used as a rescue when the main read returns none.
+const SCALE_ONLY_PROMPT =
+  'Find the drawing SCALE printed ANYWHERE on this sheet. It is NOT always in the '
+  + 'title block — look in (a) the title block, (b) the caption under a drawing/view '
+  + 'title, e.g. "01 FLOOR PLAN  Scale 1:100@A3", (c) beside a scale bar. It may read '
+  + '1:100, 1/100, 1:100@A3 or "SCALE: 1:50". Return ONLY JSON, no prose: '
+  + '{"statedScale": string|null}. Copy it EXACTLY as printed. If views have different '
+  + 'scales give the one for the main plan. Use null only if there is genuinely no '
+  + 'scale anywhere on the sheet.';
+
 // Stage 1 — Understand sheet (VLM): classify the sheet and read the title block.
 // Advisory/informational; a VLM failure never blocks the pipeline.
 async function understandSheetStage(run) {
@@ -113,7 +125,13 @@ async function understandSheetStage(run) {
     + '{"sheetType": one of ["architectural","electrical","plumbing","structural","mechanical","other"],'
     + ' "projectName": string|null, "drawingNumber": string|null, "revision": string|null,'
     + ' "statedScale": string|null}\n'
-    + 'Read the title block for the fields. statedScale is the printed scale like "1:100" if present, else null. Use null when unsure.';
+    + 'Read the title block for projectName, drawingNumber and revision.\n'
+    + 'statedScale: the drawing scale printed ANYWHERE on the sheet — it is NOT always in '
+    + 'the title block. Look in (a) the title block, (b) the caption under a drawing/view '
+    + 'title, e.g. "01 FLOOR PLAN  Scale 1:100@A3", (c) beside a scale bar. It may read '
+    + '1:100, 1/100, 1:100@A3 or "SCALE: 1:50". Copy it EXACTLY as printed. If several '
+    + 'views have different scales, give the one for the main plan. Use null only if there '
+    + 'is genuinely no scale anywhere on the sheet. Use null for any other field you cannot read.';
 
   let data = null, text = '';
   try {
@@ -135,6 +153,17 @@ async function understandSheetStage(run) {
       confidence: 1, gate: 'approve',
     };
   }
+  // Rescue: no scale from the combined read → ask again with the scale as the
+  // only task. Costs one extra call, and only on sheets that need it.
+  if (!data.statedScale) {
+    try {
+      const { buffer } = await fetchPagePng(run);
+      const t2 = await askVlmImage(buffer, SCALE_ONLY_PROMPT, { maxTokens: 200 });
+      const d2 = extractJson(t2);
+      if (d2 && d2.statedScale) data.statedScale = d2.statedScale;
+    } catch (e) { console.warn('[understandSheet] scale rescue failed', e.message); }
+  }
+
   const bits = [];
   if (data.sheetType) bits.push(data.sheetType);
   if (data.drawingNumber) bits.push(`dwg ${data.drawingNumber}`);
