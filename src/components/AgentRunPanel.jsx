@@ -576,6 +576,7 @@ function reviewReason(a) {
   if (a.review === 'oversized')     return `${cls} — room-sized, likely not a ${cls}`;
   if (a.review === 'class_mismatch')return `${cls}${tag ? ` reads ${tag}` : ''} — check class`;
   if (a.review === 'low_confidence')return `${cls}${tag ? ` (${tag})` : ''} — low confidence`;
+  if (a.review === 'mark_unclear')  return `${cls}${tag ? ` (${tag})` : ''} — mark unclear, tag it manually`;
   if (a.review === 'overlap')       return `${cls}${tag ? ` "${tag}"` : ''} — overlaps another zone, area may be double-counted`;
   if (a.review === 'untagged')      return `${cls} — no room tag`;
   if (a.review === 'implausible_area') return `${cls}${tag ? ` "${tag}"` : ''} — ${a.reviewNote || 'implausible area'}`;
@@ -593,7 +594,7 @@ function annBbox(a) {
 function reviewStageOf(a) {
   if (a.reviewStage) return a.reviewStage;
   if (a.review === 'low_confidence') return 'detect';
-  if (a.review === 'oversized' || a.review === 'reclassified' || a.review === 'class_mismatch') return 'classify';
+  if (a.review === 'oversized' || a.review === 'reclassified' || a.review === 'class_mismatch' || a.review === 'mark_unclear') return 'classify';
   if (a.review === 'overlap' || a.review === 'untagged' || a.review === 'implausible_area') return 'qa';
   return 'agent';
 }

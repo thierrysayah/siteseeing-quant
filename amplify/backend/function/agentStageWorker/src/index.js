@@ -298,7 +298,7 @@ async function classifyTagStage(run) {
   const Jimp = require('jimp');
   const { askVlmImage, extractJson, imageSize, MODEL } = require('./lib/vlm');
   const {
-    EXTRACT_PROMPT, montageTagPrompt, buildMontage, mergeReference,
+    EXTRACT_PROMPT, montageTagPrompt, buildMontage, mergeReference, verifyKindPrompt, bboxOf,
   } = require('./lib/classify');
 
   // A door/window whose bbox is far larger than its peers is almost always a
@@ -345,19 +345,46 @@ async function classifyTagStage(run) {
       const byIdx = new Map(chunk.map((a, i) => [i, a]));
       for (const t of tags) {
         const a = byIdx.get(t.i);
+        if (!a) continue;
         const label = t.label != null ? String(t.label).trim() : '';
-        if (!a || !label) continue;
-        // Rooms may also carry a number ("101 Office"); marks don't.
-        a.zoneTag = (kind === 'room' && t.number) ? `${t.number} ${label}`.trim() : label;
-        tagged++;
-        // A mark of the other kind is a near-certain mis-detection → auto-reclass
-        // (door↔window), keep the mark, and flag it for the user to confirm.
-        if (wrongKind && wrongKind.test(label)) {
-          a.reclassFrom = a.clsName;
-          a.clsName = other;
-          a.review = 'reclassified';
-          a.reviewStage = 'classify';
+        const certain = t.certain !== false;   // field absent → treat as certain
+
+        // Nothing legible labels this element, or the only mark visible belongs
+        // to a neighbour → leave it untagged and flag it, rather than guess.
+        if (!label || !certain) {
+          if (kind !== 'room') { a.review = a.review || 'mark_unclear'; a.reviewStage = a.reviewStage || 'classify'; }
+          continue;
+        }
+
+        const crossKind = wrongKind && wrongKind.test(label);
+        if (!crossKind) {
+          // Rooms may also carry a number ("101 Office"); marks don't.
+          a.zoneTag = (kind === 'room' && t.number) ? `${t.number} ${label}`.trim() : label;
+          tagged++;
+          continue;
+        }
+
+        // A mark of the OTHER kind suggests the detector mis-classified this
+        // element — but the mark may be misread or invented, and acting on it
+        // silently changes the class. Verify visually first: ask what the element
+        // actually IS from how it is drawn (swing arc vs glazing lines).
+        let verdict = null;
+        try {
+          const vbuf = await buildMontage(Jimp, image, [a], font,
+            { cell: 384, cols: 1, padFactor: 0.6, markTarget: true });
+          const vres = extractJson(await askVlmImage(vbuf, verifyKindPrompt(), { maxTokens: 200 }));
+          if (vres && vres.kind && vres.certain !== false) verdict = String(vres.kind).toLowerCase();
+        } catch (e) { console.warn('[classify] kind verify failed', e.message); }
+
+        if (verdict === other) {
+          a.zoneTag = label; tagged++;
+          a.reclassFrom = a.clsName; a.clsName = other;
+          a.review = 'reclassified'; a.reviewStage = 'classify';
           reclassified++;
+        } else {
+          // The drawing still says it's a `kind` (or we can't tell) — keep the
+          // class, drop the contradictory mark, flag it for a human look.
+          a.review = 'mark_unclear'; a.reviewStage = 'classify';
         }
       }
     }
@@ -410,8 +437,11 @@ async function classifyTagStage(run) {
         const zr = await tagByMontage(image, font, zones, 'room', roomCtx,
           { cap: 12, montage: { cell: 300, cols: 4, padFactor: 0.15 } });
         tagged += zr.tagged;
-        const dr = await tagByMontage(image, font, d.keep,  'door',   doorCtx);
-        const wr = await tagByMontage(image, font, wg.keep, 'window', winCtx);
+        // Outline the subject + tighter padding: without it a neighbour's mark
+        // inside the crop gets read as this element's.
+        const MONT = { cap: 16, montage: { cell: 260, cols: 4, padFactor: 0.55, markTarget: true } };
+        const dr = await tagByMontage(image, font, d.keep,  'door',   doorCtx, MONT);
+        const wr = await tagByMontage(image, font, wg.keep, 'window', winCtx, MONT);
         tagged += dr.tagged + wr.tagged;
         reclassified = dr.reclassified + wr.reclassified;
         if (tagged) {

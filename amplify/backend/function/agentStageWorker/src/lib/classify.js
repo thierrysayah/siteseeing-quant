@@ -89,7 +89,15 @@ function bboxOf(a) {
 // catch a mark written just outside its bbox), zoomed into its own labelled
 // cell. This lets the VLM READ each mark instead of guessing by coordinate.
 // Returns a JPEG buffer. Cell order == `elements` order (cell label = index).
-async function buildMontage(Jimp, image, elements, font, { cell = 224, cols = 5, padFactor = 1.2 } = {}) {
+function outlineRect(img, x1, y1, x2, y2, [r, g, b], t = 3) {
+  const W = img.bitmap.width, H = img.bitmap.height;
+  const px = (x, y) => { if (x >= 0 && y >= 0 && x < W && y < H) img.setPixelColor((r << 24 | g << 16 | b << 8 | 0xff) >>> 0, x, y); };
+  for (let k = 0; k < t; k++) {
+    for (let x = Math.round(x1); x <= Math.round(x2); x++) { px(x, Math.round(y1) + k); px(x, Math.round(y2) - k); }
+    for (let y = Math.round(y1); y <= Math.round(y2); y++) { px(Math.round(x1) + k, y); px(Math.round(x2) - k, y); }
+  }
+}
+async function buildMontage(Jimp, image, elements, font, { cell = 224, cols = 5, padFactor = 1.2, markTarget = false } = {}) {
   const n = elements.length;
   const rows = Math.ceil(n / cols);
   const gap = 6, labelH = 20;
@@ -107,6 +115,9 @@ async function buildMontage(Jimp, image, elements, font, { cell = 224, cols = 5,
     const cx2 = Math.min(IW, Math.round(x2 + pad)), cy2 = Math.min(IH, Math.round(y2 + pad));
     if (cx2 <= cx1 || cy2 <= cy1) continue;
     const crop = image.clone().crop(cx1, cy1, cx2 - cx1, cy2 - cy1);
+    // Outline the subject so the model knows WHICH element the cell is about —
+    // without it, a neighbour's mark inside the padding gets read instead.
+    if (markTarget) outlineRect(crop, x1 - cx1, y1 - cy1, x2 - cx1, y2 - cy1, [255, 0, 255], 3);
     crop.scaleToFit(cell, cell);
     const col = i % cols, row = Math.floor(i / cols);
     const px = gap + col * (cellW + gap), py = gap + row * (cellH + gap);
@@ -134,19 +145,18 @@ function montageTagPrompt(kind, count, marks) {
       + `Return ONLY JSON, no prose: {"tags":[{"i":<cell number>,"label":"<name>","number":<room number or null>}]}.${ctx}`;
   }
   const eg = kind === 'door' ? 'D01, D02' : 'W01, W03';
-  const other = kind === 'door' ? 'window (W##)' : 'door (D##)';
   const clean = (marks || []).filter(Boolean);
-  const ctx = clean.length
-    ? ` For reference the ${kind} schedule marks are: [${clean.join(', ')}]. If the centre `
-      + `element's own mark is unclear, prefer the closest of those.`
-    : '';
-  return `This image is a numbered grid of ${count} crops. Each cell (labelled 0, 1, 2, …) `
-    + `shows ONE element from a floor plan (expected to be a ${kind}), zoomed in, with a `
-    + `schedule MARK (like ${eg}) written inside or just beside it — read the mark for the `
-    + `element at the CENTRE of each cell (ignore neighbouring elements). `
-    + `Report EXACTLY what is printed: if the centre element's printed mark is actually a `
-    + `${other} mark, report that — do not force it to a ${kind} mark. `
-    + `Return ONLY JSON, no prose: {"tags":[{"i":<cell number>,"label":"<mark>"}]}.${ctx}`;
+  const ctx = clean.length ? ` Known ${kind} schedule marks: [${clean.join(', ')}].` : '';
+  return `This image is a numbered grid of ${count} crops. In each cell (labelled 0, 1, 2, …) `
+    + `exactly ONE element is OUTLINED IN MAGENTA — that outlined element is the subject; `
+    + `everything else in the cell is context. Read the schedule MARK that labels THE `
+    + `MAGENTA-OUTLINED ELEMENT (marks look like ${eg}; one sits inside it or immediately `
+    + `beside it, touching it). Marks belonging to nearby elements MUST be ignored. `
+    + `Return ONLY JSON, no prose: `
+    + `{"tags":[{"i":<cell number>,"label":"<mark>"|null,"certain":true|false}]}. `
+    + `Copy the mark EXACTLY as printed — never guess one that is not visible. Set `
+    + `label=null and certain=false if nothing legible labels the outlined element, or if `
+    + `the only mark you can see belongs to a different element.${ctx}`;
 }
 
 // Centroid of an annotation (box or polygon) in original pixel space.
@@ -188,7 +198,21 @@ function mergeReference(perPage) {
   };
 }
 
+// Reclassifying on the strength of a MARK is indirect — a misread or invented
+// mark silently changes an element's class. Before any door<->window reclass we
+// ask the model what the outlined element actually IS, from its drawn symbol.
+function verifyKindPrompt() {
+  return 'The element OUTLINED IN MAGENTA in this floor-plan crop is either a door or a '
+    + 'window. Judge only from how it is DRAWN, ignoring any text or marks:\n'
+    + '- a DOOR is an opening with a leaf/panel and usually a quarter-circle swing arc;\n'
+    + '- a WINDOW is an opening in the wall thickness shown as thin parallel glazing '
+    + 'lines, with no leaf and no swing arc.\n'
+    + 'Return ONLY JSON, no prose: {"kind":"door"|"window"|"unsure","certain":true|false}. '
+    + 'Use "unsure" if the outlined element is neither or you cannot tell.';
+}
+
 module.exports = {
+  verifyKindPrompt,
   EXTRACT_PROMPT, tagPrompt, montageTagPrompt, buildMontage,
   centroidOf, bboxOf, mergeReference,
 };
