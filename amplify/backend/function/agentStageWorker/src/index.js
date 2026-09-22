@@ -267,6 +267,18 @@ async function detectStage(run) {
     annotations: anns, meta, source: key, cleanupNotes: notes.slice(0, 50),
   });
 
+  // Incomplete coverage must be LOUD: a rate-limited model used to blank a whole
+  // region of the sheet with no hint in the UI that anything was missing.
+  const mf = meta.modelFails || {};
+  const mfBits = Object.entries(mf).filter(([, n]) => n > 0).map(([k, n]) => `${k}×${n}`);
+  const incomplete = (meta.failed || 0) + (meta.partial || 0);
+  const coverageWarn = incomplete
+    ? ` ⚠ INCOMPLETE COVERAGE — ${meta.failed || 0} of ${meta.tiles} tiles returned nothing`
+      + (meta.partial ? `, ${meta.partial} partial` : '')
+      + (mfBits.length ? ` (model errors: ${mfBits.join(', ')})` : '')
+      + '. Objects are probably missing from part of the sheet — re-run before approving.'
+    : '';
+
   const clean = [];
   if (trimmed)   clean.push(`${trimmed} overhang${trimmed > 1 ? 's' : ''} trimmed`);
   if (removed)   clean.push(`${removed} duplicate${removed > 1 ? 's' : ''} removed`);
@@ -275,9 +287,11 @@ async function detectStage(run) {
 
   return {
     output: `Detected & cleaned — ${anns.length} objects (${summary}).`
-      + (clean.length ? ` [${clean.join(', ')}]` : ''),
-    evidence: `Source ${key.split('/').pop()} · ${meta.tiles} tiles · ${meta.raw} raw → `
-      + `${annotations.length} after NMS → ${anns.length} after trim.`,
+      + (clean.length ? ` [${clean.join(', ')}]` : '')
+      + coverageWarn,
+    evidence: `Source ${key.split('/').pop()} · ${meta.tiles} tiles`
+      + (incomplete ? ` (${meta.failed || 0} failed, ${meta.partial || 0} partial)` : '')
+      + ` · ${meta.raw} raw → ${annotations.length} after NMS → ${anns.length} after trim.`,
     confidence: 1,
     gate: 'approve',
     fields: { detectionsKey: outKey },

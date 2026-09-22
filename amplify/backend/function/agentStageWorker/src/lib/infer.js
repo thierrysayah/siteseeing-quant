@@ -41,21 +41,42 @@ async function getToken() {
   return cachedToken;
 }
 
-async function callModel(model, jpegBuffer) {
-  const token = await getToken();
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+/**
+ * Call one model for one tile. Retries transient failures — a 429 (the Cloud Run
+ * endpoint rate-limiting a burst) or a 5xx used to lose the tile outright, which
+ * left a silent hole in the detections.
+ */
+async function callModel(model, jpegBuffer, { attempts = 4 } = {}) {
   const d = MODEL_DATA[model];
-  const fd = new FormData();
-  fd.append('file', new Blob([jpegBuffer], { type: 'image/jpeg' }), 'image.jpg');
-  fd.append('conf', String(d.conf));
-  fd.append('iou', String(d.iou));
-  fd.append('imgsz', String(d.imgsz));
-  const r = await fetch(MODEL_URLS[model], {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
-    body: fd,
-  });
-  if (!r.ok) throw new Error(`${model} model ${r.status}`);
-  return r.json();
+  let lastErr;
+  for (let a = 1; a <= attempts; a++) {
+    try {
+      const token = await getToken();
+      const fd = new FormData();
+      fd.append('file', new Blob([jpegBuffer], { type: 'image/jpeg' }), 'image.jpg');
+      fd.append('conf', String(d.conf));
+      fd.append('iou', String(d.iou));
+      fd.append('imgsz', String(d.imgsz));
+      const r = await fetch(MODEL_URLS[model], {
+        method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd,
+      });
+      if (r.ok) return r.json();
+      const transient = r.status === 429 || r.status >= 500;
+      if (!transient || a === attempts) throw new Error(`${model} model ${r.status}`);
+      // Honour Retry-After when given, else exponential backoff with jitter.
+      const ra = Number(r.headers.get('retry-after'));
+      const wait = ra > 0 ? ra * 1000 : Math.round(400 * 2 ** (a - 1) * (1 + Math.random()));
+      console.warn(`[infer] ${model} ${r.status}, retry ${a}/${attempts - 1} in ${wait}ms`);
+      await sleep(wait);
+    } catch (e) {
+      lastErr = e;
+      if (a === attempts) throw e;
+      await sleep(Math.round(400 * 2 ** (a - 1) * (1 + Math.random())));
+    }
+  }
+  throw lastErr || new Error(`${model} model failed`);
 }
 
 // ── RDP polygon simplification (ported) — matches manual "Run Analysis" ───────
@@ -184,21 +205,28 @@ async function detectPage(pngBuffer, autoEps = 0) {
   const W = img.bitmap.width, H = img.bitmap.height;
   const stride = TILE_SIZE - TILE_OVERLAP;
   const all = [];
-  let tiles = 0, failed = 0;
+  let tiles = 0, failed = 0, partial = 0;
+  const modelFails = { wall: 0, zone: 0, zoneseg: 0 };
 
   for (let y = 0; y < H; y += stride) {
     for (let x = 0; x < W; x += stride) {
       const tw = Math.min(TILE_SIZE, W - x), th = Math.min(TILE_SIZE, H - y);
       tiles++;
       const jpeg = await img.clone().crop(x, y, tw, th).quality(90).getBufferAsync(Jimp.MIME_JPEG);
-      let wallRes, zoneRes, segRes;
-      try {
-        [wallRes, zoneRes, segRes] = await Promise.all([
-          callModel('wall', jpeg), callModel('zone', jpeg), callModel('zoneseg', jpeg),
-        ]);
-      } catch (e) {
-        failed++; console.error('[infer] tile fail', x, y, e.message); continue;
-      }
+      // allSettled, not all: one model failing must not discard the other two's
+      // results for this tile — that used to blank a whole region of the sheet.
+      const [wallR, zoneR, segR] = await Promise.allSettled([
+        callModel('wall', jpeg), callModel('zone', jpeg), callModel('zoneseg', jpeg),
+      ]);
+      const got = (res, name) => {
+        if (res.status === 'fulfilled') return res.value;
+        modelFails[name]++;
+        console.error('[infer] tile', x, y, name, 'failed:', res.reason && res.reason.message);
+        return null;
+      };
+      const wallRes = got(wallR, 'wall'), zoneRes = got(zoneR, 'zone'), segRes = got(segR, 'zoneseg');
+      if (!wallRes && !zoneRes && !segRes) { failed++; continue; }   // nothing at all here
+      if (!wallRes || !zoneRes || !segRes) partial++;
       const tileAnns = [
         ...parseBoxes(wallRes, 'wall_model'),
         ...parseBoxes(zoneRes, 'zone_door_window_model').filter(a => a.clsName === 'door' || a.clsName === 'window'),
@@ -209,7 +237,10 @@ async function detectPage(pngBuffer, autoEps = 0) {
   }
 
   const merged = nms(all, NMS_IOU_THRESH);
-  return { annotations: merged, meta: { width: W, height: H, tiles, failed, raw: all.length } };
+  return {
+    annotations: merged,
+    meta: { width: W, height: H, tiles, failed, partial, modelFails, raw: all.length },
+  };
 }
 
 module.exports = { detectPage };
