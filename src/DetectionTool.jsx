@@ -4,6 +4,7 @@ import { loadProject, saveProject, getOriginalFileUrl, pageSlugify, listProjects
 import { getLimits, tierLabel, tierColor } from "./services/userService";
 import Drawing from "dxf-writer";
 import { jsPDF } from "jspdf";
+import { downloadAgentReportPdf } from "./services/agentReportPdf";
 import * as XLSX from "xlsx";
 import polygonClipping from "polygon-clipping";
 import { useTheme } from "./hooks/useTheme";
@@ -1694,6 +1695,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
   const [showAgent,         setShowAgent]         = useState(false); // Agentic Takeoff panel (P0)
   const [agentPreview,      setAgentPreview]      = useState(null);  // proposed detections overlay (P1b.2)
   const [focusBox,          setFocusBox]          = useState(null);  // bbox highlighted from the agent's review list
+  const [agentReport,       setAgentReport]       = useState(null);  // latest drafted agent report (for PDF export)
   // UI theme: 'dark' (default) or 'blueprint' (light). Persisted per device and
   // applied to <html data-theme> by the hook — see src/hooks/useTheme.js.
   const { theme, setTheme } = useTheme();
@@ -3562,6 +3564,26 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
     });
   };
 
+  // Agent report → PDF in the Export tab's format (cover, header bars, zebra
+  // tables, dated footer), with the annotated plan as seen on the canvas.
+  const exportAgentReportPdf = async (report = agentReport) => {
+    if (!report) { setStatus("No agent report yet — run the agent through the Report stage first."); return; }
+    setStatus("Building agent report PDF…");
+    try {
+      await downloadAgentReportPdf({
+        report,
+        projectName: project?.name,
+        userName: user?.signInDetails?.loginId || user?.username || "Unknown",
+        scaleLabel: ratio ? `1:${scaleDenomFromRatio(ratio)}` : "Not set",
+        pageImageDataUrl: canvasRef.current ? canvasRef.current.toDataURL("image/jpeg", 0.85) : null,
+      });
+      setStatus("Agent report PDF downloaded.");
+    } catch (e) {
+      console.error("agent report pdf:", e);
+      setStatus(`Report PDF failed: ${e?.message || e}`);
+    }
+  };
+
   // Centre the canvas on an annotation's bbox (image coords), highlight it, and
   // select it if it's a real annotation — driven by the agent's "Needs review"
   // list so the user can see exactly which shape to fix.
@@ -5045,6 +5067,8 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
             denom: scaleDenomFromRatio(ratio),
           }}
           onFocusBox={focusAnnotationBox}
+          onReportReady={setAgentReport}
+          onExportReportPdf={exportAgentReportPdf}
           onDismissFlag={(item) => {
             const near = (a, b) => Math.abs(a - b) < 2;
             const [ix1, iy1, ix2, iy2] = annotationBbox(item);
@@ -5550,6 +5574,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                 else if (val === "dxf-manual" && canExportDXF) exportDXF();
                 else if (val === "dxf-auto" && canExportDXF) handleAutoDxfClick();
                 else if (val === "report") openPdfPicker();
+                else if (val === "agent-report") exportAgentReportPdf();
               }}
               style={{ ...styles.select, cursor: "pointer", fontWeight: 700, color: "var(--tx-title)", letterSpacing: 1 }}
             >
@@ -5559,6 +5584,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
               <option value="dxf-manual" disabled={!canExportDXF}>{canExportDXF ? "DXF (Manual)" : "DXF (Manual) - Pro"}</option>
               <option value="dxf-auto" disabled={!canExportDXF || !(existingFileInfoRef.current.ext === 'pdf' || pdfBytesRef.current)}>{canExportDXF ? "DXF (Auto)" : "DXF (Auto) - Pro"}</option>
               <option value="report">PDF Report</option>
+              <option value="agent-report" disabled={!agentReport}>{agentReport ? "Agent Report (PDF)" : "Agent Report (PDF) — run the agent"}</option>
             </select>
           </div>
 

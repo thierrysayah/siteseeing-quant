@@ -29,6 +29,8 @@ export default function AgentRunPanel({
   onFocusBox, // (bbox) => scroll the canvas to a flagged shape
   onApplyTags, // (anns) => merge agent tags/reclasses onto shapes ALREADY in the editor
   onDismissFlag, // (ann) => user explicitly dismissed a review item; clear it on the editor shape
+  onReportReady, // (report) => the drafted report arrived (parent keeps it for EXPORT)
+  onExportReportPdf, // (report) => build + download the PDF in the Export tab's format
 }) {
   const [run, setRun] = useState(null);
   const [error, setError] = useState(null);
@@ -79,6 +81,7 @@ export default function AgentRunPanel({
   const onApplyRef = useRef(onApply); onApplyRef.current = onApply;
   const onApplyTagsRef = useRef(onApplyTags); onApplyTagsRef.current = onApplyTags;
   const onDismissFlagRef = useRef(onDismissFlag); onDismissFlagRef.current = onDismissFlag;
+  const onReportReadyRef = useRef(onReportReady); onReportReadyRef.current = onReportReady;
 
   const stopPolling = () => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -188,6 +191,7 @@ export default function AgentRunPanel({
         if (cancelled) return;
         reportKeyRef.current = key;
         setReport(data || null);
+        onReportReadyRef.current?.(data || null);
       } catch { /* stage text still carries the headline */ }
     })();
     return () => { cancelled = true; };
@@ -398,7 +402,7 @@ export default function AgentRunPanel({
             {run.stageKey === 'classify_tag' && reference && <ScheduleView reference={reference} />}
 
             {/* the drafted report (Report stage and after finish) */}
-            {report && (run.stageKey === 'report' || run.status === 'done') && <ReportView report={report} />}
+            {report && (run.stageKey === 'report' || run.status === 'done') && <ReportView report={report} onPdf={onExportReportPdf} />}
 
             {/* items the agent flagged for review — click to jump to them */}
             {flagged.length > 0 && <ReviewList items={flagged} onFocus={onFocusBox} onDismiss={dismissFlag} />}
@@ -677,17 +681,10 @@ function Md({ text }) {
   return <div>{out}</div>;
 }
 
-function ReportView({ report }) {
+function ReportView({ report, onPdf }) {
   const sc = report.schedule || {}, t = sc.totals || {}, u = sc.hasScale;
   const md = reportToMarkdown(report);
   const copy = async () => { try { await navigator.clipboard.writeText(md); } catch { /* clipboard blocked */ } };
-  const download = () => {
-    const blob = new Blob([md], { type: 'text/markdown' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `takeoff${report.project?.drawingNumber ? '-' + report.project.drawingNumber : ''}.md`;
-    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  };
   const Tbl = ({ title, cols, rows }) => rows && rows.length ? (
     <details style={styles.schedGroup} open={title === 'Rooms / zones'}>
       <summary style={styles.schedSummary}>{title} <span style={styles.schedCount}>{rows.length}</span></summary>
@@ -704,8 +701,8 @@ function ReportView({ report }) {
       <div style={styles.reportHead}>
         <span style={styles.reportTitle}>Report — quantities only, unpriced</span>
         <span style={{ display: 'flex', gap: 6 }}>
-          <button onClick={copy} style={styles.smallBtn} title="Copy the full report as Markdown">Copy</button>
-          <button onClick={download} style={styles.smallBtn} title="Download as .md">Download</button>
+          <button onClick={() => onPdf?.(report)} style={{ ...styles.smallBtn, ...styles.smallBtnPrimary }} title="Download the report as PDF (same format as the Export tab)">Download PDF</button>
+          <button onClick={copy} style={styles.smallBtn} title="Copy the report text as Markdown">Copy text</button>
         </span>
       </div>
       <div style={styles.reportTotals}>
@@ -791,6 +788,7 @@ const styles = {
   mdP: { margin: '0 0 6px' },
   mdUl: { margin: '0 0 6px', paddingLeft: 18 },
   smallBtn: { padding: '4px 9px', fontSize: 11, color: 'var(--tx-body)', background: 'var(--bg-btn)', border: '1px solid var(--bd-btn)', borderRadius: 5, cursor: 'pointer' },
+  smallBtnPrimary: { background: 'var(--amber)', borderColor: 'var(--amber)', color: 'var(--on-amber)', fontWeight: 700 },
   reviewStage: { color: 'var(--accent2)', fontFamily: 'var(--font-mono, monospace)', fontSize: 10, marginRight: 2 },
   reviewRowWrap: { display: 'flex', alignItems: 'stretch', gap: 4, margin: '3px 0' },
   reviewDismiss: { flex: '0 0 auto', padding: '0 9px', fontSize: 12, color: 'var(--tx-dim)', background: 'var(--bg-badge)', border: '1px solid var(--amber-bd)', borderRadius: 5, cursor: 'pointer' },
