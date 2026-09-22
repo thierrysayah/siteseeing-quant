@@ -183,10 +183,12 @@ async function calibrateStage(run) {
     };
   }
 
-  // 2) Fall back to the project's calibrated scale, shown as the nearest standard.
+  // 2) Fall back to the project's calibrated scale. This is a value the USER set
+  //    (typed 1:N or measured), so show it EXACTLY — never snap it. Snapping is
+  //    only for cleaning OCR noise on the VLM-read stated scale in path 1.
   const ratio = await readProjectScale(run);
   if (ratio) {
-    const denom = snapStandard(ratioToDenom(ratio));
+    const denom = ratioToDenom(ratio);   // already Math.round'ed
     return {
       output: `Scale: 1 : ${denom} (from the project). Approve, or Adjust to recalibrate.`,
       evidence: 'From the project scale — Adjust to set it exactly from the drawing.',
