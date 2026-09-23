@@ -24,12 +24,39 @@ function getCallerSub(event) {
   return null;
 }
 
-// Map Cognito groups to tier/role
-function deriveTierAndRole(groups) {
-  if (groups.includes("EnterpriseManager")) return { tier: "enterprise", role: "manager" };
-  if (groups.includes("EnterpriseQS"))      return { tier: "enterprise", role: "qs" };
-  if (groups.includes("Pro"))               return { tier: "pro", role: null };
-  return { tier: "individual", role: null };
+// Length of the free trial, in days.
+const TRIAL_DAYS = Number(process.env.TRIAL_DAYS || 14);
+
+// Map Cognito groups (+ account age) to tier/role/trial.
+//
+// The trial window is derived from Cognito's own UserCreateDate rather than any
+// user-supplied attribute or stored flag: Cognito owns that value, so it cannot
+// be forged by a client (the mistake behind audit finding C1) and needs no extra
+// table, write path, or expiry job. `Individual` is the legacy free tier and is
+// left exactly as it was so existing accounts are unaffected.
+function deriveTierAndRole(groups, userCreateDate) {
+  if (groups.includes("EnterpriseManager")) return { tier: "enterprise", role: "manager", trial: null };
+  if (groups.includes("EnterpriseQS"))      return { tier: "enterprise", role: "qs", trial: null };
+  if (groups.includes("Pro"))               return { tier: "pro", role: null, trial: null };
+  if (groups.includes("Individual"))        return { tier: "individual", role: null, trial: null };
+
+  // No paid plan → Pro features for TRIAL_DAYS from signup, then read-only.
+  const started = userCreateDate ? new Date(userCreateDate).getTime() : NaN;
+  if (!Number.isFinite(started)) {
+    return { tier: "expired", role: null, trial: { active: false, endsAt: null, daysLeft: 0 } };
+  }
+  const endsAt = started + TRIAL_DAYS * 86400000;
+  const active = Date.now() < endsAt;
+  return {
+    tier: active ? "trial" : "expired",
+    role: null,
+    trial: {
+      active,
+      endsAt: new Date(endsAt).toISOString(),
+      daysLeft: Math.max(0, Math.ceil((endsAt - Date.now()) / 86400000)),
+      totalDays: TRIAL_DAYS,
+    },
+  };
 }
 
 exports.handler = async (event) => {
@@ -42,7 +69,7 @@ exports.handler = async (event) => {
     return {
       statusCode: 200,
       headers: CORS,
-      body: JSON.stringify({ tier: "individual", role: null, orgId: null, projectCount: 0, projectGrants: [] }),
+      body: JSON.stringify({ tier: "expired", role: null, trial: null, orgId: null, projectCount: 0, projectGrants: [] }),
     };
   }
 
@@ -50,6 +77,7 @@ exports.handler = async (event) => {
   let orgId = null;
   let groups = [];
   let cognitoUsername = null;
+  let userCreateDate = null;
 
   try {
     // Step 1: Find user by sub (ListUsers accepts sub filter)
@@ -62,6 +90,7 @@ exports.handler = async (event) => {
     if (listResp.Users && listResp.Users.length > 0) {
       const user = listResp.Users[0];
       cognitoUsername = user.Username;
+      userCreateDate = user.UserCreateDate || null;
       orgId = user.Attributes?.find(a => a.Name === "custom:orgId")?.Value || null;
 
       console.log("[getUserProfile] found user:", cognitoUsername, "orgId:", orgId);
@@ -79,7 +108,7 @@ exports.handler = async (event) => {
     console.error("[getUserProfile] Cognito lookup failed:", err);
   }
 
-  const { tier, role: orgRole } = deriveTierAndRole(groups);
+  const { tier, role: orgRole, trial } = deriveTierAndRole(groups, userCreateDate);
 
   console.log("[getUserProfile] orgId:", orgId, "tier:", tier, "role:", orgRole, "groups:", groups);
 
@@ -112,6 +141,7 @@ exports.handler = async (event) => {
     body: JSON.stringify({
       tier,
       role: orgRole,
+      trial,
       orgId,
       projectCount: 0,
       projectGrants,

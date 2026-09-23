@@ -130,12 +130,21 @@ async function createRun(userId, body) {
   const { projectId, pageId, pricingRequested } = body || {};
   if (!projectId) return resp(400, { error: 'projectId required' });
 
-  // Trial gate: ONLY free-tier (individual) users are capped at 3 sheets. Paid
-  // tiers (pro/enterprise) run unmetered for now. Claim one free sheet before any
-  // work — a single atomic conditional write, so two near-simultaneous starts
-  // can't both slip past the last sheet.
+  // Read-only once the trial has lapsed with no paid plan.
+  const tier = await resolveTier(userId);
+  if (tier === 'expired') {
+    return resp(402, {
+      error: 'Your free trial has ended — upgrade to run a takeoff.',
+      code: 'trial_expired',
+    });
+  }
+
+  // Sheet gate: paid tiers run unmetered; trial and legacy-free accounts draw on
+  // the free sheet allowance. Claim one before any work — a single atomic
+  // conditional write, so two near-simultaneous starts can't both slip past the
+  // last sheet.
   let quota = null;
-  if (await isTrialGated(userId)) {
+  if (METERED_TIERS.has(tier)) {
     const q = await consumeQuota(userId);
     if (!q.ok) {
       const cur = await readQuota(userId);
@@ -389,29 +398,40 @@ const quotaKey = (userId) => `quota#${userId}`;
 // Resolve the caller's tier from Cognito groups (mirrors userService.getUserTier:
 // EnterpriseManager/EnterpriseQS → enterprise, Pro → pro, else individual).
 // IAM-authed requests carry no JWT claims, so we look the groups up by sub.
+const TRIAL_DAYS = Number(process.env.TRIAL_DAYS || 14);
+
+// Mirrors getUserProfile's resolver: paid groups win, otherwise the free trial
+// window is derived from Cognito's own UserCreateDate (unforgeable, no extra
+// storage). 'expired' means the trial lapsed with no paid plan.
 async function resolveTier(userId) {
   try {
     const u = await cognito.send(new ListUsersCommand({
       UserPoolId: USER_POOL_ID, Filter: `sub = "${userId}"`, Limit: 1,
     }));
-    const username = u.Users?.[0]?.Username;
-    if (!username) return 'individual';
+    const user = u.Users?.[0];
+    if (!user?.Username) return 'expired';
     const g = await cognito.send(new AdminListGroupsForUserCommand({
-      UserPoolId: USER_POOL_ID, Username: username,
+      UserPoolId: USER_POOL_ID, Username: user.Username,
     }));
     const groups = (g.Groups || []).map(x => x.GroupName);
     if (groups.includes('EnterpriseManager') || groups.includes('EnterpriseQS')) return 'enterprise';
     if (groups.includes('Pro')) return 'pro';
-    return 'individual';
+    if (groups.includes('Individual')) return 'individual';   // legacy free tier
+    const started = user.UserCreateDate ? new Date(user.UserCreateDate).getTime() : NaN;
+    if (!Number.isFinite(started)) return 'expired';
+    return Date.now() < started + TRIAL_DAYS * 86400000 ? 'trial' : 'expired';
   } catch (e) {
-    console.warn('[resolveTier] lookup failed, treating as individual:', e.message);
-    return 'individual';   // safest: still gated
+    console.warn('[resolveTier] lookup failed, treating as trial (metered):', e.message);
+    return 'trial';   // safest: metered, not unlimited and not locked out
   }
 }
 
-// Only the free tier is capped by the 3-sheet trial.
+// Paid tiers run unmetered; everyone else draws on the free sheet allowance.
+// NB: this must NOT be "tier === individual" — once new signups land on the
+// trial tier that test would silently remove the cap on real model spend.
+const METERED_TIERS = new Set(['trial', 'individual', 'expired']);
 async function isTrialGated(userId) {
-  return (await resolveTier(userId)) === 'individual';
+  return METERED_TIERS.has(await resolveTier(userId));
 }
 
 async function readQuota(userId) {

@@ -252,7 +252,7 @@ function MainApp() {
             border: `1px solid ${tierColor(userTierInfo.tier, userTierInfo.role)}`,
             borderRadius: 4, padding: '2px 8px', opacity: 0.85,
           }}>
-            {tierLabel(userTierInfo.tier, userTierInfo.role)}
+            {tierLabel(userTierInfo.tier, userTierInfo.role, userTierInfo.trial)}
           </span>
           {currentPage === 'editor' && (
             <button className="signout-btn" onClick={handleBackToProjects}>Back to Projects</button>
