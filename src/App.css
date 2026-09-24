@@ -16,7 +16,9 @@ body {
   display: grid;
   grid-template-columns: 1.15fr 0.85fr;
   min-height: 100vh;
-  background: #08111f;
+  /* Neutral graphite, matching the app's dark theme (--bg-app). The auth side
+     used to be cool navy like the photo, so the two blended together. */
+  background: #0e1216;
 }
 
 .auth-left {
@@ -58,17 +60,21 @@ body {
   align-items: center;
   justify-content: center;
   padding: 32px;
-  background: #0b1426;
+  /* Contrasts with the cool-blue photo by TEMPERATURE (neutral vs blue) and a
+     small step up in lightness — separation without brightness. */
+  background: #141a20;
+  border-left: 1px solid #232c36;
 }
 
 .auth-card {
   width: 100%;
   max-width: 420px;
-  background: rgba(10, 18, 32, 0.96);
-  border: 1px solid rgba(70, 120, 220, 0.25);
+  /* One more step up so the card lifts off the panel behind it. */
+  background: #1b222a;
+  border: 1px solid #2a333d;
   border-radius: 18px;
   padding: 28px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
   overflow: hidden;
 }
 
