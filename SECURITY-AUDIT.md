@@ -18,6 +18,9 @@ A few findings the audit agents flagged as "Critical" (Cognito filter injection)
 ## CRITICAL
 
 ### C1. Free tier → Pro tier bypass at signup
+- **STATUS: FIXED (2026-09-24).** `assignDefaultGroup` no longer reads `custom:plan`; every
+  new account is placed in the `Trial` group and paid tiers are granted only by a
+  payment-verified path. The sign-up page no longer sends the attribute at all.
 - **File:** `amplify/backend/function/assignDefaultGroup/src/index.js:11–12`
 - **Exploit:** The PostConfirmation Lambda reads `custom:plan` from the signup attributes and assigns the user to `Pro` if it equals `"pro"`, otherwise `Individual`. Cognito's SignUp API lets the client pass arbitrary user attributes; the Amplify React app sets `custom:plan` from `_planSel.current` (`src/App.js:127`), but a malicious client can send `custom:plan: "pro"` directly to Cognito and get the Pro group for free. No payment verification.
 - **Impact:** Every gated Pro feature (DXF export, custom layers, 10-project quota) becomes free. Your entire pricing model is unenforced.
@@ -33,6 +36,12 @@ A few findings the audit agents flagged as "Critical" (Cognito filter injection)
   3. **Plus** API Gateway throttling (see C3) as broad-stroke protection.
 
 ### C3. No API Gateway throttling on any route
+- **STATUS: FIXED (2026-09-24).** Stage-wide backstop 25 rps / 50 burst, plus per-route
+  limits (`/infer` 10/50, `/agent` 10/20, `/session/heartbeat` 20/50, `/session/claim` 5/20,
+  `/user/profile` 10/20, `/org/grant-access` 5/10). NOTE: routes are declared `ANY`, and API
+  Gateway method settings reject `ANY` and `*` as an http method — each route is therefore
+  set per concrete verb (GET/POST/PUT/DELETE). **`amplify push` wipes stage method settings**,
+  so re-run `./scripts/apply-api-throttling.sh` after every push.
 - **File:** `amplify/backend/api/quantApi/**` (no `MethodSettings` configured)
 - **Exploit:** Every route — `/infer`, `/session/heartbeat`, `/session/claim`, `/user/profile`, `/org/grant-access` — accepts unlimited RPS from any authenticated user. One user with a `while(true) fetch(...)` loop can drain your Lambda concurrency budget, hit DDB throttle limits, and rack up bills on every other route too.
 - **Impact:** Service-wide DoS, plus AWS bill spikes. C2 covers the Ultralytics side; this covers the AWS side.
