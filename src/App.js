@@ -6,7 +6,6 @@ import {
   Text,
   useAuthenticator,
 } from '@aws-amplify/ui-react';
-import { signUp } from 'aws-amplify/auth';
 import '@aws-amplify/ui-react/styles.css';
 import './App.css';
 
@@ -15,66 +14,42 @@ import ProjectsPage from './pages/ProjectsPage';
 import { getUserTier, tierLabel, tierColor } from './services/userService';
 import { useSessionGuard } from './hooks/useSessionGuard';
 
-// ─── Module-level plan selection ──────────────────────────────────────────────
-// Stored outside React state so authComponents / authServices stay stable
-// (never remount the Authenticator when user toggles between plans).
-const _planSel = { current: 'individual' };
+// ─── Trial panel ──────────────────────────────────────────────────────────────
+// There is no plan to pick at sign-up: every new account gets the same 14-day
+// Pro trial, granted server-side from the Cognito account-creation date. (The
+// old picker wrote `custom:plan`, which the server trusted — audit finding C1.)
+const TRIAL_DAYS = 14;
+const TRIAL_FEATURES = [
+  '10 projects',
+  'AI takeoff agent — 3 sheets',
+  'DXF export',
+  'Custom classes',
+  'All annotation tools',
+  'Multi-page PDF',
+];
 
-// ─── Plan card ────────────────────────────────────────────────────────────────
-const PLANS = {
-  individual: {
-    label: 'Individual',
-    price: 'Free',
-    features: ['2 projects', 'All annotation tools', 'AI inference', 'Multi-page PDF'],
-  },
-  pro: {
-    label: 'Pro',
-    price: 'Billing coming soon',
-    features: ['10 projects', 'DXF export', 'Custom classes', 'Priority support'],
-  },
-};
-
-function PlanCard({ plan, selected, onSelect }) {
-  const { label, price, features } = PLANS[plan];
-  return (
-    <div
-      onClick={onSelect}
-      style={{
-        flex: 1, padding: '10px 12px', borderRadius: 8, cursor: 'pointer',
-        border: selected ? '2px solid #0f8fb3' : '2px solid rgba(100,150,255,0.2)',
-        background: selected ? 'rgba(15,143,179,0.1)' : 'rgba(255,255,255,0.02)',
-        transition: 'border-color 0.15s, background 0.15s',
-        userSelect: 'none',
-      }}
-    >
-      <div style={{ fontWeight: 700, color: selected ? '#10b7e8' : '#8ab4d4', fontSize: 13, marginBottom: 2 }}>
-        {label}
-      </div>
-      <div style={{ color: '#5a8aaa', fontSize: 10, marginBottom: 6 }}>{price}</div>
-      <ul style={{ margin: 0, padding: '0 0 0 13px', color: '#6a9ab4', fontSize: 10, lineHeight: 1.75 }}>
-        {features.map(f => <li key={f}>{f}</li>)}
-      </ul>
-    </div>
-  );
-}
-
-// PlanCards manages its own display state but writes to the module-level ref
-function PlanCards() {
-  const [sel, setSel] = useState(_planSel.current);
+function TrialPanel() {
   return (
     <View style={{ marginTop: 10, marginBottom: 2 }}>
-      <div style={{ color: 'rgba(235,243,255,0.75)', fontSize: 11, fontWeight: 600, marginBottom: 6 }}>
-        Choose your plan
-      </div>
-      <div style={{ display: 'flex', gap: 8 }}>
-        {Object.keys(PLANS).map(plan => (
-          <PlanCard
-            key={plan}
-            plan={plan}
-            selected={sel === plan}
-            onSelect={() => { _planSel.current = plan; setSel(plan); }}
-          />
-        ))}
+      <div style={{
+        padding: '12px 14px', borderRadius: 8,
+        border: '2px solid #0f8fb3', background: 'rgba(15,143,179,0.1)',
+      }}>
+        <div style={{ fontWeight: 700, color: '#10b7e8', fontSize: 13, marginBottom: 2 }}>
+          {TRIAL_DAYS}-day Pro trial
+        </div>
+        <div style={{ color: '#5a8aaa', fontSize: 10, marginBottom: 8 }}>
+          Everything in Pro, free — no credit card
+        </div>
+        <ul style={{
+          margin: 0, padding: '0 0 0 13px', color: '#6a9ab4', fontSize: 10,
+          lineHeight: 1.75, columns: 2, columnGap: 14,
+        }}>
+          {TRIAL_FEATURES.map(f => <li key={f}>{f}</li>)}
+        </ul>
+        <div style={{ color: '#5a8aaa', fontSize: 9.5, marginTop: 8, lineHeight: 1.5 }}>
+          After {TRIAL_DAYS} days your projects stay viewable and exportable until you upgrade.
+        </div>
       </div>
     </View>
   );
@@ -99,7 +74,7 @@ function AuthHeader() {
             : 'Sign in to continue'}
         </Text>
       </div>
-      {isSignUp && <PlanCards />}
+      {isSignUp && <TrialPanel />}
     </View>
   );
 }
@@ -115,22 +90,6 @@ const authFormFields = {
 };
 
 const authComponents = { Header: AuthHeader };
-
-// Injects custom:plan into every sign-up request
-const authServices = {
-  async handleSignUp(input) {
-    return signUp({
-      ...input,
-      options: {
-        ...input.options,
-        userAttributes: {
-          ...input.options?.userAttributes,
-          'custom:plan': _planSel.current,
-        },
-      },
-    });
-  },
-};
 
 // ─── Login screen ─────────────────────────────────────────────────────────────
 function LoginScreen() {
@@ -148,7 +107,6 @@ function LoginScreen() {
         <div className="auth-card">
           <Authenticator
             formFields={authFormFields}
-            services={authServices}
             components={authComponents}
           />
         </div>
