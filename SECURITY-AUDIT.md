@@ -108,6 +108,12 @@ This is really C1's consequence, but the surface is wider than just the signup f
 - **Fix:** Return a generic error: `"This user can't be granted access"` for *all* lookup failure modes (not found, wrong org, not a manager). Add per-user rate limit on POSTs to this endpoint (e.g. 10/min).
 
 ### H3. Source maps shipped in `build/`
+- **STATUS: FIXED (2026-09-24).** Was **confirmed live**, not theoretical:
+  `https://dev.d28h0kazpkiv4s.amplifyapp.com/static/js/main.*.js.map` returned HTTP 200 with
+  the real source map. Fixed by `GENERATE_SOURCEMAP=false` in `.env.production` **and** as an
+  Amplify app environment variable (belt and braces — the console build may not read the env
+  file). Local rebuild verified: 0 `.map` files and 0 `sourceMappingURL` references.
+  **The already-deployed maps stay live until the `dev` branch is redeployed.**
 - **File:** `build/static/js/*.map` (verified — all chunks have `.map` files)
 - **Exploit:** If you've ever deployed `build/` to production (`amplify publish` or any static host), the source maps are publicly downloadable. They reverse-compiled JS back to your original source: every helper function name, every comment, every internal API call pattern. An attacker uses them to find weaknesses fast.
 - **Fix:** Set `GENERATE_SOURCEMAP=false` in `.env.production` (CRA convention) and rebuild. Verify by checking that `build/static/js/` has no `.map` files. Also: delete the existing `.map` files from any deployed host.
