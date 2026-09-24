@@ -20,7 +20,7 @@ export const TIER_LIMITS = {
   // Free trial — full Pro features for a fixed window (server-resolved from the
   // Cognito account-creation date). AI takeoff sheets stay capped separately.
   trial: {
-    maxProjects: 10,
+    maxProjects: 5,
     canExportDXF: true,
     canUseCustomClasses: true,
     isReadOnly: false,

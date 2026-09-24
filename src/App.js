@@ -20,7 +20,7 @@ import { useSessionGuard } from './hooks/useSessionGuard';
 // old picker wrote `custom:plan`, which the server trusted — audit finding C1.)
 const TRIAL_DAYS = 14;
 const TRIAL_FEATURES = [
-  '10 projects',
+  '5 projects',
   'AI takeoff agent — 3 sheets',
   'DXF export',
   'Custom classes',
@@ -39,7 +39,7 @@ function TrialPanel() {
           {TRIAL_DAYS}-day Pro trial
         </div>
         <div style={{ color: '#5a8aaa', fontSize: 10, marginBottom: 8 }}>
-          Everything in Pro, free — no credit card
+          Free for 14 days — no credit card
         </div>
         <ul style={{
           margin: 0, padding: '0 0 0 13px', color: '#6a9ab4', fontSize: 10,
