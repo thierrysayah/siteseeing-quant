@@ -71,7 +71,19 @@ This is really C1's consequence, but the surface is wider than just the signup f
   - Introduce a `validateProjectWrite` Lambda invoked by an S3 `PUT` event (or as a pre-signed-URL minter Lambda the client must go through). It loads the metadata, checks the caller's tier from Cognito groups, and rejects DXF requests / custom-layer additions / over-quota creates / read-only saves.
   - Or: keep S3 direct writes for everything except the gated features, and route those through a Lambda (`/projects/export-dxf`, `/projects/create`) that verifies tier.
 
-### C5. S3 bucket scope — UNVERIFIED, must check manually
+### C5. S3 bucket scope — VERIFIED, WAS WORSE THAN DESCRIBED
+- **STATUS: FIXED (2026-09-24).** Verified with IAM policy simulation, and the real finding was
+  worse than the worst case below: **`AmazonS3FullAccess` was ATTACHED to the auth role** —
+  `s3:*` on `*`. Any signed-in user could read/overwrite/delete every object in all 16 buckets
+  in the account (ML model weights, Amplify deployment buckets, unrelated projects), and had
+  `s3:DeleteBucket` and `s3:PutBucketPolicy`. The inline policy separately granted the whole
+  user-data bucket, so every tenant could read every other tenant's drawings.
+- **Fix applied:** detached `AmazonS3FullAccess`; scoped the inline policy via Cognito principal
+  tags (`sub`, `orgId` from `custom:orgId`) since the S3 paths use the user-pool sub, not the
+  identity id that `${cognito-identity.amazonaws.com:sub}` provides; added `sts:TagSession` to
+  the trust policy. Committed as `infra/authRole-s3-policy.json` + `infra/README-authRole.md`.
+- **Remaining gap:** org access is org-wide, not per-`ProjectGrants`. Needs Lambda-mediated
+  reads to close.
 - **File:** `amplify/backend/storage/estimationplatform54fe8981/parameters.json` (imported bucket — IAM lives outside the repo)
 - **Why this is here:** The bucket is `"serviceType": "imported"`, meaning IAM is whatever you manually attached to the Cognito Identity Pool's *authenticated role* in the AWS console. I can't see it from the codebase.
 - **What to verify (in AWS console, IAM → Roles → `<auth-role>`):** Every `s3:*` action's `Resource` ARN must include `${cognito-identity.amazonaws.com:sub}` (for `private/users/*` paths) and `${aws:PrincipalTag/orgId}` or similar (for `private/organisations/org-*/*` paths).
