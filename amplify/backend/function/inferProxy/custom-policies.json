@@ -1,6 +1,20 @@
 [
   {
-    "Action": ["secretsmanager:GetSecretValue"],
-    "Resource": ["arn:aws:secretsmanager:eu-west-3:851725386383:secret:quant/inference/ultralytics-*"]
+    "Action": [
+      "secretsmanager:GetSecretValue"
+    ],
+    "Resource": [
+      "arn:aws:secretsmanager:eu-west-3:851725386383:secret:quant/inference/ultralytics-*"
+    ]
+  },
+  {
+    "Action": [
+      "dynamodb:UpdateItem",
+      "dynamodb:GetItem"
+    ],
+    "Resource": [
+      "arn:aws:dynamodb:eu-west-3:851725386383:table/TakeoffRuns-dev"
+    ],
+    "Effect": "Allow"
   }
 ]

@@ -6,6 +6,8 @@
 const { SecretsManagerClient, GetSecretValueCommand } =
   require('@aws-sdk/client-secrets-manager');
 
+const quota = require('./quota');
+
 const sm = new SecretsManagerClient({ region: process.env.REGION || 'eu-west-3' });
 
 // Cache the token across warm invocations — cold start ≈ 1 fetch only
@@ -60,11 +62,34 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token',
   'Access-Control-Allow-Methods': 'OPTIONS,POST',
+  // Without this the browser hides the quota headers from our own fetch.
+  'Access-Control-Expose-Headers': 'X-Infer-Runs-Limit,X-Infer-Runs-Remaining,X-Infer-Quota-Reset',
 };
+
+// Cognito User Pool `sub` from an IAM-authorized request. The identity pool has
+// unauthenticated identities disabled, so every caller that reaches us is a
+// signed-in user — no sub means something is wrong, not a guest.
+function getCallerSub(event) {
+  const claimsSub = event.requestContext?.authorizer?.claims?.sub;
+  if (claimsSub) return claimsSub;
+  const provider = event.requestContext?.identity?.cognitoAuthenticationProvider;
+  const match = provider && provider.match(/CognitoSignIn:([a-f0-9-]+)$/);
+  return match ? match[1] : null;
+}
+
+// The client shows a runs-remaining meter; the call ceiling is an internal
+// backstop and is deliberately not advertised.
+function quotaHeaders(q) {
+  return {
+    'X-Infer-Runs-Limit': String(q.runLimit),
+    'X-Infer-Runs-Remaining': String(q.runsRemaining),
+    'X-Infer-Quota-Reset': String(q.resetsAt),
+  };
+}
 
 exports.handler = async (event) => {
   try {
-    const { model, imageB64, conf, iou, imgsz } = JSON.parse(event.body || '{}');
+    const { model, imageB64, conf, iou, imgsz, runId } = JSON.parse(event.body || '{}');
     const url = MODEL_URLS[model];
     if (!url) return resp(400, { error: 'unknown model' });
     if (!imageB64) return resp(400, { error: 'missing imageB64' });
@@ -79,6 +104,25 @@ exports.handler = async (event) => {
     const safeImgsz = safeImgszRaw == null ? null : Math.round(safeImgszRaw);
     if (clamped.length) console.warn('[inferProxy] clamped params:', clamped.join(', '));
 
+    // Meter BEFORE spending anything upstream. A tiled sheet is ~18 calls, so
+    // this is the loop that has to be bounded, not the size of any one image.
+    const sub = getCallerSub(event);
+    if (!sub) return resp(401, { error: 'unauthenticated', code: 'no_identity' });
+
+    const q = await quota.consume(sub, runId);
+    if (!q.ok) {
+      console.warn('[inferProxy] quota denied:', q.reason, 'user', sub,
+        `runs=${q.runs}/${q.runLimit} calls=${q.calls}/${q.callCeiling}`);
+      return resp(429, {
+        error: quota.MESSAGES[q.reason] || quota.MESSAGES.run_limit,
+        code: 'infer_quota_exceeded',
+        reason: q.reason,
+        runLimit: q.runLimit,
+        runsRemaining: q.runsRemaining,
+        resetsAt: q.resetsAt,
+      }, quotaHeaders(q));
+    }
+
     const token = await getToken();
 
     // Node 22 native FormData + Blob
@@ -89,15 +133,24 @@ exports.handler = async (event) => {
     if (safeIou   != null) fd.append('iou',   String(safeIou));
     if (safeImgsz != null) fd.append('imgsz', String(safeImgsz));
 
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-      body: fd,
-    });
+    let r;
+    try {
+      r = await fetch(url, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd,
+      });
+    } catch (netErr) {
+      if (!q.degraded) await quota.refund(sub, runId);   // don't bill our own outage
+      throw netErr;
+    }
+    // Same for an upstream error: the user got no detections, so give it back.
+    if (r.status >= 500 && !q.degraded) await quota.refund(sub, runId);
+
     const text = await r.text();
     return {
       statusCode: r.status,
-      headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+      headers: { ...CORS_HEADERS, ...quotaHeaders(q), 'Content-Type': 'application/json' },
       body: text,
     };
   } catch (err) {
@@ -106,10 +159,10 @@ exports.handler = async (event) => {
   }
 };
 
-function resp(statusCode, obj) {
+function resp(statusCode, obj, extraHeaders) {
   return {
     statusCode,
-    headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+    headers: { ...CORS_HEADERS, ...extraHeaders, 'Content-Type': 'application/json' },
     body: JSON.stringify(obj),
   };
 }

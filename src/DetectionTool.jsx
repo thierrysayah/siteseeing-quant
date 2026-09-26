@@ -2970,6 +2970,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
 
   const runInference = async (tiled = false) => {
     if (!originalImg) { setStatus("Load an image first."); return; }
+    inferRunIdRef.current = newInferRunId();   // one run id for this whole Detect
     // Capture which page we're running inference on
     const targetPageIndex = currentPageIndexRef.current;
 
@@ -3048,7 +3049,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         setSelectedIndices(new Set());
       }
     } catch (err) {
-      setStatus(`Inference failed: ${err.message}`);
+      setStatus(err?.quotaExceeded ? err.message : `Inference failed: ${err.message}`);
     } finally {
       setInferring(false);
     }
@@ -3070,14 +3071,43 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
   // Route: POST /infer on quantApi.
   // `model` is 'wall' | 'zone' | 'zoneseg' — the Lambda resolves it to the actual
   // Cloud Run URL + bearer token (token is loaded from Secrets Manager on cold start).
+  // Every call belonging to one Detect press carries the same runId, so the
+  // proxy can meter DETECTION RUNS rather than individual tiles (one A3 run is
+  // ~18 calls). Set once at the top of runInference; read here so the id does
+  // not have to be threaded through every call site.
+  const inferRunIdRef = useRef(null);
+  const newInferRunId = () =>
+    `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
   const postInference = async (blob, model, data) => {
     const imageB64 = await blobToBase64(blob);
-    const { body } = await post({
-      apiName: "quantApi",
-      path: "/infer",
-      options: { body: { model, imageB64, ...data } },
-    }).response;
-    return body.json();
+    try {
+      const { body } = await post({
+        apiName: "quantApi",
+        path: "/infer",
+        options: { body: { model, imageB64, runId: inferRunIdRef.current, ...data } },
+      }).response;
+      return body.json();
+    } catch (err) {
+      // The proxy meters inference per user per day. A 429 is not a transient
+      // fault, so it must stop the whole run rather than be retried or — worse
+      // — swallowed per tile, which would silently return a partial takeoff.
+      throw (await asQuotaError(err)) || err;
+    }
+  };
+
+  // Turn an Amplify ApiError into a tagged quota error when that's what it is.
+  const asQuotaError = async (err) => {
+    const res = err?.response;
+    if (!res || res.statusCode !== 429) return null;
+    let msg = "Daily inference limit reached. It resets at midnight UTC.";
+    try {
+      const parsed = typeof res.body === "string" ? JSON.parse(res.body) : res.body;
+      if (parsed?.error) msg = parsed.error;
+    } catch { /* keep the default wording */ }
+    const e = new Error(msg);
+    e.quotaExceeded = true;
+    return e;
   };
 
   const runTiledInference = async (canvas, _blob, wallModelData, zoneModelData, zoneSegModelData, autoEps = 0, includeZoneSeg = true) => {
@@ -3107,7 +3137,12 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
           ...(includeZoneSeg ? parseSegmentationResponse(zoneSegRes, "zone_seg_model", autoEps) : []),
         ];
         tileAnns.forEach(a => allAnns.push(offsetAnnotation(a, tx, ty)));
-      } catch (_) {}
+      } catch (err) {
+        // Out of quota part-way through: the remaining tiles would all fail
+        // too, and finishing would hand back a takeoff that looks complete but
+        // is missing whole regions of the sheet.
+        if (err?.quotaExceeded) throw err;
+      }
     }
     return nms(allAnns, NMS_IOU_THRESH);
   };

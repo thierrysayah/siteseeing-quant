@@ -69,7 +69,13 @@
             },
             "REGION": {
               "Ref": "AWS::Region"
-            }
+            },
+            "QUOTA_TABLE": {
+              "Fn::Sub": "TakeoffRuns-${env}"
+            },
+            "INFER_DAILY_RUN_LIMIT": "50",
+            "INFER_PER_RUN_CALLS": "150",
+            "INFER_DAILY_CALLS": "1500"
           }
         },
         "Role": {

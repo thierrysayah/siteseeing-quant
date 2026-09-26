@@ -27,20 +27,49 @@ A few findings the audit agents flagged as "Critical" (Cognito filter injection)
 - **Fix:** Server-side: in `assignDefaultGroup`, ignore `custom:plan` entirely and always assign `Individual` on signup. Tier upgrades only happen through a payment-verified Lambda (Stripe webhook → assign to `Pro` group). Alternatively, write a "pending upgrade" record and reject `custom:plan` values that aren't `individual`.
 
 ### C2. `/infer` has no payload-size cap and no per-user quota
-- **STATUS: PARTIALLY FIXED (2026-09-26).** Size guard added at **9 MB** (not the suggested
-  5 MB): measured real payloads are ~350 KB per tile and ~1 MB for a whole A3 page, but the
-  non-tiled path scales with sheet size, so a 5 MB cap would have broken legitimate whole-page
-  runs on A1/A0. API Gateway caps bodies at 10 MB regardless, so the guard sits just under it.
-  Per-call cost is now bounded by the `imgsz` clamp (M8). **Still outstanding: the per-user
-  quota**, which is the actual abuse control — reuse the agent's atomic conditional-write
-  counter pattern.
-- **File:** `amplify/backend/function/inferProxy/src/index.js:45–47`
-- **Exploit:** Any signed-in user can POST a base64 image of arbitrary size (up to API Gateway's 10 MB default) to `/infer`, and can hit it in a tight loop. Each call forwards to the paid Ultralytics endpoint. With the current cache + no quota, a script can drain your model budget in minutes.
-- **Impact:** Pure financial damage. There is no upper bound on what one bad actor can cost you.
-- **Fix:**
-  1. Add input validation at the top of the handler: `if (!imageB64 || imageB64.length > 5_000_000) return resp(400, { error: 'image too large' });` (5 MB pre-decode cap).
-  2. Per-user monthly quota — small DDB table `InferenceQuota` keyed by `userId#YYYY-MM`, counter incremented on each call, with limits per tier (e.g. 100/mo Individual, 2,000/mo Pro, unlimited Enterprise).
-  3. **Plus** API Gateway throttling (see C3) as broad-stroke protection.
+- **STATUS: FIXED (2026-09-26).** Two parts.
+  1. *Size guard* at **9 MB** (not the suggested 5 MB): measured real payloads are ~350 KB per
+     tile and ~1 MB for a whole A3 page, but the non-tiled path scales with sheet size, so a
+     5 MB cap would have broken legitimate whole-page runs on A1/A0. API Gateway caps bodies
+     at 10 MB regardless, so the guard sits just under it. Per-call cost is bounded by the
+     `imgsz` clamp (M8).
+  2. *Per-user quota* — **50 detection RUNS per user per UTC day, flat across all tiers.**
+- **Quota design decisions (and why):**
+  - **Runs, not calls.** A run is the unit users experience; the proxy only sees one tile, and
+    an A3 run is ~18 calls (3 models x 6 tiles) while an A0 run is ~105. Metering calls would
+    have made "50/day" mean two detections. The client therefore tags every call of one Detect
+    press with the same `runId`.
+  - **The run id comes from the client, so it is not trusted on its own.** Two backstops stop a
+    single id being reused as an unbounded bucket: `INFER_PER_RUN_CALLS` (150 — above the
+    largest legitimate run) and `INFER_DAILY_CALLS` (1500 — a whole-day ceiling; 50 A3 runs is
+    ~900, so this has headroom, but a user working only on A0 sheets hits it before the run
+    limit). Both are env vars. Ids are sanitised to `[A-Za-z0-9_-]{1,48}` before going near a
+    document path; a call with no id is bucketed under `untagged`, which is forgiving for an
+    older client mid-rollout and still bounded by the per-run cap.
+  - **Daily, not monthly.** The date is part of the row key (`infer#<sub>#<YYYY-MM-DD>`), so
+    the bucket resets itself — no cron, no reset job. A daily window also caps the blast
+    radius of stolen credentials at one day's spend instead of one month's.
+  - **One attribute, one write.** `runCalls` is a map of runId -> count, so `size(runCalls)` is
+    the run count, `runCalls.<id>` the per-run count and `calls` the total. All three limits are
+    therefore enforced by a SINGLE conditional write, which is what makes them atomic.
+  - **Flat across tiers.** Tier resolution is 2 Cognito calls and a run is ~18 calls, so
+    per-call tier lookups would add ~36 round-trips per analysis to the hot path. A flat limit
+    needs no Cognito access in `inferProxy` at all.
+  - **Refunds on upstream failure** (network error or 5xx), so users aren't billed for our
+    outages. **Fails open** if DynamoDB is unavailable, logging `[inferQuota] counter
+    unavailable` — an attacker can't induce that, so the outage is the bigger risk. That log
+    line is worth a CloudWatch alarm.
+  - Rows carry a 14-day `ttl`. **TTL is still DISABLED on `TakeoffRuns-dev`** — enabling it
+    sweeps these automatically and touches nothing else, since only rows with the attribute
+    are ever expired.
+- **Verified against the live table:** each of the three limits denies with the correct reason
+  and leaves the others untouched; refund restores exactly one call; and 8 concurrent *new*
+  runs against a limit of 3 allowed exactly 3, confirming the conditional write is atomic. A
+  run id of `x.y z/../evil` was stored as `xyzevil`.
+- **Requires:** `amplify push` (new DynamoDB IAM in `custom-policies.json`, new
+  `@aws-sdk/client-dynamodb` + `lib-dynamodb` deps, new `QUOTA_TABLE` / `INFER_DAILY_RUN_LIMIT`
+  / `INFER_PER_RUN_CALLS` / `INFER_DAILY_CALLS` env vars) and a frontend redeploy — an
+  un-redeployed client sends no `runId` and lands in the shared `untagged` bucket.
 
 ### C3. No API Gateway throttling on any route
 - **STATUS: FIXED (2026-09-24).** Stage-wide backstop 25 rps / 50 burst, plus per-route
@@ -303,13 +332,12 @@ This is really C1's consequence, but the surface is wider than just the signup f
 
 2. **This week:**
    - C1 — fix `assignDefaultGroup` to ignore `custom:plan` and default to Individual.
-   - C2 — add payload-size cap on `/infer`. The per-user quota table can wait one more week.
+   - C2 — add payload-size cap on `/infer`. The per-user quota table can wait one more week. ✅ both parts done 2026-09-26
    - H1, H2 — fix `grantProjectAccess` GET ownership check + generic error message.
 
 3. **This month:**
    - C4 — server-side enforcement for DXF, custom layers, project quota, manager read-only. This is a real chunk of work; split it into separate PRs per feature.
    - H4, H5 — Cognito password policy + opt-in MFA.
-   - C2 (part 2) — per-user inference quota table.
    - H6 — `npm audit fix`.
 
 4. **Before public launch:**
