@@ -27,6 +27,13 @@ A few findings the audit agents flagged as "Critical" (Cognito filter injection)
 - **Fix:** Server-side: in `assignDefaultGroup`, ignore `custom:plan` entirely and always assign `Individual` on signup. Tier upgrades only happen through a payment-verified Lambda (Stripe webhook → assign to `Pro` group). Alternatively, write a "pending upgrade" record and reject `custom:plan` values that aren't `individual`.
 
 ### C2. `/infer` has no payload-size cap and no per-user quota
+- **STATUS: PARTIALLY FIXED (2026-09-26).** Size guard added at **9 MB** (not the suggested
+  5 MB): measured real payloads are ~350 KB per tile and ~1 MB for a whole A3 page, but the
+  non-tiled path scales with sheet size, so a 5 MB cap would have broken legitimate whole-page
+  runs on A1/A0. API Gateway caps bodies at 10 MB regardless, so the guard sits just under it.
+  Per-call cost is now bounded by the `imgsz` clamp (M8). **Still outstanding: the per-user
+  quota**, which is the actual abuse control — reuse the agent's atomic conditional-write
+  counter pattern.
 - **File:** `amplify/backend/function/inferProxy/src/index.js:45–47`
 - **Exploit:** Any signed-in user can POST a base64 image of arbitrary size (up to API Gateway's 10 MB default) to `/infer`, and can hit it in a tight loop. Each call forwards to the paid Ultralytics endpoint. With the current cache + no quota, a script can drain your model budget in minutes.
 - **Impact:** Pure financial damage. There is no upper bound on what one bad actor can cost you.
@@ -217,6 +224,11 @@ This is really C1's consequence, but the surface is wider than just the signup f
 - **Fix:** Validate email format strictly before the call (`/^[^\s@]+@[^\s@]+\.[^\s@]+$/`, max 254 chars) and validate `sub` as a UUID (`/^[a-f0-9-]{36}$/`). Cheap, removes the foot-gun.
 
 ### M8. No validation on `model`, `conf`, `iou`, `imgsz` parameters in `/infer`
+- **STATUS: FIXED (2026-09-26).** `conf`/`iou` clamped to 0..1, `imgsz` to 32..2048 (env
+  `MAX_IMGSZ`), non-numeric values fall back to defaults; every clamp is logged. Verified that
+  legitimate values (0.25/0.7/640, and the Detection Lab's 1280) pass through untouched.
+  **Re-prioritised above C2's size cap:** YOLO scales every input to `imgsz` before inference,
+  so `imgsz` is the real per-call cost lever while payload size barely moves spend.
 - **File:** `amplify/backend/function/inferProxy/src/index.js:45, 56–58`
 - **Exploit:** `model` is checked against the URL map, so that's OK. But `conf`/`iou`/`imgsz` are forwarded unvalidated. An attacker can send `imgsz: 99999` to inflate Ultralytics call latency/cost.
 - **Fix:** Validate ranges before forwarding:

@@ -25,6 +25,28 @@ async function getToken() {
   return token;
 }
 
+// ── Request guard rails (security audit M8 / C2) ─────────────────────────────
+// These parameters are the per-call COST levers. YOLO scales every input down to
+// `imgsz` before inference, so payload size barely affects spend — but an absurd
+// `imgsz` inflates GPU time and cost on a SINGLE call, which is far cheaper to
+// abuse than spamming requests. Values are clamped rather than rejected so a
+// slightly-off client still works; clamping is logged so abuse stays visible.
+const MAX_IMGSZ = Number(process.env.MAX_IMGSZ || 2048);
+// Generous: the client sends ~350 KB tiles, or ~1 MB for a whole A3 page. This
+// only stops someone hand-rolling a huge request; API Gateway caps bodies at
+// 10 MB regardless, so this sits just under that rather than guessing a limit
+// that would break legitimate non-tiled runs on large sheets.
+const MAX_B64_LEN = Number(process.env.MAX_B64_LEN || 9_000_000);
+
+function clampNum(value, lo, hi, fallback, name, out) {
+  if (value == null) return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) { out.push(`${name}=${value}->${fallback}`); return fallback; }
+  const c = Math.min(hi, Math.max(lo, n));
+  if (c !== n) out.push(`${name}=${n}->${c}`);
+  return c;
+}
+
 const MODEL_URLS = {
   wall:    'https://predict-69b7f2f29e8ba20d1c3c-dproatj77a-lm.a.run.app/predict',
   zone:    'https://predict-69bbe87c3bb65e1f7377-dproatj77a-nw.a.run.app/predict',
@@ -46,6 +68,16 @@ exports.handler = async (event) => {
     const url = MODEL_URLS[model];
     if (!url) return resp(400, { error: 'unknown model' });
     if (!imageB64) return resp(400, { error: 'missing imageB64' });
+    if (typeof imageB64 !== 'string' || imageB64.length > MAX_B64_LEN) {
+      return resp(413, { error: 'image too large' });
+    }
+
+    const clamped = [];
+    const safeConf  = clampNum(conf,  0, 1, 0.25, 'conf', clamped);
+    const safeIou   = clampNum(iou,   0, 1, 0.7,  'iou',  clamped);
+    const safeImgszRaw = clampNum(imgsz, 32, MAX_IMGSZ, 640, 'imgsz', clamped);
+    const safeImgsz = safeImgszRaw == null ? null : Math.round(safeImgszRaw);
+    if (clamped.length) console.warn('[inferProxy] clamped params:', clamped.join(', '));
 
     const token = await getToken();
 
@@ -53,9 +85,9 @@ exports.handler = async (event) => {
     const bytes = Buffer.from(imageB64, 'base64');
     const fd = new FormData();
     fd.append('file', new Blob([bytes], { type: 'image/jpeg' }), 'image.jpg');
-    if (conf  != null) fd.append('conf',  String(conf));
-    if (iou   != null) fd.append('iou',   String(iou));
-    if (imgsz != null) fd.append('imgsz', String(imgsz));
+    if (safeConf  != null) fd.append('conf',  String(safeConf));
+    if (safeIou   != null) fd.append('iou',   String(safeIou));
+    if (safeImgsz != null) fd.append('imgsz', String(safeImgsz));
 
     const r = await fetch(url, {
       method: 'POST',
