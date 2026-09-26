@@ -59,6 +59,16 @@ async function getUserByEmail(email) {
   };
 }
 
+// Reject malformed addresses before they reach the Cognito ListUsers filter
+// (audit M7). Cognito's filter language has no OR/UNION, so this is hygiene
+// rather than an injection fix — but it removes the foot-gun.
+function isValidEmail(v) {
+  // Deliberately conservative: the characters that could malform the filter
+  // string (quotes, backslashes, whitespace) are excluded outright.
+  return typeof v === "string" && v.length <= 254
+    && /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(v);
+}
+
 // Check if a Cognito user (by username) is in a given group
 async function isInGroup(username, groupName) {
   const resp = await cognito.send(new AdminListGroupsForUserCommand({
@@ -83,7 +93,14 @@ exports.handler = async (event) => {
         KeyConditionExpression: "projectId = :pid",
         ExpressionAttributeValues: { ":pid": projectId },
       }));
-      return ok({ grants: Items || [] });
+      // SECURITY (audit H1): this used to return every grant for any projectId
+      // the caller could name — leaking manager emails, names, ownerSub and
+      // orgId to anyone authenticated. Grants carry ownerSub, so return only
+      // rows the caller owns. Filtering (rather than erroring) means a
+      // non-owner cannot tell "not my project" from "no grants yet", so the
+      // endpoint is not an existence oracle either.
+      const grants = (Items || []).filter(g => g.ownerSub === callerSub);
+      return ok({ grants });
     }
 
     // ── DELETE — revoke access ────────────────────────────────────────────────
@@ -115,21 +132,27 @@ exports.handler = async (event) => {
       if (!caller) return fail("Could not verify caller identity");
       if (!caller.orgId) return fail("You must belong to an organisation to share projects");
 
+      // SECURITY (audit H2): every lookup failure below returns the SAME
+      // message. Distinct errors ("no user found" vs "not in your org" vs "not
+      // a manager") let an attacker probe arbitrary addresses and enumerate the
+      // user base. The real reason is logged server-side for support.
+      const deny = (reason) => {
+        console.log("[grantProjectAccess] grant denied:", reason, "project:", projectId);
+        return fail("This user can't be granted access. They must be an Enterprise Manager in your organisation.");
+      };
+
       // 3. Look up manager by email
+      if (!isValidEmail(managerEmail)) return deny("malformed email");
       const manager = await getUserByEmail(managerEmail);
-      if (!manager) return fail(`No user found with email: ${managerEmail}`);
-      if (!manager.sub) return fail("Could not resolve manager's user ID");
+      if (!manager) return deny("no such user");
+      if (!manager.sub) return deny("user has no sub");
 
       // 4. Manager must be in the same organisation
-      if (!manager.orgId || manager.orgId !== caller.orgId) {
-        return fail("This user does not belong to your organisation");
-      }
+      if (!manager.orgId || manager.orgId !== caller.orgId) return deny("different org");
 
       // 5. Manager must be in the EnterpriseManager group
       const managerIsValid = await isInGroup(manager.username, "EnterpriseManager");
-      if (!managerIsValid) {
-        return fail("This user does not have the Enterprise Manager role");
-      }
+      if (!managerIsValid) return deny("not an EnterpriseManager");
 
       // All checks passed — write the grant
       await dynamo.send(new PutCommand({
@@ -145,7 +168,9 @@ exports.handler = async (event) => {
         },
       }));
 
-      console.log("[grantProjectAccess] granted", managerEmail, "->", projectId, "org:", caller.orgId);
+      // Audit M6: log the action, not the PII (CloudWatch is readable by anyone
+      // with logs:GetLogEvents in the account).
+      console.log("[grantProjectAccess] granted managerId:", manager.sub, "projectId:", projectId);
       return ok({ success: true, managerId: manager.sub, managerName: manager.name });
     }
 

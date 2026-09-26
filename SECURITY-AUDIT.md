@@ -112,6 +112,9 @@ This is really C1's consequence, but the surface is wider than just the signup f
 ## HIGH
 
 ### H1. IDOR — `GET /org/grant-access` leaks every project's manager list
+- **STATUS: FIXED (2026-09-26).** The GET result is filtered to rows whose `ownerSub` matches
+  the caller. Filtering rather than erroring means a non-owner cannot distinguish "not my
+  project" from "no grants yet", so it is not an existence oracle either.
 - **File:** `amplify/backend/function/grantProjectAccess/src/index.js:78–87`
 - **Exploit:** The GET handler queries `ProjectGrants` by `projectId` only — no ownership check on the caller. Any authenticated user who knows or guesses a `projectId` (UUIDs are unguessable, but they leak through screenshots, support tickets, and the URL bar) can dump the full grants list: manager emails, names, ownerSub, orgId, grantedAt.
 - **Impact:** Org-structure leak, manager email enumeration, PII.
@@ -122,6 +125,9 @@ This is really C1's consequence, but the surface is wider than just the signup f
   But ownerSub isn't passed on GET — either accept it as a query param and require it match `callerSub`, or load the project metadata first and verify ownership.
 
 ### H2. Email enumeration via `/org/grant-access` POST
+- **STATUS: FIXED (2026-09-26).** All five lookup failure modes (malformed email, no such user,
+  no sub, different org, not an EnterpriseManager) now return one identical message; the real
+  reason is logged server-side. Per-endpoint rate limiting is covered by C3's throttle (5 rps).
 - **File:** `amplify/backend/function/grantProjectAccess/src/index.js:120`
 - **Exploit:** When granting access fails because the user doesn't exist, the response is `"No user found with email: <email>"`. An attacker can probe email addresses ("does jane@bigcorp.com exist?") and distinguish from "not in your org" and "doesn't exist" by error message. Combined with no rate limiting, they can enumerate your entire user base by email.
 - **Fix:** Return a generic error: `"This user can't be granted access"` for *all* lookup failure modes (not found, wrong org, not a manager). Add per-user rate limit on POSTs to this endpoint (e.g. 10/min).
@@ -213,11 +219,15 @@ This is really C1's consequence, but the surface is wider than just the signup f
 - **Fix:** Drop TTL to 5 min, or use Secrets Manager's rotation-event subscription to invalidate the cache.
 
 ### M6. `grantProjectAccess` logs sensitive grant data to CloudWatch
+- **STATUS: FIXED (2026-09-26).** Logs `managerId` + `projectId` instead of manager email and orgId.
 - **File:** `amplify/backend/function/grantProjectAccess/src/index.js:148`
 - **Exploit:** CloudWatch logs are accessible to anyone with `logs:GetLogEvents` in your account. If you ever add a dev or contractor with broad IAM, they see manager emails, orgIds, project IDs.
 - **Fix:** Don't log PII: replace with `console.log("[grantProjectAccess] granted projectId:", projectId);`.
 
 ### M7. Cognito filter "injection" in `getUserByEmail` / `getUserBySub`
+- **STATUS: PARTIALLY FIXED (2026-09-26).** Email is validated before the ListUsers filter with a
+  conservative pattern that excludes quotes, backslashes and whitespace. `sub` UUID validation
+  still outstanding.
 - **File:** `amplify/backend/function/grantProjectAccess/src/index.js:35, 48`
 - **Why not Critical (downgraded from agent claim):** Cognito's `ListUsersCommand` filter language is *not* SQL — it supports only `attr = "literal"` and `attr ^= "prefix"`. There is no OR, AND, UNION, or comment syntax. The worst an attacker can do by injecting a `"` is malform the filter and get a `ValidationException` back. No enumeration is possible *through filter injection itself*.
 - **Real concern remaining:** unsanitized user input still has hygiene risks if you ever switch to a query engine that does support those operators, and the email-enumeration risk via the function's overall behavior is real (covered in H2).
