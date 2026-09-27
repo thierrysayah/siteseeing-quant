@@ -174,6 +174,25 @@ This is really C1's consequence, but the surface is wider than just the signup f
 - **Severity caveat:** If you've never deployed (still localhost-only), this is currently Medium. Becomes High the moment you push to production.
 
 ### H4. Weak Cognito password policy
+- **STATUS: FIXED IN CONFIG (2026-09-27) — takes effect on the next `amplify push`.**
+  Minimum length stays at **8**, but all **4 character classes are now required** (upper,
+  lower, number, symbol). Chosen over the suggested 12 + 3-of-4: Cognito has no "N of 4"
+  setting, so 4-of-4 is the native way to express a composition rule, and 8 was kept to avoid
+  friction on trial signups. `password` is no longer a valid password.
+- **Changed in three places, which use three different spellings of the same enum:**
+  - `auth/.../cli-inputs.json` — `["Requires Lowercase","Requires Numbers","Requires Symbols","Requires Uppercase"]` (source of truth; `amplify push` regenerates `build/` from it)
+  - `auth/.../build/` template + `parameters.json` — renders to `RequireLowercase: true` etc.
+  - `src/aws-exports.js` — `["REQUIRES_LOWERCASE", ...]` (different casing!). This one drives
+    the Amplify UI hint and client-side check; leaving it stale means users get a bare Cognito
+    rejection with no upfront guidance.
+  Strings verified against a working 4-of-4 config in the sibling `invoke-yolo-api` project
+  rather than guessed — the Amplify CLI ships packed, so its enums can't be grepped.
+- **Caveat: this applies to NEW passwords only.** Existing accounts keep their 8-char
+  lowercase passwords until they next reset, so landing it before trial signups is worth far
+  more than after.
+- **Verify after `amplify push`:** `aws cognito-idp describe-user-pool --user-pool-id
+  eu-west-3_jpxbGzhTX --region eu-west-3 --query 'UserPool.Policies.PasswordPolicy'` should
+  show all four `Require*` flags true.
 - **File:** `amplify/backend/auth/estimationplatformece78c7f/cli-inputs.json:20–21`
 - **Exploit:** `passwordPolicyMinLength: 8` + `passwordPolicyCharacters: []` allows `password` as a literal password. Credential-stuffing attackers love this — rainbow tables exist for all 8-char lowercase-only strings.
 - **Fix:** Bump to `passwordPolicyMinLength: 12` and require at least 3 of: uppercase, lowercase, number, symbol. Run `amplify update auth` → "Walkthrough security configuration" → set the policy.
@@ -337,7 +356,7 @@ This is really C1's consequence, but the surface is wider than just the signup f
 
 3. **This month:**
    - C4 — server-side enforcement for DXF, custom layers, project quota, manager read-only. This is a real chunk of work; split it into separate PRs per feature.
-   - H4, H5 — Cognito password policy + opt-in MFA.
+   - H4 ✅ (2026-09-27, config landed — needs `amplify push`), H5 — opt-in MFA still to do.
    - H6 — `npm audit fix`.
 
 4. **Before public launch:**
