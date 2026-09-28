@@ -41,6 +41,14 @@
           ],
           "category": "function",
           "resourceName": "agentOrchestrator"
+        },
+        {
+          "attributes": [
+            "Name",
+            "Arn"
+          ],
+          "category": "function",
+          "resourceName": "projectStore"
         }
       ],
       "providerPlugin": "awscloudformation",
@@ -148,6 +156,12 @@
           "resourceName": "usersessions"
         }
       ],
+      "providerPlugin": "awscloudformation",
+      "service": "Lambda"
+    },
+    "projectStore": {
+      "build": true,
+      "dependsOn": [],
       "providerPlugin": "awscloudformation",
       "service": "Lambda"
     }

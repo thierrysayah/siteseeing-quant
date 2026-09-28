@@ -66,6 +66,19 @@
           "delete"
         ]
       }
+    },
+    "/projects": {
+      "name": "/projects",
+      "lambdaFunction": "projectStore",
+      "permissions": {
+        "setting": "private",
+        "auth": [
+          "create",
+          "read",
+          "update",
+          "delete"
+        ]
+      }
     }
   }
 }
