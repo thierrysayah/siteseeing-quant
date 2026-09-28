@@ -94,7 +94,55 @@ A few findings the audit agents flagged as "Critical" (Cognito filter injection)
   Sized assuming up to ~50 concurrent users. These are **per-stage totals**, not per-user — they prevent total catastrophe but don't enforce fairness. C2's per-user quota does the fairness layer.
 
 ### C4. Client-side tier checks are the only gate on Pro/Enterprise features
-This is really C1's consequence, but the surface is wider than just the signup flow — listing each consumer because each needs a server-side fix.
+- **STATUS: IN PROGRESS (2026-09-28).** Code complete for steps 1-2; enforcement lands after a
+  soak. See the rollout table below.
+- **Scope correction - DXF cannot be enforced and the flag should be deleted.** `exportDXF()`
+  (`src/DetectionTool.jsx:4183`) runs `dxf-writer` entirely in-browser with **zero network calls**
+  (verified), over annotations the user may already read. No server can gate it; moving generation
+  server-side would change nothing, since anyone who can read the annotations can re-implement a
+  text serialisation. Per the tier table DXF is denied *only* to `individual` - the tier being
+  removed - after which no tier is denied DXF at all. A flag that cannot be enforced is worse than
+  no flag: it reads like a control.
+- **Design: the control-file chokepoint.** `metadata.json` and `settings.json` go through a new
+  `projectStore` Lambda; the browser's role gets an explicit `Deny` on those two filenames.
+  A project exists iff its `metadata.json` exists (`listProjects` enumerates `*/metadata.json`),
+  and custom classes live in **both** files - the editor reads them back from `settings.json`
+  (`DetectionTool.jsx:1995`) - so a metadata-only gate would not have gated the feature.
+  One chokepoint therefore enforces project cap + custom classes + read-only.
+  Annotations and page PNGs stay on the direct-to-S3 path (they are large; gating them needs
+  presigned URLs - deferred as Phase B).
+- **Design: IAM resource split, not Cognito group roles.** Managers legitimately write
+  `rate-card.json`/`manager-meta.json` under `org-{orgId}/{ownSub}/`, so splitting the org
+  statement by resource closes manager-write **and** the any-member-can-overwrite-any-member hole
+  at once - no new role, no identity-pool change, **no forced re-login**. Group roles were
+  rejected: they change role resolution for every user (trial signups carry no group), need
+  precedence + ambiguity config, duplicate the principal-tag setup, force a re-login, and still
+  need the same carve-out written twice.
+- **Rollout (order matters - step 4 breaks stale clients):**
+
+  | # | Step | State |
+  |---|---|---|
+  | 0 | Allow-side org split (read/write separation) | **written + simulated, awaiting apply** |
+  | 1 | `projectStore` Lambda + `/projects` route | code committed, needs `amplify push` |
+  | 2 | Client calls the route | code committed, needs `amplify publish` |
+  | 3 | Soak 24-72 h, watch `projectStore` 4xx/5xx | - |
+  | 4 | Apply `DenyDirectControlFileWrites` - **the enforcing step** | `infra/authRole-s3-policy-step4-deny.json` |
+  | 5 | Delete the `individual` tier and `canExportDXF` | - |
+
+- **Verified so far:** handler logic 16/16 against stubbed AWS clients (read-only for expired and
+  managers; cap at the boundary; cap *not* applied to updates; enterprise unlimited; path
+  traversal; missing identity; sub absent from the pool; oversized body; bad method), plus
+  assertions on what actually reaches S3 - a body claiming another `ownerSub` still writes under
+  the caller's own prefix, classes stripped from both files with the rest of settings intact.
+  IAM split simulated 11/11 (cross-member write/delete `implicitDeny`, manager rate-card still
+  allowed, org reads preserved). Deny wildcard pre-verified to span `/`.
+- **Deliberate behaviours worth knowing:** the cap applies to *creates* only, so a user over their
+  limit can still save existing work; unentitled custom classes are **stripped, not rejected**,
+  because rejecting would turn a feature gate into a total lockout for a lapsed user; and a
+  Cognito outage degrades to `trial`, **not** `expired` - expired is read-only, so failing that
+  way would stop every user saving.
+
+The original finding follows. It is really C1's consequence, but the surface is wider than just the signup flow - listing each consumer because each needs a server-side fix.
 
 | Feature | Frontend gate (bypassable) | Server-side gate |
 |---|---|---|

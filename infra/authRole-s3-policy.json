@@ -2,18 +2,34 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "OwnUserObjects",
+      "Sid": "ReadOwnUserObjects",
       "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"],
+      "Action": ["s3:GetObject"],
       "Resource": "arn:aws:s3:::estimation-platform-user-data/private/users/${aws:PrincipalTag/sub}/*"
     },
     {
-      "Sid": "OwnOrgObjects",
+      "Sid": "WriteOwnUserObjects",
       "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"],
+      "Action": ["s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"],
+      "Resource": "arn:aws:s3:::estimation-platform-user-data/private/users/${aws:PrincipalTag/sub}/*"
+    },
+    {
+      "Sid": "ReadOrgObjects",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject"],
       "Resource": [
         "arn:aws:s3:::estimation-platform-user-data/private/organisations/org-${aws:PrincipalTag/orgId}/*",
         "arn:aws:s3:::estimation-platform-user-data/private/org-${aws:PrincipalTag/orgId}/*"
+      ]
+    },
+    {
+      "Sid": "WriteOwnOrgObjectsOnly",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:DeleteObject", "s3:AbortMultipartUpload"],
+      "Resource": [
+        "arn:aws:s3:::estimation-platform-user-data/private/organisations/org-${aws:PrincipalTag/orgId}/projects/${aws:PrincipalTag/sub}/*",
+        "arn:aws:s3:::estimation-platform-user-data/private/organisations/org-${aws:PrincipalTag/orgId}/${aws:PrincipalTag/sub}/*",
+        "arn:aws:s3:::estimation-platform-user-data/private/org-${aws:PrincipalTag/orgId}/${aws:PrincipalTag/sub}/*"
       ]
     },
     {
