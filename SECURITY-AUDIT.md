@@ -94,8 +94,19 @@ A few findings the audit agents flagged as "Critical" (Cognito filter injection)
   Sized assuming up to ~50 concurrent users. These are **per-stage totals**, not per-user — they prevent total catastrophe but don't enforce fairness. C2's per-user quota does the fairness layer.
 
 ### C4. Client-side tier checks are the only gate on Pro/Enterprise features
-- **STATUS: IN PROGRESS (2026-09-28).** Code complete for steps 1-2; enforcement lands after a
-  soak. See the rollout table below.
+- **STATUS: ENFORCED (2026-09-28).** All five steps done. The Deny is live and verified against
+  the deployed role with `simulate-principal-policy` (5/5): `metadata.json`/`settings.json`
+  writes `explicitDeny`, reads and the annotation/PNG direct path still `allowed`. The browser
+  can no longer write the control files at all, so the project cap, expired read-only, manager
+  read-only and custom classes are genuinely enforced.
+- **Tier changes shipped with step 5:** `canExportDXF` deleted everywhere (unenforceable — see
+  below); the legacy `individual` tier retired; **enterprise capped at 50 projects** rather than
+  unlimited, so every tier is now finite and the create path always counts.
+- **Two consequences worth tracking:** anyone still in the Cognito `Individual` group now falls
+  through to the trial window and lands on `expired` (read-only) — at the time of the change the
+  only two members were internal test accounts. And the pre-resolution client default moved from
+  `individual` to `trial`, because an unknown tier resolves to `expired` and would otherwise have
+  flashed a read-only UI on every page load before `/user/profile` returned.
 - **Scope correction - DXF cannot be enforced and the flag should be deleted.** `exportDXF()`
   (`src/DetectionTool.jsx:4183`) runs `dxf-writer` entirely in-browser with **zero network calls**
   (verified), over annotations the user may already read. No server can gate it; moving generation
@@ -126,8 +137,8 @@ A few findings the audit agents flagged as "Critical" (Cognito filter injection)
   | 1 | `projectStore` Lambda + `/projects` route | code committed, needs `amplify push` |
   | 2 | Client calls the route | code committed, needs `amplify publish` |
   | 3 | Soak 24-72 h, watch `projectStore` 4xx/5xx | - |
-  | 4 | Apply `DenyDirectControlFileWrites` - **the enforcing step** | `infra/authRole-s3-policy-step4-deny.json` |
-  | 5 | Delete the `individual` tier and `canExportDXF` | - |
+  | 4 | Apply `DenyDirectControlFileWrites` - **the enforcing step** | **APPLIED + verified live 2026-09-28** |
+  | 5 | Delete the `individual` tier and `canExportDXF` | **done**, needs `amplify push` + `publish` |
 
 - **Verified so far:** handler logic 16/16 against stubbed AWS clients (read-only for expired and
   managers; cap at the boundary; cap *not* applied to updates; enterprise unlimited; path

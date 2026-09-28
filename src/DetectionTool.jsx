@@ -1552,11 +1552,10 @@ const pdfStyles = {
 };
 
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
-export default function DetectionTool({ project, user, onBack, userTierInfo = { tier: 'individual', role: null } }) {
+export default function DetectionTool({ project, user, onBack, userTierInfo = { tier: 'trial', role: null } }) {
   // ─── Tier / permissions ─────────────────────────────────────────────────────
   const tierLimits = getLimits(userTierInfo.tier, userTierInfo.role);
   const isReadOnly = tierLimits.isReadOnly; // Enterprise Manager
-  const canExportDXF = tierLimits.canExportDXF;
   const canUseCustomClasses = tierLimits.canUseCustomClasses;
 
   // Image state
@@ -5614,8 +5613,8 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
                 e.target.value = "";
                 if (val === "json") exportJSON();
                 else if (val === "excel") openExcelPicker();
-                else if (val === "dxf-manual" && canExportDXF) exportDXF();
-                else if (val === "dxf-auto" && canExportDXF) handleAutoDxfClick();
+                else if (val === "dxf-manual") exportDXF();
+                else if (val === "dxf-auto") handleAutoDxfClick();
                 else if (val === "report") openPdfPicker();
                 else if (val === "agent-report") exportAgentReportPdf();
               }}
@@ -5624,8 +5623,11 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
               <option value="" disabled>EXPORT</option>
               <option value="json">JSON</option>
               <option value="excel">Excel (.xlsx)</option>
-              <option value="dxf-manual" disabled={!canExportDXF}>{canExportDXF ? "DXF (Manual)" : "DXF (Manual) - Pro"}</option>
-              <option value="dxf-auto" disabled={!canExportDXF || !(existingFileInfoRef.current.ext === 'pdf' || pdfBytesRef.current)}>{canExportDXF ? "DXF (Auto)" : "DXF (Auto) - Pro"}</option>
+              {/* DXF is not tier-gated: it is generated in-browser from
+                  annotations the user already holds, so no server can enforce a
+                  gate here. Auto DXF still needs a PDF to extract vectors from. */}
+              <option value="dxf-manual">DXF (Manual)</option>
+              <option value="dxf-auto" disabled={!(existingFileInfoRef.current.ext === 'pdf' || pdfBytesRef.current)}>DXF (Auto)</option>
               <option value="report">PDF Report</option>
               <option value="agent-report" disabled={!agentReport}>{agentReport ? "Agent Report (PDF)" : "Agent Report (PDF) — run the agent"}</option>
             </select>

@@ -18,11 +18,10 @@ const TRIAL_DAYS = Number(process.env.TRIAL_DAYS || 14);
 // annotations the user is already entitled to read, so no server can gate it.
 // A flag that cannot be enforced is worse than no flag: it reads like a control.
 const LIMITS = {
-  trial:      { maxProjects: 5,        canUseCustomClasses: true,  isReadOnly: false },
-  pro:        { maxProjects: 10,       canUseCustomClasses: true,  isReadOnly: false },
-  enterprise: { maxProjects: Infinity, canUseCustomClasses: true,  isReadOnly: false },
-  individual: { maxProjects: 2,        canUseCustomClasses: false, isReadOnly: false }, // legacy
-  expired:    { maxProjects: 0,        canUseCustomClasses: false, isReadOnly: true },
+  trial:      { maxProjects: 5,  canUseCustomClasses: true,  isReadOnly: false },
+  pro:        { maxProjects: 10, canUseCustomClasses: true,  isReadOnly: false },
+  enterprise: { maxProjects: 50, canUseCustomClasses: true,  isReadOnly: false },
+  expired:    { maxProjects: 0,  canUseCustomClasses: false, isReadOnly: true },
 };
 
 // Map Cognito groups (+ account age) to tier/role.
@@ -34,7 +33,6 @@ function deriveTierAndRole(groups, userCreateDate) {
   if (groups.includes('EnterpriseManager')) return { tier: 'enterprise', role: 'manager' };
   if (groups.includes('EnterpriseQS'))      return { tier: 'enterprise', role: 'qs' };
   if (groups.includes('Pro'))               return { tier: 'pro', role: null };
-  if (groups.includes('Individual'))        return { tier: 'individual', role: null };
 
   const started = userCreateDate ? new Date(userCreateDate).getTime() : NaN;
   if (!Number.isFinite(started)) return { tier: 'expired', role: null };

@@ -17,7 +17,7 @@ function generateId(name) {
   return `${slug}-${suffix}`;
 }
 
-export default function ProjectsPage({ onOpenProject, user, refreshKey, userTierInfo = { tier: 'individual', role: null } }) {
+export default function ProjectsPage({ onOpenProject, user, refreshKey, userTierInfo = { tier: 'trial', role: null } }) {
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);

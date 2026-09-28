@@ -221,6 +221,9 @@ exports.handler = async (event) => {
     // The cap applies to CREATES only — an existing project must stay saveable
     // even if the user is somehow over their limit (e.g. after a downgrade).
     const isCreate = !(await exists(metaKey));
+    // No tier is currently unlimited (enterprise is 50), so this counts on every
+    // create. The Infinity guard stays as a cheap escape hatch if an unlimited
+    // tier is ever reintroduced.
     if (isCreate && limits.maxProjects !== Infinity) {
       const count = await countProjects(prefix);
       if (count >= limits.maxProjects) {
@@ -262,8 +265,9 @@ exports.handler = async (event) => {
   }
 };
 
-// Infinity is not representable in JSON (it serialises to null); send a sentinel
-// the client can reason about instead.
+// Infinity is not representable in JSON (it serialises to null), so it would
+// reach the client as a silent `null`. No tier uses it today; the sentinel
+// remains so reintroducing an unlimited tier cannot break the client quietly.
 function publicLimits(limits) {
   return {
     maxProjects: limits.maxProjects === Infinity ? -1 : limits.maxProjects,

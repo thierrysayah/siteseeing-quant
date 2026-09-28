@@ -162,7 +162,7 @@ function MainApp() {
   const [currentPage, setCurrentPage] = useState('projects');
   const [selectedProject, setSelectedProject] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [userTierInfo, setUserTierInfo] = useState({ tier: 'individual', role: null });
+  const [userTierInfo, setUserTierInfo] = useState({ tier: 'trial', role: null });
 
   const prevUserRef = useRef(user);
   useEffect(() => {

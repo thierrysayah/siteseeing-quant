@@ -32,13 +32,31 @@ const TRIAL_DAYS = Number(process.env.TRIAL_DAYS || 14);
 // The trial window is derived from Cognito's own UserCreateDate rather than any
 // user-supplied attribute or stored flag: Cognito owns that value, so it cannot
 // be forged by a client (the mistake behind audit finding C1) and needs no extra
-// table, write path, or expiry job. `Individual` is the legacy free tier and is
-// left exactly as it was so existing accounts are unaffected.
+// table, write path, or expiry job.
+//
+// Entitlements. MUST stay in step with the authority,
+// `amplify/backend/function/projectStore/src/tier.js`, which is what actually
+// gates writes; this copy is only reported to the client so the UI can render
+// the right affordances. The legacy `Individual` tier was retired — anyone still
+// in that Cognito group falls through to the trial window and lands on
+// `expired`, i.e. read-only.
+const LIMITS = {
+  trial:      { maxProjects: 5,  canUseCustomClasses: true,  isReadOnly: false },
+  pro:        { maxProjects: 10, canUseCustomClasses: true,  isReadOnly: false },
+  enterprise: { maxProjects: 50, canUseCustomClasses: true,  isReadOnly: false },
+  expired:    { maxProjects: 0,  canUseCustomClasses: false, isReadOnly: true },
+};
+
+function limitsFor(tier, role) {
+  const base = LIMITS[tier] || LIMITS.expired;
+  if (role === "manager") return { ...base, isReadOnly: true, maxProjects: 0 };
+  return base;
+}
+
 function deriveTierAndRole(groups, userCreateDate) {
   if (groups.includes("EnterpriseManager")) return { tier: "enterprise", role: "manager", trial: null };
   if (groups.includes("EnterpriseQS"))      return { tier: "enterprise", role: "qs", trial: null };
   if (groups.includes("Pro"))               return { tier: "pro", role: null, trial: null };
-  if (groups.includes("Individual"))        return { tier: "individual", role: null, trial: null };
 
   // No paid plan → Pro features for TRIAL_DAYS from signup, then read-only.
   const started = userCreateDate ? new Date(userCreateDate).getTime() : NaN;
@@ -69,7 +87,8 @@ exports.handler = async (event) => {
     return {
       statusCode: 200,
       headers: CORS,
-      body: JSON.stringify({ tier: "expired", role: null, trial: null, orgId: null, projectCount: 0, projectGrants: [] }),
+      body: JSON.stringify({ tier: "expired", role: null, trial: null, orgId: null,
+        limits: limitsFor("expired", null), projectGrants: [] }),
     };
   }
 
@@ -143,7 +162,12 @@ exports.handler = async (event) => {
       role: orgRole,
       trial,
       orgId,
-      projectCount: 0,
+      // The client mirrors these for rendering; projectStore enforces them.
+      limits: limitsFor(tier, orgRole),
+      // `projectCount` used to be hard-coded 0 here, which was simply untrue.
+      // The client already knows the real count from listProjects(), and
+      // populating it server-side would mean an S3 ListBucket on every page
+      // load plus wider IAM on the hottest function. Removed rather than faked.
       projectGrants,
     }),
   };
