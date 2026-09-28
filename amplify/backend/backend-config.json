@@ -143,6 +143,12 @@
       "providerPlugin": "awscloudformation",
       "service": "Lambda"
     },
+    "projectStore": {
+      "build": true,
+      "dependsOn": [],
+      "providerPlugin": "awscloudformation",
+      "service": "Lambda"
+    },
     "sessionGuard": {
       "build": true,
       "dependsOn": [
@@ -156,12 +162,6 @@
           "resourceName": "usersessions"
         }
       ],
-      "providerPlugin": "awscloudformation",
-      "service": "Lambda"
-    },
-    "projectStore": {
-      "build": true,
-      "dependsOn": [],
       "providerPlugin": "awscloudformation",
       "service": "Lambda"
     }
@@ -267,6 +267,22 @@
         {
           "category": "function",
           "resourceName": "inferProxy"
+        }
+      ]
+    },
+    "AMPLIFY_function_projectStore_deploymentBucketName": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "projectStore"
+        }
+      ]
+    },
+    "AMPLIFY_function_projectStore_s3Key": {
+      "usedBy": [
+        {
+          "category": "function",
+          "resourceName": "projectStore"
         }
       ]
     },

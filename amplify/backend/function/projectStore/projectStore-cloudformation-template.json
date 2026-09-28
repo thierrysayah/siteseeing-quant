@@ -83,7 +83,8 @@
         },
         "Runtime": "nodejs22.x",
         "Layers": [],
-        "Timeout": 25
+        "Timeout": 25,
+        "MemorySize": 256
       }
     },
     "LambdaExecutionRole": {
@@ -177,14 +178,21 @@
           "Statement": [
             {
               "Action": [
-                "dynamodb:GetItem",
-                "dynamodb:Query"
+                "s3:GetObject",
+                "s3:PutObject",
+                "s3:DeleteObject"
               ],
               "Resource": [
-                "arn:aws:dynamodb:eu-west-3:851725386383:table/UserProfiles",
-                "arn:aws:dynamodb:eu-west-3:851725386383:table/OrgMemberships",
-                "arn:aws:dynamodb:eu-west-3:851725386383:table/ProjectGrants",
-                "arn:aws:dynamodb:eu-west-3:851725386383:table/ProjectGrants/index/managerId-index"
+                "arn:aws:s3:::estimation-platform-user-data/private/*"
+              ],
+              "Effect": "Allow"
+            },
+            {
+              "Action": [
+                "s3:ListBucket"
+              ],
+              "Resource": [
+                "arn:aws:s3:::estimation-platform-user-data"
               ],
               "Effect": "Allow"
             },

@@ -72,20 +72,46 @@ Verified with `simulate-custom-policy` before applying (11/11): own writes
 allowed, other-member writes and deletes `implicitDeny`, other-member reads
 still allowed, manager rate-card still allowed.
 
-## Step 4: the control-file Deny (NOT YET APPLIED)
+## The control-file Deny (audit C4, the enforcing step)
 
-`infra/authRole-s3-policy-step4-deny.json` holds a `Deny` on
-`private/*/metadata.json` and `private/*/settings.json`. That statement is what
-actually enforces C4 — it leaves `projectStore` (a different role, unaffected by
-the Deny) as the only way to write those files.
+`DenyDirectControlFileWrites` is what actually enforces C4. Without it the
+browser still holds `s3:PutObject` on `metadata.json` and `settings.json`, so
+`projectStore` is merely the polite path — devtools can write them directly and
+skip the project cap, the read-only tier and the custom-class gate entirely.
 
-**Do not apply it until the client that calls `PUT /projects/{id}` has shipped
-and soaked**, or saving breaks for everyone still on the old bundle. Merge the
-statement into `authRole-s3-policy.json` and re-apply.
+An explicit Deny beats any Allow, and it applies only to *this* role.
+`projectStore` runs as `estimationplatformLambdaRole8e53843e-dev`, which the
+Deny never touches — so one door closes and the only remaining door has a guard
+on it. That asymmetry IS the mechanism.
 
-Wildcard behaviour was pre-verified — an S3 ARN `*` spans `/`, so
-`private/*/metadata.json` does reach
+Wildcard behaviour is not obvious and is load-bearing: an S3 ARN `*` spans `/`,
+so `private/*/metadata.json` does reach
 `private/users/{sub}/projects/{id}/metadata.json` and the org equivalent.
+Pre-verified with `simulate-custom-policy`.
+
+Simulated 14/14 against a real sub and orgId before applying:
+
+| case | decision |
+|---|---|
+| own `metadata.json` / `settings.json` write | `explicitDeny` |
+| own `metadata.json` delete | `explicitDeny` |
+| read own metadata (loading must still work) | `allowed` |
+| manager reads a granted project | `allowed` |
+| own annotations / page PNG / original file | `allowed` |
+| stale-annotation cleanup delete | `allowed` |
+| manager `rate-card.json` / `manager-meta.json` | `allowed` |
+| another org member's project write | `implicitDeny` |
+
+**Ordering:** the client that calls `PUT /projects/{id}` must be live BEFORE this
+is applied, or saving breaks for anyone still on the old bundle. Shipped
+2026-09-28; confirmed in the logs (`[projectStore] created … tier enterprise`).
+
+Rollback is one command — `infra/authRole-s3-policy-ROLLBACK.json` holds the
+pre-Deny policy:
+
+    aws iam put-role-policy --role-name amplify-estimationplatform-dev-20748-authRole \
+      --policy-name EstimationS3PrivateAccess \
+      --policy-document file://infra/authRole-s3-policy-ROLLBACK.json
 
 ## Known gap
 

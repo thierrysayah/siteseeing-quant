@@ -26,6 +26,7 @@ ROUTES=(
   "~1session~1claim        5 20"
   "~1user~1profile        10 20"
   "~1org~1grant-access     5 10"
+  "~1projects             10 20"   # project control-file writes; autosave is ~1 call/10s/user
 )
 
 echo "Applying throttles to $API_ID/$STAGE in $REGION"
