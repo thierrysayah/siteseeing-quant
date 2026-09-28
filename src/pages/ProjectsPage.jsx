@@ -21,6 +21,9 @@ export default function ProjectsPage({ onOpenProject, user, refreshKey, userTier
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  // Server-side refusals (project cap, read-only tier) — distinct from `error`,
+  // which is a load failure. The client's own `atLimit` is only a hint.
+  const [denied, setDenied] = useState(null);
   const [showModal, setShowModal] = useState(false);
 
   const isManager = userTierInfo.role === 'manager';
@@ -63,9 +66,12 @@ export default function ProjectsPage({ onOpenProject, user, refreshKey, userTier
     if (isManager) return; // managers cannot delete
     if (!window.confirm("Delete this project? This cannot be undone.")) return;
     setProjects(prev => prev.filter(p => p.id !== projectId));
+    setDenied(null);
     try {
       await deleteProject(projectId);
-    } catch {
+    } catch (err) {
+      // The row was removed optimistically — put the real list back, and say why.
+      setDenied(err?.code ? err.message : "Couldn't delete that project. Please try again.");
       listProjects().then(setProjects).catch(() => {});
     }
   };
@@ -83,10 +89,19 @@ export default function ProjectsPage({ onOpenProject, user, refreshKey, userTier
       ratio: null,
     };
     setShowModal(false);
+    setDenied(null);
     try {
       await createProject(newProject.id, newProject.name, newProject.owner);
     } catch (err) {
       console.error("Failed to persist new project:", err);
+      // The server is the authority on the project cap — the client's `atLimit`
+      // is only a hint. Do NOT open the editor for a project that was refused,
+      // or the user annotates into something that does not exist.
+      setDenied(err?.code
+        ? err.message
+        : "Couldn't create that project. Please check your connection and try again.");
+      listProjects().then(setProjects).catch(() => {});
+      return;
     }
     if (onOpenProject) onOpenProject(newProject);
   };
@@ -104,6 +119,12 @@ export default function ProjectsPage({ onOpenProject, user, refreshKey, userTier
         </header>
         {loading && <div className="pp-feedback pp-loading">Loading projects…</div>}
         {!loading && error && <div className="pp-feedback pp-error">{error}</div>}
+        {denied && (
+          <div className="pp-denied pp-error" role="alert">
+            {denied}
+            <button className="pp-feedback-dismiss" onClick={() => setDenied(null)} aria-label="Dismiss">✕</button>
+          </div>
+        )}
         {!loading && !error && (
           <ManagerDashboard
             projects={projects}

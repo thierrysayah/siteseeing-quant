@@ -2157,7 +2157,7 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
         }
       }
 
-      await saveProject(project.id, {
+      const savedMeta = await saveProject(project.id, {
         name: project.name,
         pages: pagesToSave,
         scale: { pixelToMeter: ratio, pixelLength, realLength },
@@ -2180,12 +2180,19 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
 
       setSaveStatus('saved');
       setLastSaveTime(new Date());
-      setStatus("Save complete.");
+      // The server strips custom classes for tiers not entitled to them, rather
+      // than refusing the save outright — say so, or they silently vanish on the
+      // next reload and it looks like data loss.
+      setStatus(savedMeta?.__warnings?.includes('custom_classes_stripped')
+        ? "Saved — custom layers are not included in your plan and were not saved."
+        : "Save complete.");
       setTimeout(() => setSaveStatus(null), 3000);
       return true;
     } catch (err) {
       console.error('Save failed:', err);
-      setStatus(`Save failed: ${err?.message || String(err)}`);
+      // A tier refusal (read-only, project cap) is not a transient fault, so it
+      // gets the server's own wording rather than "Save failed: ...".
+      setStatus(err?.code ? err.message : `Save failed: ${err?.message || String(err)}`);
       setSaveStatus('error');
       return false;
     }

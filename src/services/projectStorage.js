@@ -1,6 +1,6 @@
 import { uploadData, list, remove, getUrl } from 'aws-amplify/storage';
 import { getCurrentUser, fetchAuthSession } from 'aws-amplify/auth';
-import { post, get, del } from 'aws-amplify/api';
+import { post, get, put, del } from 'aws-amplify/api';
 
 // ─── PAGE SLUG ────────────────────────────────────────────────────────────────
 export function pageSlugify(label, pageIndex) {
@@ -21,6 +21,49 @@ async function getOrgId() {
     return session?.tokens?.idToken?.payload?.['custom:orgId'] || null;
   } catch {
     return null;
+  }
+}
+
+// ─── CONTROL-FILE WRITES (server-enforced) ────────────────────────────────────
+// metadata.json and settings.json go through `projectStore` rather than straight
+// to S3, because they are where tier limits can actually be enforced: a project
+// exists iff its metadata.json exists, and custom classes live in both files.
+// The auth role carries an explicit Deny on these two filenames, so this is the
+// only way to write them — there is deliberately no S3 fallback, which would
+// mask failures and rot into dead code.
+
+export class ProjectAccessError extends Error {
+  constructor(message, code, details) {
+    super(message);
+    this.name = 'ProjectAccessError';
+    this.code = code;            // project_limit | read_only | bad_project_id | ...
+    this.details = details || {};
+  }
+}
+
+// Amplify throws for non-2xx; dig the server's {error, code} out of the response.
+async function asProjectError(err) {
+  const res = err?.response;
+  if (!res) return null;
+  let parsed = null;
+  try {
+    parsed = typeof res.body === 'string' ? JSON.parse(res.body)
+      : (typeof res.body?.json === 'function' ? await res.body.json() : res.body);
+  } catch { /* fall through */ }
+  if (!parsed?.code) return null;
+  return new ProjectAccessError(parsed.error || 'Request denied.', parsed.code, parsed);
+}
+
+async function putControlFiles(projectId, metadata, settings) {
+  try {
+    const { body } = await put({
+      apiName: 'quantApi',
+      path: `/projects/${encodeURIComponent(projectId)}`,
+      options: { body: { metadata, settings } },
+    }).response;
+    return await body.json();
+  } catch (err) {
+    throw (await asProjectError(err)) || err;
   }
 }
 
@@ -253,7 +296,6 @@ export async function listManagerProjects(grants) {
 // ─── CREATE PROJECT ───────────────────────────────────────────────────────────
 export async function createProject(id, name, owner) {
   const { userId } = await getCurrentUser();
-  const key = await userPath(id, 'metadata.json');
   const metadata = {
     id,
     name,
@@ -266,11 +308,10 @@ export async function createProject(id, name, owner) {
     originalExt: null,
     pageCount: 1,
   };
-  await uploadData({
-    path: key,
-    data: JSON.stringify(metadata),
-    options: { contentType: 'application/json', cacheControl: 'no-cache, no-store, must-revalidate' },
-  }).result;
+  // The server re-derives id/ownerSub/owner from the caller's own credentials
+  // and enforces the project cap here; it throws ProjectAccessError on refusal.
+  const res = await putControlFiles(id, metadata, null);
+  return res?.metadata || metadata;
 }
 
 // ─── SAVE PROJECT ─────────────────────────────────────────────────────────────
@@ -314,15 +355,13 @@ export async function saveProject(
     settings: settings || { autoSimplifyDist: '0' },
   };
 
-  const [metaKey, settingsKey] = await Promise.all([
-    userPath(projectId, 'metadata.json'),
-    userPath(projectId, 'settings.json'),
-  ]);
-
-  const uploads = [
-    uploadData({ path: metaKey, data: JSON.stringify(metadata), options: { contentType: 'application/json', cacheControl: NO_CACHE } }).result,
-    uploadData({ path: settingsKey, data: JSON.stringify(settingsPayload), options: { contentType: 'application/json', cacheControl: NO_CACHE } }).result,
-  ];
+  // Write the control files FIRST and let the server rule on them. If it refuses
+  // — over the project cap, read-only tier, manager — this throws before we push
+  // any annotations or page images, so a rejected save cannot leave a half-written
+  // project (or dump megabytes of PNGs) in S3.
+  const saved = await putControlFiles(projectId, metadata, settingsPayload);
+  const serverMetadata = saved?.metadata || metadata;
+  const uploads = [];
 
   const currentSlugs = new Set();
   if (pages && pages.length > 0) {
@@ -376,7 +415,10 @@ export async function saveProject(
     }
   }
 
-  return metadata;
+  // Return the SERVER's version: it owns id/ownerSub/owner/lastEdited, and may
+  // have stripped custom classes the caller's tier isn't entitled to.
+  if (saved?.warnings?.length) serverMetadata.__warnings = saved.warnings;
+  return serverMetadata;
 }
 
 // ─── LOAD PROJECT ─────────────────────────────────────────────────────────────
@@ -480,11 +522,17 @@ export async function getOriginalFileUrl(projectId, originalExt, ownerSub) {
 
 // ─── DELETE PROJECT ───────────────────────────────────────────────────────────
 export async function deleteProject(projectId) {
-  const prefix = await userPrefix(projectId);
-  const result = await list({ path: prefix });
-  const items = result.items || [];
-  if (items.length === 0) return;
-  await Promise.all(items.map(item => remove({ path: item.path })));
+  // Server-side: metadata.json is Deny'd to the browser, so a client-side delete
+  // would strand every project as an undeletable husk. It also lets the server
+  // refuse deletes from managers and read-only tiers.
+  try {
+    await del({
+      apiName: 'quantApi',
+      path: `/projects/${encodeURIComponent(projectId)}`,
+    }).response;
+  } catch (err) {
+    throw (await asProjectError(err)) || err;
+  }
 }
 
 // ─── GRANT PROJECT ACCESS ─────────────────────────────────────────────────────
