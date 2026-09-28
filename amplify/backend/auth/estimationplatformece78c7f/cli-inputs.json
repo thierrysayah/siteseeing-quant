@@ -31,10 +31,14 @@
     "userpoolClientGenerateSecret": false,
     "userpoolClientRefreshTokenValidity": 30,
     "userpoolClientWriteAttributes": [
-      "email"
+      "email",
+      "name"
     ],
     "userpoolClientReadAttributes": [
-      "email"
+      "custom:orgId",
+      "custom:plan",
+      "email",
+      "name"
     ],
     "userpoolClientLambdaRole": "estimaece78c7f_userpoolclient_lambda_role",
     "userpoolClientSetAttributes": false,

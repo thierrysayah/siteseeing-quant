@@ -138,6 +138,41 @@ This is really C1's consequence, but the surface is wider than just the signup f
 
 ---
 
+### C6. `custom:orgId` was client-writable — cross-tenant S3 access (NOT IN THE ORIGINAL AUDIT)
+- **STATUS: FIXED (2026-09-28).** Found while verifying the ground for C4.
+- **What was wrong:** the web app client `4b8jv4b0k9dijjt3j10lm8lhds` (the one `aws-exports.js`
+  ships to the browser) listed `custom:orgId` in its **`WriteAttributes`**, and the pool schema
+  marks the attribute `Mutable: True`. `WriteAttributes` is exactly the set a *user* may change on
+  themselves via Cognito's public `UpdateUserAttributes` API, using nothing but their own access
+  token.
+- **Why that mattered:** `custom:orgId` is mapped to `aws:PrincipalTag/orgId` by the identity
+  pool's principal-tag map, and `infra/authRole-s3-policy.json` grants `GetObject`, `PutObject`
+  and `DeleteObject` on `…/private/organisations/org-${aws:PrincipalTag/orgId}/*`. So the chain was:
+
+      custom:orgId (user-writable) -> aws:PrincipalTag/orgId -> S3 read+write on that org's projects
+
+  Any signed-in user could set their own `orgId` to another organisation's, re-login to refresh the
+  tag, and read, overwrite or delete that org's entire project tree. Same shape as C1 — trusting a
+  client-supplied attribute — but landing on cross-tenant data rather than billing tier.
+- **Not visible in the repo.** `cli-inputs.json` declared `userpoolClientWriteAttributes: ["email"]`
+  while the live client had four attributes: **drift**, most likely from when `custom:plan` was
+  added for the old signup flow (the C1 vector), with `custom:orgId` alongside it. Reading the repo
+  would have told you this was safe. It was not — the same lesson as C5.
+- **Exposure at the time of the fix:** 2 users had an orgId set, both `org-acme-123` (test
+  accounts), so there was effectively nothing behind it to steal. Fixed while that was still true.
+- **Fix:** `WriteAttributes` reduced to `["email", "name"]` via `update-user-pool-client`.
+  `custom:orgId` remains **readable** — the client needs it to build S3 paths — but only an admin
+  API (e.g. a Lambda using `AdminUpdateUserAttributes`) can now set it.
+- **Why the CLI, not `amplify push`:** the generated CloudFormation omits `WriteAttributes` and
+  `ReadAttributes` on both `UserPoolClient` resources (verified), so CFN does not manage the field
+  and the change is not reverted by a push. `cli-inputs.json` was updated to match reality anyway.
+- **Verified:** the signup form sends only `email` and `name` (`src/App.js:83-89`), both still
+  writable, and no code anywhere calls `updateUserAttributes` — so nothing legitimate regressed.
+  Re-check with:
+  `aws cognito-idp describe-user-pool-client --user-pool-id eu-west-3_jpxbGzhTX --client-id 4b8jv4b0k9dijjt3j10lm8lhds --region eu-west-3 --query 'UserPoolClient.WriteAttributes'`
+
+---
+
 ## HIGH
 
 ### H1. IDOR — `GET /org/grant-access` leaks every project's manager list

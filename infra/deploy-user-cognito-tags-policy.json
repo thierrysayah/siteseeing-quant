@@ -1,0 +1,14 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CognitoIdentityPoolTagReadForCloudFormation",
+      "Effect": "Allow",
+      "Action": [
+        "cognito-identity:ListTagsForResource",
+        "cognito-identity:UntagResource"
+      ],
+      "Resource": "arn:aws:cognito-identity:eu-west-3:851725386383:identitypool/*"
+    }
+  ]
+}
