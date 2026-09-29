@@ -1,6 +1,20 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { loadRateCard, saveRateCard, loadManagerMeta, saveManagerMeta } from "../services/projectStorage";
 import { jsPDF } from "jspdf";
+// WRITE-ONLY BY DESIGN — do not add XLSX.read()/readFile() without upgrading first.
+//
+// xlsx@0.18.5 carries two HIGH advisories: prototype pollution (fixed 0.19.3)
+// and ReDoS (fixed 0.20.2). Both are triggered only by PARSING a crafted
+// workbook, and this app never parses one — it only builds sheets from its own
+// arrays and writes them out. The vulnerable code is bundled but unreachable.
+//
+// npm cannot fix this: SheetJS stopped publishing to the registry at 0.18.5, so
+// `npm audit` will report it forever. The patched builds live only at
+// https://cdn.sheetjs.com (see docs.sheetjs.com/docs/getting-started/installation/nodejs),
+// and depending on a tarball URL was judged a worse trade than an unreachable bug.
+//
+// The moment a spreadsheet IMPORT feature is added, both advisories go live in
+// every user's browser. Upgrade from the SheetJS CDN first, then add the read.
 import * as XLSX from "xlsx";
 
 // ─── Constants ────────────────────────────────────────────────────────────────

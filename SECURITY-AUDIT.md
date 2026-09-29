@@ -296,15 +296,43 @@ The original finding follows. It is really C1's consequence, but the surface is 
 - **Exploit:** Any account password compromise (phishing, reuse, the H4 weakness above) is a full account takeover. For Enterprise/Manager accounts, this is especially bad because they can view the org's projects.
 - **Fix:** Set `mfaConfiguration: "OPTIONAL"` initially (let security-conscious users opt in), then `"ON"` once you have a recovery path defined. TOTP is the right method (`mfaTypes: ["TOTP"]`). At minimum, enforce MFA for the `EnterpriseManager` group.
 
-### H6. 5 high/critical CVEs in npm dependencies
-- **File:** Frontend `package.json` (transitive deps)
-- **Exploit:** Most are dev-only or build-time, but `lodash` <=4.17.20 (CVE-2021-23337, code injection via `_.template`) is a runtime transitive of `@aws-amplify/ui-react`. Some Amplify packages also pull in vulnerable `node-forge` and `path-to-regexp` versions.
-- **Fix:**
-  ```
-  npm audit fix
-  npm audit fix --force   # only if needed; review breaking changes first
-  ```
-  For transitive deps that can't be auto-fixed, use `"overrides"` in `package.json` to pin a patched version.
+### H6. CVEs in npm dependencies — RE-SCORED **HIGH → LOW** (2026-09-29)
+- **STATUS: ACTIONED.** `npm audit fix` took **61 findings → 31, clearing both criticals**.
+  `package.json` was untouched — pure lockfile movement, no direct dependency changed range.
+  Notable bumps: shell-quote 1.8.3→1.11.0, websocket-driver 0.7.4→0.7.5, node-forge 1.3.3→1.4.0,
+  lodash 4.17.23→**4.18.1**, js-cookie 3.0.5→3.0.8. Build verified after.
+- **The original entry was wrong on the facts:** it cited 5 findings and `lodash <=4.17.20`
+  (CVE-2021-23337); the real count was 61 and the installed lodash was already 4.17.23.
+- **Why the severity was inflated.** Create React App puts `react-scripts` in `dependencies`,
+  not `devDependencies`, so `npm audit` scores its entire build toolchain as shipped code. Both
+  "criticals" (`shell-quote`, `websocket-driver`) reached the tree only via `webpack-dev-server`
+  — i.e. `npm start` on a developer's machine. Neither was ever in the deployed bundle.
+- **What the remaining 15 highs actually need to fire:** attacker-controlled CSS selectors
+  (`nth-check`), source maps (`postcss`), SVG files (`svgo`), or build input
+  (`serialize-javascript`). The inputs to the build are our own source files, so exploiting any
+  of them requires commit access — at which point the CVE is moot. Two were checked structurally
+  and are not merely unreachable but absent: there are **no `.svg` files** in the project, so
+  svgo never runs on anything, and source maps are off since H3 (**0 `.map` files in `build/`**).
+- **`xlsx` — the only vulnerable package that ships to users. DELIBERATELY NOT UPGRADED.**
+  - `xlsx@0.18.5` has prototype pollution (fixed 0.19.3) and ReDoS (fixed 0.20.2).
+  - Both require **parsing** a crafted workbook. This app only writes: `aoa_to_sheet`,
+    `book_new`, `writeFile`. There is **no `XLSX.read()`/`readFile()` anywhere**, so the
+    vulnerable paths are bundled but never called.
+  - npm cannot fix it: SheetJS stopped publishing to the registry at 0.18.5 (verified — that is
+    still the newest registry version), so this will be reported forever. The patched builds are
+    only on `cdn.sheetjs.com`, and depending on a tarball URL — which is itself a supply-chain
+    smell and breaks the build if that CDN is down — was judged a worse trade than an
+    unreachable bug.
+  - **This safety is a property of our code, not the library.** Adding any spreadsheet IMPORT
+    feature makes both advisories live in every user's browser. Both import sites carry a
+    WRITE-ONLY BY DESIGN comment saying to upgrade from the SheetJS CDN first.
+- **The real risk here is abandonment, not these CVEs.** `react-scripts` has not shipped since
+  2022. An unmaintained package with millions of downloads is a prime npm account-takeover
+  target, and a hijack would run attacker code on a developer machine during `npm install`, next
+  to their AWS credentials — materially worse than anything in the current list. Migrating to
+  Vite fixes that; the CVEs are a symptom. **Tracked as maintenance, not as a security finding.**
+- **Do NOT run `npm audit fix --force`** — on CRA it tries to install the placeholder
+  `react-scripts@0.0.0` and breaks the build.
 
 ### H7. Cognito tokens stored in localStorage
 - **File:** Amplify default (`src/index.js:13` `Amplify.configure(awsExports)` — uses default storage)
@@ -450,8 +478,8 @@ The original finding follows. It is really C1's consequence, but the surface is 
 
 3. **This month:**
    - C4 — server-side enforcement for DXF, custom layers, project quota, manager read-only. This is a real chunk of work; split it into separate PRs per feature.
-   - H4 ✅ (2026-09-27, config landed — needs `amplify push`), H5 — opt-in MFA still to do.
-   - H6 — `npm audit fix`.
+   - H4 ✅ (2026-09-27, applied + verified live), H5 — opt-in MFA still to do.
+   - H6 ✅ (2026-09-29, criticals cleared; re-scored to LOW — residue is build tooling).
 
 4. **Before public launch:**
    - All Mediums.
