@@ -231,6 +231,46 @@ body {
   background: rgba(192, 57, 43, 0.16) !important;
 }
 
+/* "Lost your phone?" help on the MFA challenge screen. Collapsed by default so
+   it does not compete with the code field, which is what most people are here
+   for. Left-aligned because it is a list of steps, not a caption. */
+.mfa-help {
+  margin-top: 14px;
+  text-align: left;
+}
+
+.mfa-help > summary {
+  cursor: pointer;
+  list-style: none;
+  color: #4fc3e8;
+  font-size: 12.5px;
+  text-align: center;
+}
+
+.mfa-help > summary::-webkit-details-marker { display: none; }
+.mfa-help > summary::after { content: ' \25BE'; }
+.mfa-help[open] > summary::after { content: ' \25B4'; }
+.mfa-help > summary:hover { color: #7fd8f5; }
+
+.mfa-help ol {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  color: rgba(235, 243, 255, 0.82);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.mfa-help li { margin-bottom: 8px; }
+.mfa-help li strong { color: #ffffff; font-weight: 600; }
+.mfa-help a { color: #4fc3e8; }
+
+.mfa-help > p {
+  margin: 4px 0 0;
+  color: rgba(235, 243, 255, 0.6) !important;
+  font-size: 12px;
+  font-style: italic;
+}
+
 @media (max-width: 900px) {
   .auth-page {
     grid-template-columns: 1fr;

@@ -90,16 +90,33 @@ function AuthHeader() {
         <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 14 }}>{sub}</Text>
         {isMfa && (
           // Placed here because this is the screen a locked-out user is actually
-          // staring at — a link anywhere else would never be found.
-          <Text style={{ color: 'rgba(255,255,255,0.55)', fontSize: 12, marginTop: 10 }}>
-            Lost your authenticator?{' '}
-            <a
-              href={`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('Lost authenticator — two-factor reset request')}`}
-              style={{ color: '#4fc3e8' }}
-            >
-              Contact support
-            </a>
-          </Text>
+          // staring at. It leads with the two routes that need no help from us,
+          // because most people CAN get back in themselves and would otherwise
+          // email support first. Collapsed so it does not distract the majority
+          // who simply need to type their code.
+          <details className="mfa-help">
+            <summary>Lost your phone?</summary>
+            <ol>
+              <li>
+                <strong>Restore your authenticator app.</strong> Most apps sync your codes —
+                install it on another device and sign in to the same account (Google, Authy,
+                1Password) and your codes should reappear.
+              </li>
+              <li>
+                <strong>Re-enter your setup key.</strong> If you saved the key when you turned
+                this on, add it to any authenticator app to get working codes again.
+              </li>
+              <li>
+                <strong>Still stuck?</strong>{' '}
+                <a href={`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('Lost authenticator — two-factor reset request')}`}>
+                  Email us
+                </a>{' '}
+                and we'll verify who you are and switch two-factor off so you can sign in with
+                your password.
+              </li>
+            </ol>
+            <p>Resetting your password won't help — you'll still be asked for a code.</p>
+          </details>
         )}
       </div>
       {isSignUp && <TrialPanel />}
