@@ -2000,7 +2000,15 @@ export default function DetectionTool({ project, user, onBack, userTierInfo = { 
 
     loadProject(project.id, project.ownerSub || null)
       .then(async (data) => {
-        if (cancelled || !data) return;
+        if (cancelled) return;
+        // A brand-new project has only metadata.json, so loadProject returns null
+        // (there is no settings.json or annotations yet). That is not an error —
+        // but returning here without touching `status` left it reading
+        // "Loading project…" forever, even though loading had in fact finished.
+        if (!data) {
+          setStatus("Load an image to begin.");
+          return;
+        }
 
         // ── Shared settings ──────────────────────────────────────────────
         const s = data.settings || {};

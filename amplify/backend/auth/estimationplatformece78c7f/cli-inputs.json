@@ -38,6 +38,7 @@
       "custom:orgId",
       "custom:plan",
       "email",
+      "email_verified",
       "name"
     ],
     "userpoolClientLambdaRole": "estimaece78c7f_userpoolclient_lambda_role",
