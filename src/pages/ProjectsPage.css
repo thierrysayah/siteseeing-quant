@@ -649,3 +649,118 @@
 }
 
 .pp-feedback-dismiss:hover { opacity: 1; }
+
+/* ── Account menu (top bar) + two-factor modal ──────────────────────────────
+   The tier pill became a menu button; these keep its original look and add the
+   dropdown. Tokens only — no hardcoded colours — so both themes follow. */
+.acct-menu { position: relative; }
+
+.acct-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 1px solid currentColor;   /* colour is set inline from tierColor() */
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-family: var(--pp-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  opacity: 0.85;
+  cursor: pointer;
+}
+
+.acct-pill:hover { opacity: 1; }
+.acct-caret { font-size: 8px; opacity: 0.7; }
+
+.acct-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 232px;
+  z-index: 600;                      /* above .modal-backdrop's 500 sibling rail */
+  padding: 6px;
+  border: 1px solid var(--pp-border-2);
+  border-radius: var(--pp-radius);
+  background: var(--pp-surface);
+  box-shadow: var(--pp-shadow);
+}
+
+.acct-email {
+  padding: 6px 10px 8px;
+  border-bottom: 1px solid var(--pp-border);
+  margin-bottom: 4px;
+  font-family: var(--pp-mono);
+  font-size: 11px;
+  color: var(--pp-text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.acct-item {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--pp-text);
+  font-family: var(--pp-sans);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.acct-item:hover { background: var(--bg-hover); }
+
+.mfa-qr {
+  display: block;
+  margin: 12px auto;
+  border-radius: 6px;
+  /* The QR must stay high-contrast regardless of theme, so it keeps a white
+     quiet zone rather than inheriting the panel background. */
+  background: #fff;
+  padding: 8px;
+}
+
+.mfa-secret {
+  display: block;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--pp-border-2);
+  border-radius: 4px;
+  background: var(--bg-input);
+  font-family: var(--pp-mono);
+  font-size: 12px;
+  letter-spacing: 1px;
+  word-break: break-all;
+  color: var(--pp-text);
+}
+
+/* Shown before the user commits: there are no backup codes, so a lost device
+   means contacting support. */
+.mfa-warn {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--warn-bd);
+  border-radius: 4px;
+  background: var(--warn-bg);
+  color: var(--warn-tx);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.mfa-ok {
+  padding: 10px 12px;
+  border: 1px solid var(--ok-bd);
+  border-radius: 4px;
+  background: var(--ok-bg);
+  color: var(--ok-tx);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.mfa-danger { color: var(--err-tx); border-color: var(--err-bd); }

@@ -291,10 +291,64 @@ The original finding follows. It is really C1's consequence, but the surface is 
 - **Exploit:** `passwordPolicyMinLength: 8` + `passwordPolicyCharacters: []` allows `password` as a literal password. Credential-stuffing attackers love this — rainbow tables exist for all 8-char lowercase-only strings.
 - **Fix:** Bump to `passwordPolicyMinLength: 12` and require at least 3 of: uppercase, lowercase, number, symbol. Run `amplify update auth` → "Walkthrough security configuration" → set the policy.
 
-### H5. No MFA option
-- **File:** `amplify/backend/auth/estimationplatformece78c7f/cli-inputs.json:11` — `mfaConfiguration: "OFF"`
-- **Exploit:** Any account password compromise (phishing, reuse, the H4 weakness above) is a full account takeover. For Enterprise/Manager accounts, this is especially bad because they can view the org's projects.
-- **Fix:** Set `mfaConfiguration: "OPTIONAL"` initially (let security-conscious users opt in), then `"ON"` once you have a recovery path defined. TOTP is the right method (`mfaTypes: ["TOTP"]`). At minimum, enforce MFA for the `EnterpriseManager` group.
+### H5. No MFA option — FIXED (2026-09-29)
+- **STATUS: TOTP available to every account. OPTIONAL for all tiers, not enforced.**
+- **Pool:** `MfaConfiguration` `OFF` → **`OPTIONAL`**, `mfaTypes` `["SMS Text Message"]` → **`["TOTP"]`**.
+  SMS was dropped deliberately: it is SIM-swappable, NIST-discouraged since 2016, and costs per
+  message.
+- **Applied with `set-user-pool-mfa-config`, NOT `amplify push`** — and that ordering matters. The
+  generated CloudFormation sets `MfaConfiguration` but never emits `EnabledMfas`, and Cognito
+  rejects `OPTIONAL` with no MFA type enabled, so a push would have failed the auth stack the way
+  the `/projects` ARN failed the API stack. Setting the software-token type first means the pool
+  already satisfies that constraint when CloudFormation later moves `MfaConfiguration`.
+  `cli-inputs.json` was updated to match so the two cannot drift.
+- **UI:** the tier pill in the top bar became an account menu (it sits outside the page switch, so
+  it is reachable from both Projects and the Editor) → **Two-factor authentication** → a modal that
+  does `setUpTOTP` → QR → `verifyTOTPSetup` → `updateMFAPreference({ totp: 'PREFERRED' })`, shows
+  current state from `fetchMFAPreference`, and can disable. No new dependencies: all five auth APIs
+  are in the installed `aws-amplify@6.16.3`, and `qrcode` was already present via
+  `@aws-amplify/ui-react`.
+- **Sign-in needed no code** — the Authenticator handles the `SOFTWARE_TOKEN_MFA` challenge itself.
+  But `AuthHeader` only branched on `signUp`/`confirmSignUp`, so the MFA screens read "Welcome back
+  — sign in to continue"; `confirmSignIn` and `setupTotp` branches were added.
+
+#### Not enforced, on purpose
+Cognito has **no per-group MFA setting** — it is pool-wide `OFF`/`OPTIONAL`/`ON`, so "mandatory for
+Enterprise" could only ever be an in-app gate. That was scoped out: every Enterprise account is
+created by hand today, so enrolment belongs in the handover routine, verified with
+
+    aws cognito-idp admin-get-user --user-pool-id eu-west-3_jpxbGzhTX \
+      --username <user> --region eu-west-3 --query 'UserMFASettingList'
+
+Note this is also the *correct* trust boundary, and it is the opposite of C4's. With tier limits the
+user is the adversary, so enforcement had to be server-side. With MFA the user is the **beneficiary**
+— someone who skips their own MFA only exposes themselves. Revisit if Enterprise self-signup is added.
+
+#### Lockout recovery is operator-only, by design
+**Cognito has no TOTP backup codes and no self-service reset.** The only way back in:
+
+    aws cognito-idp admin-set-user-mfa-preference --user-pool-id eu-west-3_jpxbGzhTX \
+      --username <user> --software-token-mfa-settings Enabled=false,PreferredMfa=false \
+      --region eu-west-3
+
+**Verify identity out of band before running it — that command is a complete MFA bypass, and an
+email asking for it is not proof of anything.**
+
+Users reach this via a `mailto:` "Lost your authenticator?" link on the `confirmSignIn` screen
+(where a stuck user actually is), and the same limitation is stated *inside the enrolment modal
+before they commit*, which is the only moment the warning can change their behaviour.
+
+A public intake endpoint + admin queue was designed and rejected: it would be the app's only
+unauthenticated route. Every existing route is `"setting": "private"`, and Amplify's "open"
+alternative routes through the unauthenticated Cognito role, requiring
+`AllowUnauthenticatedIdentities: true` (currently `false`) — granting guest AWS credentials
+account-wide for one support form. The drafted Lambda is preserved in commit `9cecb11` if the
+mailto proves inadequate.
+
+#### Residual
+Account recovery is **email-only** (`verified_email`). An attacker holding the inbox can reset the
+password, but Cognito still demands the TOTP code, so MFA holds. Do not add an email-based MFA
+bypass later — that would undo this.
 
 ### H6. CVEs in npm dependencies — RE-SCORED **HIGH → LOW** (2026-09-29)
 - **STATUS: ACTIONED.** `npm audit fix` took **61 findings → 31, clearing both criticals**.
@@ -478,7 +532,7 @@ The original finding follows. It is really C1's consequence, but the surface is 
 
 3. **This month:**
    - C4 — server-side enforcement for DXF, custom layers, project quota, manager read-only. This is a real chunk of work; split it into separate PRs per feature.
-   - H4 ✅ (2026-09-27, applied + verified live), H5 — opt-in MFA still to do.
+   - H4 ✅ (2026-09-27), H5 ✅ (2026-09-29, TOTP optional for all tiers).
    - H6 ✅ (2026-09-29, criticals cleared; re-scored to LOW — residue is build tooling).
 
 4. **Before public launch:**

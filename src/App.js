@@ -13,6 +13,7 @@ import DetectionTool from './DetectionTool';
 import ProjectsPage from './pages/ProjectsPage';
 import { getUserTier, tierLabel, tierColor } from './services/userService';
 import { useSessionGuard } from './hooks/useSessionGuard';
+import MfaSetupModal from './components/MfaSetupModal';
 
 // ─── Trial panel ──────────────────────────────────────────────────────────────
 // There is no plan to pick at sign-up: every new account gets the same 14-day
@@ -56,23 +57,49 @@ function TrialPanel() {
 }
 
 // ─── Auth header — adapts text and shows plan cards on sign-up tab ────────────
+// Support address for MFA lockouts. Cognito has no TOTP backup codes and no
+// self-service reset, so an operator running admin-set-user-mfa-preference is the
+// only way back in — see SECURITY-AUDIT.md H5.
+const SUPPORT_EMAIL = 'thierry.elsayah@gmail.com';
+
 function AuthHeader() {
   const { route } = useAuthenticator((ctx) => [ctx.route]);
-  const isSignUp   = route === 'signUp';
-  const isConfirm  = route === 'confirmSignUp';
+  const isSignUp  = route === 'signUp';
+  const isConfirm = route === 'confirmSignUp';
+  // Shown while Cognito is asking for the 6-digit code, and while the
+  // Authenticator is walking a user through its own TOTP setup screen.
+  const isMfa     = route === 'confirmSignIn';
+  const isTotp    = route === 'setupTotp';
+
+  const heading = isSignUp ? 'Create an account'
+    : isConfirm ? 'Verify your email'
+    : isMfa ? 'Two-factor authentication'
+    : isTotp ? 'Set up two-factor authentication'
+    : 'Welcome back';
+  const sub = isSignUp ? 'Start your free trial — no credit card required'
+    : isConfirm ? 'Enter the code we sent to your email'
+    : isMfa ? 'Enter the 6-digit code from your authenticator app'
+    : isTotp ? 'Scan the code with your authenticator app'
+    : 'Sign in to continue';
+
   return (
     <View style={{ paddingBottom: 14 }}>
       <div style={{ textAlign: 'center' }}>
-        <Heading level={3} style={{ color: '#fff' }}>
-          {isSignUp ? 'Create an account' : isConfirm ? 'Verify your email' : 'Welcome back'}
-        </Heading>
-        <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 14 }}>
-          {isSignUp
-            ? 'Start your free trial — no credit card required'
-            : isConfirm
-            ? 'Enter the code we sent to your email'
-            : 'Sign in to continue'}
-        </Text>
+        <Heading level={3} style={{ color: '#fff' }}>{heading}</Heading>
+        <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 14 }}>{sub}</Text>
+        {isMfa && (
+          // Placed here because this is the screen a locked-out user is actually
+          // staring at — a link anywhere else would never be found.
+          <Text style={{ color: 'rgba(255,255,255,0.55)', fontSize: 12, marginTop: 10 }}>
+            Lost your authenticator?{' '}
+            <a
+              href={`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('Lost authenticator — two-factor reset request')}`}
+              style={{ color: '#4fc3e8' }}
+            >
+              Contact support
+            </a>
+          </Text>
+        )}
       </div>
       {isSignUp && <TrialPanel />}
     </View>
@@ -160,6 +187,9 @@ function MainApp() {
   const { forcedOut, dismiss } = useSessionGuard(user, signOut);
 
   const [currentPage, setCurrentPage] = useState('projects');
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [showMfa, setShowMfa] = useState(false);
+  const menuRef = useRef(null);
   const [selectedProject, setSelectedProject] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [userTierInfo, setUserTierInfo] = useState({ tier: 'trial', role: null });
@@ -180,6 +210,17 @@ function MainApp() {
     if (user) getUserTier().then(setUserTierInfo).catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Dismiss the account menu on an outside click or Escape, as a menu should
+  // behave; without this it stays open behind the modal.
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    const onDown = (e) => { if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false); };
+    const onKey  = (e) => { if (e.key === 'Escape') setMenuOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey); };
+  }, [menuOpen]);
 
   if (!user) {
     return (
@@ -203,21 +244,48 @@ function MainApp() {
           {currentPage === 'editor' && selectedProject?.name ? selectedProject.name : user?.username}
         </span>
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-          <span style={{
-            fontFamily: 'monospace', fontSize: 10, fontWeight: 700, letterSpacing: '1.5px',
-            textTransform: 'uppercase',
-            color: tierColor(userTierInfo.tier, userTierInfo.role),
-            border: `1px solid ${tierColor(userTierInfo.tier, userTierInfo.role)}`,
-            borderRadius: 4, padding: '2px 8px', opacity: 0.85,
-          }}>
-            {tierLabel(userTierInfo.tier, userTierInfo.role, userTierInfo.trial)}
-          </span>
+          {/* The tier pill doubles as the account menu. It sits outside the
+              currentPage switch, so Security is reachable from both views. */}
+          <div className="acct-menu" ref={menuRef}>
+            <button
+              className="acct-pill"
+              onClick={() => setMenuOpen((v) => !v)}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              style={{
+                color: tierColor(userTierInfo.tier, userTierInfo.role),
+                borderColor: tierColor(userTierInfo.tier, userTierInfo.role),
+              }}
+            >
+              {tierLabel(userTierInfo.tier, userTierInfo.role, userTierInfo.trial)}
+              <span className="acct-caret">▾</span>
+            </button>
+            {menuOpen && (
+              <div className="acct-dropdown" role="menu">
+                <div className="acct-email">{user?.signInDetails?.loginId || user?.username}</div>
+                <button
+                  className="acct-item"
+                  role="menuitem"
+                  onClick={() => { setMenuOpen(false); setShowMfa(true); }}
+                >
+                  Two-factor authentication
+                </button>
+              </div>
+            )}
+          </div>
           {currentPage === 'editor' && (
             <button className="signout-btn" onClick={handleBackToProjects}>Back to Projects</button>
           )}
           <button className="signout-btn" onClick={signOut}>Sign out</button>
         </div>
       </div>
+
+      {showMfa && (
+        <MfaSetupModal
+          accountLabel={user?.signInDetails?.loginId || user?.username}
+          onClose={() => setShowMfa(false)}
+        />
+      )}
 
       {currentPage === 'projects' ? (
         // Projects list scrolls on its own; the editor manages its internal
