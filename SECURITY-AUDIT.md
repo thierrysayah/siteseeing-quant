@@ -325,14 +325,33 @@ user is the adversary, so enforcement had to be server-side. With MFA the user i
 — someone who skips their own MFA only exposes themselves. Revisit if Enterprise self-signup is added.
 
 #### Lockout recovery is operator-only, by design
-**Cognito has no TOTP backup codes and no self-service reset.** The only way back in:
+**Cognito has no TOTP backup codes and no self-service reset.** Use the runbook:
 
-    aws cognito-idp admin-set-user-mfa-preference --user-pool-id eu-west-3_jpxbGzhTX \
-      --username <user> --software-token-mfa-settings Enabled=false,PreferredMfa=false \
-      --region eu-west-3
+    ./scripts/reset-user-mfa.sh "<username>"
+
+It prints the account's current MFA state, requires an explicit confirmation that identity was
+verified by some means other than email, resets, then prints the state after. Quote the username —
+addresses containing `+` break otherwise.
 
 **Verify identity out of band before running it — that command is a complete MFA bypass, and an
 email asking for it is not proof of anything.**
+
+**IAM prerequisite, found the hard way:** the action `cognito-idp:AdminSetUserMFAPreference` is
+**NOT** in AWS's `AdministratorAccess-Amplify` managed policy, so the documented recovery path
+was a dead end until an inline policy `CognitoMfaReset` was added to the deploy user
+(2026-09-29). This is the second gap in that managed policy — it also lacks
+`cognito-identity:ListTagsForResource`, which failed an auth-stack `amplify push`. Do not assume
+it grants what its name implies. Verify with:
+
+    aws iam simulate-principal-policy \
+      --policy-source-arn arn:aws:iam::851725386383:user/thierry_estimation_owner \
+      --action-names cognito-idp:AdminSetUserMFAPreference \
+      --resource-arns arn:aws:cognito-idp:eu-west-3:851725386383:userpool/eu-west-3_jpxbGzhTX
+
+**Worth noting how this was caught:** only by actually attempting the recovery path. The other two
+recovery routes offered to users (restore a syncing authenticator, re-enter the saved setup key)
+run entirely on the user's device and cannot break from our side, so nothing about testing them
+would have revealed it. A documented procedure that has never been executed is not a procedure.
 
 Users reach this via a `mailto:` "Lost your authenticator?" link on the `confirmSignIn` screen
 (where a stuck user actually is), and the same limitation is stated *inside the enrolment modal
