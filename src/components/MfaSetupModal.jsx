@@ -92,8 +92,9 @@ export default function MfaSetupModal({ accountLabel, onClose }) {
               {/* Stated BEFORE they commit, not after: Cognito has no backup codes
                   and no self-service reset, so a lost device means contacting us. */}
               <p className="mfa-warn">
-                Keep a backup. If you lose access to your authenticator app, only we can
-                reset it — you'll need to contact support and verify your identity.
+                Use an app that backs up or syncs your codes, and keep the setup key we
+                show you next. Without either, losing your phone means contacting us to
+                reset it — and resetting your password will not get you back in.
               </p>
             </>
           )}
@@ -105,6 +106,15 @@ export default function MfaSetupModal({ accountLabel, onClose }) {
               <p className="modal-hint">
                 Can't scan? Enter this key manually:
                 <code className="mfa-secret">{secret}</code>
+              </p>
+              {/* The cheapest recovery by far. Someone who saves this key can
+                  restore access on any device without contacting support, which
+                  is the difference between a self-service fix and an email
+                  exchange plus an operator running an MFA reset. */}
+              <p className="mfa-warn">
+                Save this key somewhere safe, such as a password manager. If you lose your
+                phone, it is the only way to restore access yourself — otherwise you'll
+                need to contact us to reset it.
               </p>
               <label className="modal-label" htmlFor="mfa-code">2. Enter the 6-digit code it shows</label>
               <input
