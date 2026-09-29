@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Authenticator,
   View,
@@ -14,6 +14,7 @@ import ProjectsPage from './pages/ProjectsPage';
 import { getUserTier, tierLabel, tierColor } from './services/userService';
 import { useSessionGuard } from './hooks/useSessionGuard';
 import MfaSetupModal from './components/MfaSetupModal';
+import { isTotpEnabled } from './services/mfaService';
 
 // ─── Trial panel ──────────────────────────────────────────────────────────────
 // There is no plan to pick at sign-up: every new account gets the same 14-day
@@ -76,7 +77,7 @@ function AuthHeader() {
     : isMfa ? 'Two-factor authentication'
     : isTotp ? 'Set up two-factor authentication'
     : 'Welcome back';
-  const sub = isSignUp ? 'Start your free trial — no credit card required'
+  const sub = isSignUp ? 'Start your free trial'
     : isConfirm ? 'Enter the code we sent to your email'
     : isMfa ? 'Enter the 6-digit code from your authenticator app'
     : isTotp ? 'Scan the code with your authenticator app'
@@ -108,6 +109,24 @@ function AuthHeader() {
 
 // ─── Stable Authenticator config (defined once — never remounts) ──────────────
 const authFormFields = {
+  // `loginMechanisms={['email']}` above makes sign-up use the email address as
+  // the Cognito username, so the separate Username field disappears. It would
+  // also make this field type="email", which browser validation would use to
+  // REJECT the pre-existing accounts whose usernames are not email addresses
+  // (the pool has no email alias, and AliasAttributes cannot be added after
+  // creation). Overriding the whole field back to type "text" keeps those
+  // accounts able to sign in while new ones use their email.
+  // TODO: drop this override once the legacy accounts are migrated — see
+  // SECURITY-AUDIT.md H5 "Email-only sign-in".
+  signIn: {
+    username: {
+      label: 'Email',
+      placeholder: 'Enter your email',
+      type: 'text',
+      autocomplete: 'username',
+      isRequired: true,
+    },
+  },
   signUp: {
     email:            { order: 1, label: 'Email',            placeholder: 'Enter your email' },
     name:             { order: 2, label: 'Full Name',        placeholder: 'Your full name' },
@@ -133,9 +152,10 @@ function LoginScreen() {
       <div className="auth-right">
         <div className="auth-card">
           <Authenticator
-            formFields={authFormFields}
-            components={authComponents}
-          />
+          loginMechanisms={['email']}
+          formFields={authFormFields}
+          components={authComponents}
+        />
         </div>
       </div>
     </div>
@@ -189,6 +209,7 @@ function MainApp() {
   const [currentPage, setCurrentPage] = useState('projects');
   const [menuOpen, setMenuOpen] = useState(false);
   const [showMfa, setShowMfa] = useState(false);
+  const [mfaNudge, setMfaNudge] = useState(false);
   const menuRef = useRef(null);
   const [selectedProject, setSelectedProject] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -210,6 +231,29 @@ function MainApp() {
     if (user) getUserTier().then(setUserTierInfo).catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // One-time nudge to enable 2FA. TOTP cannot be offered during sign-up — it
+  // needs an authenticated session to associate the secret with — so the first
+  // opportunity to ask is here, after sign-in. Dismissal is remembered per user
+  // so it asks once rather than nagging.
+  useEffect(() => {
+    if (!user) return;
+    const key = `mfaNudgeDismissed:${user.userId || user.username}`;
+    let dismissed = false;
+    try { dismissed = localStorage.getItem(key) === '1'; } catch { /* private mode */ }
+    if (dismissed) return;
+    let alive = true;
+    // Failure here must stay silent: a nudge is not worth an error, and showing
+    // it to someone who already has 2FA on would be worse than not showing it.
+    isTotpEnabled().then((on) => { if (alive && !on) setMfaNudge(true); }).catch(() => {});
+    // eslint-disable-next-line consistent-return
+    return () => { alive = false; };
+  }, [user]);
+
+  const dismissMfaNudge = useCallback(() => {
+    setMfaNudge(false);
+    try { localStorage.setItem(`mfaNudgeDismissed:${user?.userId || user?.username}`, '1'); } catch { /* private mode */ }
+  }, [user]);
 
   // Dismiss the account menu on an outside click or Escape, as a menu should
   // behave; without this it stays open behind the modal.
@@ -279,6 +323,21 @@ function MainApp() {
           <button className="signout-btn" onClick={signOut}>Sign out</button>
         </div>
       </div>
+
+      {mfaNudge && !showMfa && (
+        <div className="mfa-nudge">
+          <span className="mfa-nudge-text">
+            Add two-factor authentication to protect your account with more than a password.
+          </span>
+          <button
+            className="mfa-nudge-cta"
+            onClick={() => { setMfaNudge(false); setShowMfa(true); }}
+          >
+            Set up
+          </button>
+          <button className="mfa-nudge-later" onClick={dismissMfaNudge}>Later</button>
+        </div>
+      )}
 
       {showMfa && (
         <MfaSetupModal

@@ -764,3 +764,44 @@
 }
 
 .mfa-danger { color: var(--err-tx); border-color: var(--err-bd); }
+
+/* One-time prompt to enable 2FA, shown under the top bar after sign-in.
+   Informational, not an error — it must not read as something being wrong. */
+.mfa-nudge {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--pp-border);
+  background: var(--bg-row);
+  font-family: var(--pp-sans);
+  font-size: 13px;
+}
+
+.mfa-nudge-text { flex: 1; color: var(--pp-text); }
+
+.mfa-nudge-cta {
+  padding: 5px 14px;
+  border: 1px solid var(--pp-accent);
+  border-radius: 4px;
+  background: none;
+  color: var(--pp-accent);
+  font-family: var(--pp-sans);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mfa-nudge-cta:hover { background: var(--pp-accent-glow); }
+
+.mfa-nudge-later {
+  border: none;
+  background: none;
+  color: var(--pp-text-faint);
+  font-family: var(--pp-sans);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.mfa-nudge-later:hover { color: var(--pp-text); }

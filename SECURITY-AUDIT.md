@@ -345,6 +345,26 @@ alternative routes through the unauthenticated Cognito role, requiring
 account-wide for one support form. The drafted Lambda is preserved in commit `9cecb11` if the
 mailto proves inadequate.
 
+#### Sign-in identity: email now, email-ONLY deferred (2026-09-29)
+Sign-up no longer asks for a separate username — `loginMechanisms={['email']}` makes the email
+address itself the Cognito username. Sign-in is labelled "Email" but **deliberately still accepts
+a legacy username**: `formFields.signIn.username` is overridden back to `type: 'text'`, because
+`type="email"` would make browser validation lock out the two pre-existing accounts (`thierry`,
+`testuser1`) whose usernames are not email addresses.
+
+That override is interim, by decision, and carries a TODO in `src/App.js`.
+
+**The constraint worth knowing:** the pool has `UsernameAttributes: null` and
+`AliasAttributes: null`, and **both are immutable after pool creation** — Cognito will not let
+email be added as a username or alias to an existing pool. Real email-as-username needs a NEW user
+pool, which reissues every `sub`; since S3 paths are `private/.../projects/{sub}/...` and
+`ProjectGrants` is keyed by sub, that orphans all existing data unless remapped. Cheap at 6 users,
+expensive later.
+
+**To enforce email-only:** remove the `signIn.username` override, then either abandon the legacy
+accounts (signing up fresh and re-setting `custom:orgId` + the Enterprise group by admin CLI) or
+migrate them with `aws s3 cp --recursive` from the old sub's prefix to the new one.
+
 #### Residual
 Account recovery is **email-only** (`verified_email`). An attacker holding the inbox can reset the
 password, but Cognito still demands the TOTP code, so MFA holds. Do not add an email-based MFA
