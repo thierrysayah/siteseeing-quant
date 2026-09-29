@@ -170,6 +170,67 @@ body {
   color: #10b7e8 !important;
 }
 
+/* ── Contrast fixes for Amplify's own screens ──────────────────────────────
+   The rules above only covered the sign-in screen. Amplify renders several
+   other routes (confirm sign-up, MFA challenge, TOTP setup, reset password)
+   whose headings, labels and secondary buttons inherit near-black defaults and
+   are effectively invisible on this dark card. These cover them all rather than
+   one screen at a time. */
+
+/* Section headings, e.g. "We Emailed You". Amplify uses .amplify-heading at
+   whatever level the route picks, so target the class, not the tag. */
+[data-amplify-authenticator] .amplify-heading,
+[data-amplify-authenticator] h1,
+[data-amplify-authenticator] h2,
+[data-amplify-authenticator] h4,
+[data-amplify-authenticator] h5,
+[data-amplify-authenticator] h6 {
+  color: #ffffff !important;
+}
+
+/* Body copy, e.g. "Your code is on the way…" */
+[data-amplify-authenticator] .amplify-text {
+  color: rgba(235, 243, 255, 0.82) !important;
+}
+
+/* Field labels. v6 emits the .amplify-label class; the attribute selector above
+   does not always match, which is why "Confirmation Code" rendered dark. */
+[data-amplify-authenticator] .amplify-label,
+[data-amplify-authenticator] label {
+  color: rgba(235, 243, 255, 0.88) !important;
+}
+
+/* Secondary buttons, e.g. "Resend Code" and "Back to Sign In". Excludes the
+   submit button so its solid accent styling above is untouched. */
+/* Tabs are excluded: this selector is more specific than the .amplify-tabs__item
+   rules below, so without the exclusion it would flatten the active/inactive
+   distinction to a single colour. */
+[data-amplify-authenticator] button:not([type="submit"]):not([data-amplify-field-group__control]):not(.amplify-tabs__item) {
+  color: #dce9ff !important;
+  border-color: rgba(100, 150, 255, 0.28) !important;
+}
+
+[data-amplify-authenticator] button:not([type="submit"]):not([data-amplify-field-group__control]):not(.amplify-tabs__item):hover {
+  color: #ffffff !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+
+/* Tab row ("Sign In" / "Create Account") — the inactive tab was too dim to read. */
+[data-amplify-authenticator] .amplify-tabs__item {
+  color: rgba(235, 243, 255, 0.62) !important;
+}
+
+[data-amplify-authenticator] .amplify-tabs__item--active {
+  color: #ffffff !important;
+}
+
+/* Validation and auth errors must stay legible on the dark card too. */
+[data-amplify-authenticator] .amplify-alert,
+[data-amplify-authenticator] .amplify-alert__body {
+  color: #ffd9d4 !important;
+  background: rgba(192, 57, 43, 0.16) !important;
+}
+
 @media (max-width: 900px) {
   .auth-page {
     grid-template-columns: 1fr;
